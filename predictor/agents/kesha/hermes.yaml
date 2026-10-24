@@ -1,0 +1,45 @@
+model:
+  provider: custom
+  default: deepseek/deepseek-v4.1-flash
+  base_url: https://changellenge.up.railway.app/v1
+  key_env: LLM_API_KEY
+
+fallback_providers:
+  - provider: custom
+    model: deepseek/deepseek-v4.1-flash
+    base_url: https://api.alfahack-gateway26.ru/v1
+    key_env: LLM_API_KEY
+
+platform_toolsets:
+  api_server: []
+
+gateway:
+  api_server:
+    enabled: true
+    host: 0.0.0.0
+    port: 8642
+    max_concurrent_runs: 0
+
+agent:
+  max_turns: 6
+  reasoning_effort: low
+  disabled_toolsets: [terminal, browser, web, file, memory, delegation, process, automation]
+
+mcp_servers:
+  clickhouse:
+    url: http://esb:8081/mcp
+    headers:
+      Authorization: "Bearer ${ESB_API_KEY}"
+    supports_parallel_tool_calls: false
+    tools:
+      include: [get_company_facts, get_metric_predictions, save_metric_predictions]
+      prompts: false
+      resources: false
+  s3_profiles:
+    url: http://profiles:8082/mcp
+    headers:
+      Authorization: "Bearer ${PROFILE_MCP_API_KEY}"
+    tools:
+      include: [get_company_profile]
+      prompts: false
+      resources: false
