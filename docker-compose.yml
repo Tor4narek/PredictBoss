@@ -1,0 +1,68 @@
+name: predictor
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: predictor-clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - predictor-esb
+
+  atlas:
+    image: arigaio/atlas:latest
+    container_name: predictor-atlas
+    profiles: ["migrations"]
+    working_dir: /migrations
+    command: ["migrate", "apply", "--env", "local"]
+    environment:
+      ATLAS_DATABASE_URL: clickhouse://clickhouse:9000/default
+      ATLAS_TOKEN: ${ATLAS_TOKEN:-}
+    volumes:
+      - ./predictor/storage:/migrations:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - predictor-esb
+
+  esb:
+    build:
+      context: ./predictor/esb
+      dockerfile: Dockerfile
+    container_name: predictor-esb
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    networks:
+      - predictor-esb
+
+  hermes:
+    build:
+      context: ./predictor/agents/hermes
+      dockerfile: Dockerfile
+    container_name: predictor-hermes
+    restart: unless-stopped
+    depends_on:
+      esb:
+        condition: service_healthy
+    networks:
+      - predictor-esb
+
+networks:
+  predictor-esb:
+    name: predictor-esb
+
+volumes:
+  clickhouse-data:
+  clickhouse-logs:
