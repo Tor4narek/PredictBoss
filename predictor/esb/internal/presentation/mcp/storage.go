@@ -2,8 +2,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,13 +34,17 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		return nil, companyContextOutput{CompanyID: strings.TrimSpace(input.CompanyID), ProfileRevision: input.ProfileRevision, ProfileKey: key, MetricsSaved: len(input.Metrics)}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "save_news_and_facts", Description: "Store the submitted news and the company-independent facts extracted from it in ClickHouse."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveNewsFactsInput) (*mcp.CallToolResult, saveNewsFactsOutput, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "save_news_and_facts", Description: "Store submitted news and company-independent facts in ClickHouse. Confidence accepts a JSON number or a numeric string; ESB normalizes numeric strings."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveNewsFactsInput) (*mcp.CallToolResult, saveNewsFactsOutput, error) {
 		if strings.TrimSpace(input.NewsID) == "" || strings.TrimSpace(input.SourceID) == "" || strings.TrimSpace(input.NewsText) == "" {
 			return nil, saveNewsFactsOutput{}, fmt.Errorf("news_id, source_id and news_text are required")
 		}
 		facts := make([]domain.Fact, 0, len(input.Facts))
-		for _, fact := range input.Facts {
-			facts = append(facts, domain.Fact{Text: fact.FactText, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: fact.OccurredAt, Confidence: fact.Confidence})
+		for i, fact := range input.Facts {
+			confidence, err := numericValue(fact.Confidence)
+			if err != nil {
+				return nil, saveNewsFactsOutput{}, fmt.Errorf("fact %d confidence must be a number: %w", i, err)
+			}
+			facts = append(facts, domain.Fact{Text: fact.FactText, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: fact.OccurredAt, Confidence: confidence})
 		}
 		ids, err := service.SaveNewsAndFacts(ctx, domain.News{ID: input.NewsID, SourceID: input.SourceID, SourceURL: input.SourceURL,
 			CompanyID: input.CompanyID, MaterialKind: input.MaterialKind, MediaType: input.MediaType, Title: input.Title,
@@ -48,8 +55,12 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		return nil, saveNewsFactsOutput{NewsID: input.NewsID, Inserted: len(ids), FactIDs: ids}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "get_facts", Description: "Read universal facts for a news_id from ClickHouse."}, func(ctx context.Context, _ *mcp.CallToolRequest, input newsFactsInput) (*mcp.CallToolResult, factsOutput, error) {
-		facts, err := service.FactsByNews(ctx, input.NewsID, input.Limit)
+	mcp.AddTool(server, &mcp.Tool{Name: "get_facts", Description: "Read universal facts for a news_id from ClickHouse. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input newsFactsInput) (*mcp.CallToolResult, factsOutput, error) {
+		limit, err := integerValue(input.Limit)
+		if err != nil {
+			return nil, factsOutput{}, fmt.Errorf("limit must be an integer: %w", err)
+		}
+		facts, err := service.FactsByNews(ctx, input.NewsID, limit)
 		if err != nil {
 			return nil, factsOutput{}, err
 		}
@@ -57,14 +68,26 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 	})
 
 	mcp.AddTool(server, &mcp.Tool{Name: "save_fact_company_links", Description: "Persist Savely's supported links between universal facts and a company."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyFactLinksInput) (*mcp.CallToolResult, insertedOutput, error) {
-		if err := service.SaveFactCompanyLinks(ctx, input.CompanyID, input.Links); err != nil {
+		links := make([]domain.FactCompanyLink, 0, len(input.Links))
+		for i, link := range input.Links {
+			confidence, err := numericValue(link.Confidence)
+			if err != nil {
+				return nil, insertedOutput{}, fmt.Errorf("link %d confidence must be a number: %w", i, err)
+			}
+			links = append(links, domain.FactCompanyLink{FactID: link.FactID, Relevance: link.Relevance, Confidence: confidence})
+		}
+		if err := service.SaveFactCompanyLinks(ctx, input.CompanyID, links); err != nil {
 			return nil, insertedOutput{}, err
 		}
-		return nil, insertedOutput{Inserted: len(input.Links)}, nil
+		return nil, insertedOutput{Inserted: len(links)}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "get_company_facts", Description: "Read universal facts that have already been linked to a company."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, companyFactsOutput, error) {
-		facts, err := service.CompanyFacts(ctx, input.CompanyID, input.Limit)
+	mcp.AddTool(server, &mcp.Tool{Name: "get_company_facts", Description: "Read universal facts that have already been linked to a company. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, companyFactsOutput, error) {
+		limit, err := integerValue(input.Limit)
+		if err != nil {
+			return nil, companyFactsOutput{}, fmt.Errorf("limit must be an integer: %w", err)
+		}
+		facts, err := service.CompanyFacts(ctx, input.CompanyID, limit)
 		if err != nil {
 			return nil, companyFactsOutput{}, err
 		}
@@ -78,19 +101,44 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		return nil, insertedOutput{Inserted: len(input.Metrics)}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "get_company_metrics", Description: "Read the company's structured metric settings from PostgreSQL through the ESB."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, companyMetricsOutput, error) {
-		metrics, err := companyContext.CompanyMetrics(ctx, input.CompanyID, input.Limit)
+	mcp.AddTool(server, &mcp.Tool{Name: "get_company_metrics", Description: "Read the company's structured metric settings from PostgreSQL through the ESB. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, companyMetricsOutput, error) {
+		limit, err := integerValue(input.Limit)
+		if err != nil {
+			return nil, companyMetricsOutput{}, fmt.Errorf("limit must be an integer: %w", err)
+		}
+		metrics, err := companyContext.CompanyMetrics(ctx, input.CompanyID, limit)
 		if err != nil {
 			return nil, companyMetricsOutput{}, err
 		}
 		return nil, companyMetricsOutput{Metrics: metrics}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "save_metric_observations", Description: "Store company metric observations linked to source news and supporting facts."}, func(ctx context.Context, _ *mcp.CallToolRequest, input metricObservationsInput) (*mcp.CallToolResult, insertedOutput, error) {
-		if err := service.SaveMetricObservations(ctx, input.CompanyID, input.Observations); err != nil {
+	mcp.AddTool(server, &mcp.Tool{Name: "save_metric_observations", Description: "Store metric observations linked to news and facts. Values and probabilities accept JSON numbers or numeric strings; ESB normalizes numeric strings. Use null for unknown values."}, func(ctx context.Context, _ *mcp.CallToolRequest, input metricObservationsInput) (*mcp.CallToolResult, insertedOutput, error) {
+		observations := make([]domain.MetricObservation, 0, len(input.Observations))
+		for i, observation := range input.Observations {
+			if observation.CompanyID != "" && !strings.EqualFold(strings.TrimSpace(observation.CompanyID), strings.TrimSpace(input.CompanyID)) {
+				return nil, insertedOutput{}, fmt.Errorf("observation %d company_id must match the request company_id", i)
+			}
+			probability, err := numericValue(observation.Probability)
+			if err != nil {
+				return nil, insertedOutput{}, fmt.Errorf("observation %d probability must be a number: %w", i, err)
+			}
+			var value *float64
+			if observation.Value != nil {
+				parsed, err := numericValue(observation.Value)
+				if err != nil {
+					return nil, insertedOutput{}, fmt.Errorf("observation %d value must be a number or null: %w", i, err)
+				}
+				value = &parsed
+			}
+			observations = append(observations, domain.MetricObservation{ID: observation.ID, CompanyID: input.CompanyID, MetricID: observation.MetricID, NewsID: observation.NewsID,
+				SourceID: observation.SourceID, SourceURL: observation.SourceURL, MaterialKind: observation.MaterialKind, Value: value,
+				Probability: probability, PeriodFrom: observation.PeriodFrom, PeriodTo: observation.PeriodTo, SourceFactIDs: observation.SourceFactIDs})
+		}
+		if err := service.SaveMetricObservations(ctx, input.CompanyID, observations); err != nil {
 			return nil, insertedOutput{}, err
 		}
-		return nil, insertedOutput{Inserted: len(input.Observations)}, nil
+		return nil, insertedOutput{Inserted: len(observations)}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{Name: "calculate_metric_total", Description: "Calculate and persist one probability-weighted metric total for a company and date range."}, func(ctx context.Context, _ *mcp.CallToolRequest, input metricTotalInput) (*mcp.CallToolResult, domain.MetricTotal, error) {
@@ -109,8 +157,13 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		return nil, totalsOutput{Totals: totals}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "save_company_analysis", Description: "Persist the probability-based analysis text for a company and date range."}, func(ctx context.Context, _ *mcp.CallToolRequest, input domain.CompanyAnalysis) (*mcp.CallToolResult, insertedOutput, error) {
-		if err := service.SaveCompanyAnalysis(ctx, input); err != nil {
+	mcp.AddTool(server, &mcp.Tool{Name: "save_company_analysis", Description: "Persist a probability-based analysis. Probability accepts a JSON number or numeric string; ESB normalizes numeric strings."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyAnalysisInput) (*mcp.CallToolResult, insertedOutput, error) {
+		probability, err := numericValue(input.Probability)
+		if err != nil {
+			return nil, insertedOutput{}, fmt.Errorf("analysis probability must be a number: %w", err)
+		}
+		analysis := domain.CompanyAnalysis{CompanyID: input.CompanyID, PeriodFrom: input.PeriodFrom, PeriodTo: input.PeriodTo, Probability: probability, MetricIDs: input.MetricIDs, Text: input.Text}
+		if err := service.SaveCompanyAnalysis(ctx, analysis); err != nil {
 			return nil, insertedOutput{}, err
 		}
 		return nil, insertedOutput{Inserted: 1}, nil
@@ -124,8 +177,12 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		return nil, report, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "get_consultant_context", Description: "Read the company's pre-aggregated linked facts, metric observations and calculated totals from ClickHouse without requiring a fixed date period. Results include source IDs for citations."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, domain.ConsultantContext, error) {
-		result, err := service.ConsultantContext(ctx, input.CompanyID, input.Limit)
+	mcp.AddTool(server, &mcp.Tool{Name: "get_consultant_context", Description: "Read pre-aggregated linked facts, observations, and totals from ClickHouse without requiring a fixed period. Results include source IDs. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, domain.ConsultantContext, error) {
+		limit, err := integerValue(input.Limit)
+		if err != nil {
+			return nil, domain.ConsultantContext{}, fmt.Errorf("limit must be an integer: %w", err)
+		}
+		result, err := service.ConsultantContext(ctx, input.CompanyID, limit)
 		if err != nil {
 			return nil, domain.ConsultantContext{}, err
 		}
@@ -160,7 +217,7 @@ type factInput struct {
 	Entities   []string `json:"entities"`
 	Evidence   string   `json:"evidence"`
 	OccurredAt *string  `json:"occurred_at"`
-	Confidence float64  `json:"confidence"`
+	Confidence any      `json:"confidence" jsonschema:"confidence from 0 to 1; accepts a number or numeric string"`
 }
 type saveNewsFactsOutput struct {
 	NewsID   string   `json:"news_id"`
@@ -169,18 +226,23 @@ type saveNewsFactsOutput struct {
 }
 type newsFactsInput struct {
 	NewsID string `json:"news_id"`
-	Limit  int    `json:"limit,omitempty"`
+	Limit  any    `json:"limit,omitempty" jsonschema:"integer limit; accepts an integer or numeric string"`
 }
 type factsOutput struct {
 	Facts []domain.Fact `json:"facts"`
 }
 type companyFactLinksInput struct {
-	CompanyID string                   `json:"company_id"`
-	Links     []domain.FactCompanyLink `json:"links"`
+	CompanyID string                 `json:"company_id"`
+	Links     []factCompanyLinkInput `json:"links"`
+}
+type factCompanyLinkInput struct {
+	FactID     string `json:"fact_id"`
+	Relevance  string `json:"relevance"`
+	Confidence any    `json:"confidence" jsonschema:"confidence from 0 to 1; accepts a number or numeric string"`
 }
 type companyLimitInput struct {
 	CompanyID string `json:"company_id"`
-	Limit     int    `json:"limit,omitempty"`
+	Limit     any    `json:"limit,omitempty" jsonschema:"integer limit; accepts an integer or numeric string"`
 }
 type companyFactsOutput struct {
 	Facts []domain.CompanyFact `json:"facts"`
@@ -213,8 +275,30 @@ type companyMetricsOutput struct {
 	Metrics []domain.CompanyMetric `json:"metrics"`
 }
 type metricObservationsInput struct {
-	CompanyID    string                     `json:"company_id"`
-	Observations []domain.MetricObservation `json:"observations"`
+	CompanyID    string                   `json:"company_id"`
+	Observations []metricObservationInput `json:"observations"`
+}
+type metricObservationInput struct {
+	ID            string   `json:"observation_id,omitempty"`
+	CompanyID     string   `json:"company_id,omitempty" jsonschema:"optional company ID; when supplied it must match the request company_id"`
+	MetricID      string   `json:"metric_id"`
+	NewsID        string   `json:"news_id"`
+	SourceID      string   `json:"source_id,omitempty"`
+	SourceURL     string   `json:"source_url,omitempty"`
+	MaterialKind  string   `json:"material_kind,omitempty"`
+	Value         any      `json:"value" jsonschema:"numeric value or null; accepts a number or numeric string"`
+	Probability   any      `json:"probability" jsonschema:"probability from 0 to 1; accepts a number or numeric string"`
+	PeriodFrom    string   `json:"period_from"`
+	PeriodTo      string   `json:"period_to"`
+	SourceFactIDs []string `json:"source_fact_ids"`
+}
+type companyAnalysisInput struct {
+	CompanyID   string   `json:"company_id"`
+	PeriodFrom  string   `json:"period_from"`
+	PeriodTo    string   `json:"period_to"`
+	Probability any      `json:"probability" jsonschema:"probability from 0 to 1; accepts a number or numeric string"`
+	MetricIDs   []string `json:"metric_ids"`
+	Text        string   `json:"text"`
 }
 type metricTotalInput struct {
 	CompanyID  string `json:"company_id"`
@@ -232,4 +316,50 @@ type totalsOutput struct {
 }
 type insertedOutput struct {
 	Inserted int `json:"inserted"`
+}
+
+func numericValue(value any) (float64, error) {
+	var parsed float64
+	switch value := value.(type) {
+	case float64:
+		parsed = value
+	case float32:
+		parsed = float64(value)
+	case int:
+		parsed = float64(value)
+	case int64:
+		parsed = float64(value)
+	case json.Number:
+		var err error
+		parsed, err = value.Float64()
+		if err != nil {
+			return 0, err
+		}
+	case string:
+		var err error
+		parsed, err = strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			return 0, err
+		}
+	default:
+		return 0, fmt.Errorf("unsupported numeric value of type %T", value)
+	}
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("numeric value must be finite")
+	}
+	return parsed, nil
+}
+
+func integerValue(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	parsed, err := numericValue(value)
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 || parsed > 1_000_000 || math.Trunc(parsed) != parsed {
+		return 0, fmt.Errorf("integer value is outside the supported range")
+	}
+	return int(parsed), nil
 }

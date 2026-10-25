@@ -155,7 +155,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		"source_url": "https://example.test/news/global-market", "material_kind": "external_news",
 		"media_type": "text/html", "title": "Global market trend", "news_text": "A global trend affects manufacturing.",
 		"facts": []any{map[string]any{"fact_text": "Manufacturing output is increasing globally.", "category": "market",
-			"entities": []string{"manufacturing"}, "evidence": "source text", "occurred_at": "2026-10-25T09:00:00Z", "confidence": 0.9}},
+			"entities": []string{"manufacturing"}, "evidence": "source text", "occurred_at": "2026-10-25T09:00:00Z", "confidence": "0.9"}},
 	})
 	if len(stringArrayField(t, globalNews, "fact_ids")) != 1 {
 		t.Fatal("saving company-independent news did not create its universal fact")
@@ -163,12 +163,17 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	factIDs := append(newsFacts, bankFacts...)
 	links := make([]any, 0, len(factIDs))
 	for _, factID := range factIDs {
-		links = append(links, map[string]any{"fact_id": factID, "relevance": "high", "confidence": 0.95})
+		links = append(links, map[string]any{"fact_id": factID, "relevance": "high", "confidence": "0.95"})
 	}
 	callTool(t, mcpCtx, mcpSession, "save_fact_company_links", map[string]any{"company_id": companyID, "links": links})
 	facts := callTool(t, mcpCtx, mcpSession, "get_facts", map[string]any{"news_id": newsID, "limit": 100})
-	if len(arrayField(t, facts, "facts")) != 1 {
+	newsFactRows := arrayField(t, facts, "facts")
+	if len(newsFactRows) != 1 {
 		t.Fatalf("expected one fact for news source, got %d", len(arrayField(t, facts, "facts")))
+	}
+	newsFact, ok := newsFactRows[0].(map[string]any)
+	if !ok || stringField(t, newsFact, "fact_id") == "" || stringField(t, newsFact, "source_id") != newsSourceID {
+		t.Fatalf("get_facts lost a fact or source ID after joining news metadata: %#v", newsFactRows[0])
 	}
 	bySource := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
 		map[string]any{"sourceId": newsSourceID, "materialKind": "external_news", "category": "market", "entity": "manufacturing", "limit": 10},
@@ -221,11 +226,19 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
 		map[string]any{"companyId": companyID, "beforeFactId": "not-a-uuid"}, true, http.StatusBadRequest, "invalid_facts_query")
 	companyFacts := callTool(t, mcpCtx, mcpSession, "get_company_facts", map[string]any{"company_id": companyID, "limit": 100})
-	if len(arrayField(t, companyFacts, "facts")) != 2 {
+	companyFactRows := arrayField(t, companyFacts, "facts")
+	if len(companyFactRows) != 2 {
 		t.Fatalf("expected two linked company facts, got %d", len(arrayField(t, companyFacts, "facts")))
 	}
+	validSources := map[string]bool{newsSourceID: true, bankSourceID: true}
+	for _, rawFact := range companyFactRows {
+		fact, ok := rawFact.(map[string]any)
+		if !ok || stringField(t, fact, "fact_id") == "" || !validSources[stringField(t, fact, "source_id")] {
+			t.Fatalf("get_company_facts lost a fact or source ID after joining links: %#v", rawFact)
+		}
+	}
 	observations := []any{
-		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": newsID, "value": 2000000.0, "probability": 0.8, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[0]}},
+		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": newsID, "value": "2000000", "probability": "0.8", "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[0]}},
 		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": bankNewsID, "value": 500000.0, "probability": 0.6, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[1]}},
 	}
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": observations})
@@ -240,7 +253,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	}
 	callTool(t, mcpCtx, mcpSession, "save_company_analysis", map[string]any{
 		"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31",
-		"probability": 0.9, "metric_ids": []string{"revenue_impact"}, "text": "The evidence suggests a moderate revenue impact.",
+		"probability": "0.9", "metric_ids": []string{"revenue_impact"}, "text": "The evidence suggests a moderate revenue impact.",
 	})
 	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31"})
 	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 1 || len(arrayField(t, companyReport, "totals")) == 0 || len(arrayField(t, companyReport, "analyses")) != 1 {
@@ -249,6 +262,18 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, consultantContext, "facts")) != 2 || len(arrayField(t, consultantContext, "observations")) != 2 || len(arrayField(t, consultantContext, "totals")) == 0 {
 		t.Fatalf("consultant context is incomplete: %#v", consultantContext)
+	}
+	for _, rawFact := range arrayField(t, consultantContext, "facts") {
+		fact, ok := rawFact.(map[string]any)
+		if !ok || stringField(t, fact, "fact_id") == "" || !validSources[stringField(t, fact, "source_id")] {
+			t.Fatalf("consultant context lost a fact or source ID after joins: %#v", rawFact)
+		}
+	}
+	for _, rawObservation := range arrayField(t, consultantContext, "observations") {
+		observation, ok := rawObservation.(map[string]any)
+		if !ok || stringField(t, observation, "news_id") == "" || stringField(t, observation, "source_id") == "" {
+			t.Fatalf("consultant context lost observation source metadata after joins: %#v", rawObservation)
+		}
 	}
 
 	// Exercise the ordinary asynchronous calls and call-status GET for each remaining HTTP agent.

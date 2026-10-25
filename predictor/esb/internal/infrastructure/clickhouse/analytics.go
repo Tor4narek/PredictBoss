@@ -67,8 +67,9 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 }
 
 func (r *Analytics) FactsByNews(ctx context.Context, newsID string, limit int) ([]domain.Fact, error) {
-	query := fmt.Sprintf(`SELECT f.fact_id, f.news_id, f.source_id, f.source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
-f.fact_text, f.category, f.entities, f.evidence, f.occurred_at, f.confidence
+	query := fmt.Sprintf(`SELECT f.fact_id AS fact_id, f.news_id AS news_id, f.source_id AS source_id, f.source_url AS source_url,
+ifNull(n.material_kind, 'external_news') AS material_kind, f.fact_text AS fact_text, f.category AS category,
+f.entities AS entities, f.evidence AS evidence, f.occurred_at AS occurred_at, f.confidence AS confidence
 FROM (SELECT * FROM %s.facts FINAL) AS f LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON f.news_id = n.news_id
 WHERE f.news_id = %s ORDER BY f.inserted_at, f.fact_id LIMIT %d FORMAT JSONEachRow`, r.table("facts"), r.table("news"), escape(newsID), limit)
 	var rows []domain.Fact
@@ -149,8 +150,10 @@ type factCompanyRow struct {
 }
 
 func (r *Analytics) CompanyFacts(ctx context.Context, companyID string, limit int) ([]domain.CompanyFact, error) {
-	query := fmt.Sprintf(`SELECT f.fact_id, f.news_id, f.source_id, f.source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
-f.fact_text, f.category, f.entities, f.evidence, f.occurred_at, f.confidence, m.relevance, m.confidence AS match_confidence
+	query := fmt.Sprintf(`SELECT f.fact_id AS fact_id, f.news_id AS news_id, f.source_id AS source_id, f.source_url AS source_url,
+ifNull(n.material_kind, 'external_news') AS material_kind, f.fact_text AS fact_text, f.category AS category,
+f.entities AS entities, f.evidence AS evidence, f.occurred_at AS occurred_at, f.confidence AS confidence,
+m.relevance AS relevance, m.confidence AS match_confidence
 FROM (SELECT * FROM %s.fact_company FINAL) AS m INNER JOIN (SELECT * FROM %s.facts FINAL) AS f ON m.fact_id = f.fact_id
 LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON f.news_id = n.news_id
 WHERE m.company_id = %s ORDER BY m.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("fact_company"), r.table("facts"), r.table("news"), escape(companyID), limit)
@@ -273,11 +276,12 @@ func (r *Analytics) ConsultantContext(ctx context.Context, companyID string, lim
 	if err != nil {
 		return domain.ConsultantContext{}, err
 	}
-	query := fmt.Sprintf(`SELECT mo.observation_id, mo.company_id, mo.metric_id, mo.news_id,
+	query := fmt.Sprintf(`SELECT mo.observation_id AS observation_id, mo.company_id AS company_id,
+mo.metric_id AS metric_id, mo.news_id AS news_id,
 ifNull(n.source_id, mo.news_id) AS source_id, ifNull(n.source_url, '') AS source_url,
 ifNull(n.material_kind, 'external_news') AS material_kind,
-mo.value, mo.probability, toString(mo.period_from) AS period_from, toString(mo.period_to) AS period_to,
-mo.source_fact_ids FROM (SELECT * FROM %s.metric_observations FINAL) AS mo
+mo.value AS value, mo.probability AS probability, toString(mo.period_from) AS period_from, toString(mo.period_to) AS period_to,
+mo.source_fact_ids AS source_fact_ids FROM (SELECT * FROM %s.metric_observations FINAL) AS mo
 LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON mo.news_id = n.news_id
 WHERE mo.company_id = %s ORDER BY mo.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("metric_observations"), r.table("news"), escape(companyID), limit)
 	var observations []domain.MetricObservation
