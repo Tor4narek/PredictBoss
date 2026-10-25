@@ -51,18 +51,19 @@ Examples: 25.61 is production, so logistics, price, and inventory apply. 45.31 i
 
 # Metric catalog
 
-The catalog is the same for every company. Use only these eight metrics with exactly these metric_id, name, and description values. Create a row only when its condition holds; otherwise leave the metric out. Revenue never creates a row.
+The catalog is the same for every company. Use these nine `type_code` values exactly as written. Create a row only when its condition holds; otherwise leave the metric out. Revenue never creates a row. Do not send `metric_id`: PostgreSQL generates an opaque UUID for each company metric row.
 
-| metric_id | name | description | Create the row when |
+| type_code | name | description | Create the row when |
 |---|---|---|---|
-| rate | ставка | Рост: заёмные деньги дороже. | hasLoans, hasLeasing, hasGuarantees, or hasFactoring is true |
-| deposit | депозит | Рост: свободные деньги доходнее. | hasDeposits is true |
-| fx_rate | курс | Рост: закупка в валюте дороже. | ftsCountryName is not empty |
-| logistics | логистика | Рост: доставка дольше или дороже. | ftsCountryName is not empty, or the activity group is trade, construction, production, or transport |
-| price | цена | Рост: входящий товар дороже. | The activity group is trade, construction, production, or energy |
-| demand | спрос | Рост: основного продукта берут больше. | mainOkvedCode is not empty |
-| inventory | запас | Рост: склад тяжелее, оборот медленнее. | The activity group is trade, construction, or production |
-| wage | зарплата | Рост: труд людей дороже. | hasPayroll is true, or an employee count range is present and is not "менее 15" |
+| ставка | ставка | Рост: заёмные деньги дороже. | hasLoans, hasLeasing, hasGuarantees, or hasFactoring is true |
+| депозит | депозит | Рост: свободные деньги доходнее. | hasDeposits is true |
+| курс | курс | Рост: закупка в валюте дороже. | ftsCountryName is not empty |
+| логистика | логистика | Рост: доставка дольше или дороже. | ftsCountryName is not empty, or the activity group is trade, construction, production, or transport |
+| цена | цена | Рост: входящий товар дороже. | The activity group is trade, construction, production, or energy |
+| спрос | спрос | Рост: основного продукта берут больше. | mainOkvedCode is not empty |
+| запас | запас | Рост: склад тяжелее, оборот медленнее. | The activity group is trade, construction, or production |
+| контрагент | контрагент | Рост: риски расчётов с контрагентами выше. | External-payment data is present. Use the exact input field name in `parameters.source_fields`; if the input does not identify external payments, do not infer this row. |
+| зарплата | зарплата | Рост: труд людей дороже. | hasPayroll is true, or an employee count range is present and is not "менее 15" |
 
 The characteristic is a short Russian phrase of 1 to 5 words that completes the catalog word for this company and reads naturally after it. It names what the word applies to, using only the input:
 
@@ -74,6 +75,7 @@ The characteristic is a short Russian phrase of 1 to 5 words that completes the 
 - спрос: the main product, for example "на автозапчасти" or "на электроэнергию".
 - запас: the stocked goods, for example "запчастей" or "материалов".
 - зарплата: the staff, for example "склада и продаж" or "станции".
+- контрагент: the counterparties involved in external payments, for example "поставщиков запчастей" or "поставщиков топлива".
 
 Derive the phrase from mainOkvedName and the other fields so that it names concrete goods, deliveries, or staff of this company. Do not use a generic word on its own, such as "персонала", "сотрудников", "ресурсов", "сырья", or "товаров"; write "топлива", "станции", or "склада и продаж" instead.
 
@@ -119,6 +121,6 @@ Fields that are null, absent, or placeholders, and information that would improv
 
 # Output
 
-Return one JSON object with company_id, profile_key, and metrics. Take profile_key only from a successful save_company_profile_and_metrics result; if the save still failed after the retry, set profile_key to null. Never construct a profile_key yourself. Each metric contains metric_id, name, description, metric_type, characteristic, unit, and `parameters` in exactly this shape: `{"source_fields": ["companyDataField"]}`. For example: `{"metric_id":"rate","name":"ставка","description":"Рост: заёмные деньги дороже.","metric_type":"score","characteristic":"лизинга","unit":"","parameters":{"source_fields":["hasLeasing"]}}`. Use an array of field-name strings, never a field-to-value object. The response must start with `{` and end with `}`. Do not wrap it in a Markdown code fence and do not add a preamble, explanation, or trailing text.
+Return one JSON object with company_id, profile_key, and metrics. Take profile_key only from a successful save_company_profile_and_metrics result; if the save still failed after the retry, set profile_key to null. Never construct a profile_key yourself. Each metric contains type_code, name, description, metric_type, characteristic, unit, and `parameters` in exactly this shape: `{"source_fields": ["companyDataField"]}`. PostgreSQL generates `metric_id`; never invent or reuse one. For example: `{"type_code":"ставка","name":"ставка","description":"Рост: заёмные деньги дороже.","metric_type":"score","characteristic":"лизинга","unit":"","parameters":{"source_fields":["hasLeasing"]}}`. Use an array of field-name strings, never a field-to-value object. The response must start with `{` and end with `}`. Do not wrap it in a Markdown code fence and do not add a preamble, explanation, or trailing text.
 
 See references/data-contract.md for the metric contract and profile storage.
