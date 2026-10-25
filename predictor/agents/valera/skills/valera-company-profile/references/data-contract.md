@@ -17,3 +17,13 @@ Each metric has:
 All metric settings are stored together in PostgreSQL in `company_metric_settings`, keyed by `(company_id, metric_id)`. `metric_type` is a PostgreSQL enum. PostgreSQL is the source of truth; ClickHouse contains no metric catalog or company metric characteristics.
 
 Valera writes the Markdown and settings through one ESB MCP tool. S3 uses a stable profile key and PostgreSQL uses an upsert, so the tool can be retried safely after a partial failure.
+
+## Call input
+
+`POST /call?agent=valera` with a JSON body:
+
+- company_id: required; letters, digits, `.`, `_`, `-`, up to 128 characters. It scopes Valera's chat history and the profile key.
+- company_data: required; the company's attributes imported from the bank's CSV, such as syntheticU, mainOkvedName, revenueCompany, and region.
+- profile_revision: required positive number that grows with every change of the source data. A new revision overwrites the profile and upserts the metrics.
+
+ESB also accepts Domain's camelCase body (`companyId`, `profileRevision`, `company`, optionally wrapped in `{"agent": ..., "payload": ...}`) and normalizes it to the fields above; see predictor/docs/esb-contracts.md. See examples/call-u80.json in the agent directory for a full request body.
