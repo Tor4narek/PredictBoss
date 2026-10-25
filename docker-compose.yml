@@ -20,6 +20,11 @@ services:
     image: clickhouse/clickhouse-server:24.8-alpine
     container_name: predictor-clickhouse
     restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-default}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
@@ -50,6 +55,106 @@ services:
     networks:
       - predictor-storage
 
+  minio:
+    image: ${MINIO_IMAGE:-dappros/minio:RELEASE.2025-09-07T16-13-09Z}
+    container_name: predictor-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-predictor-local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password-change-me}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    networks:
+      - predictor-storage
+
+  domain-postgres:
+    image: postgres:16-alpine
+    container_name: predictor-domain-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DOMAIN_POSTGRES_DB:-predictor_domain}
+      POSTGRES_USER: ${DOMAIN_POSTGRES_USER:-predictor_domain}
+      POSTGRES_PASSWORD: ${DOMAIN_POSTGRES_PASSWORD:-local-domain-password}
+    volumes:
+      - domain-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DOMAIN_POSTGRES_USER:-predictor_domain} -d ${DOMAIN_POSTGRES_DB:-predictor_domain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5433:5432"
+    networks:
+      - predictor-domain-storage
+
+  domain-api:
+    image: predictor-domain-api:local
+    build:
+      context: .
+      dockerfile: predictor/domain/src/PredictBoss.Domain.Api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DOMAIN_DATABASE_URL: Host=domain-postgres;Port=5432;Database=${DOMAIN_POSTGRES_DB:-predictor_domain};Username=${DOMAIN_POSTGRES_USER:-predictor_domain};Password=${DOMAIN_POSTGRES_PASSWORD:-local-domain-password}
+      DOMAIN_JWT_KEY: ${DOMAIN_JWT_KEY:?Set DOMAIN_JWT_KEY in .env}
+      DOMAIN_JWT_ISSUER: ${DOMAIN_JWT_ISSUER:-predictor-domain}
+      DOMAIN_JWT_AUDIENCE: ${DOMAIN_JWT_AUDIENCE:-predictor-domain}
+      DOMAIN_CSV_PATH: /data/df_Uid_data_hack.csv
+      ESB_BASE_URL: http://esb:8081
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-true}
+    volumes:
+      - ${DOMAIN_CSV_PATH:-./predictor/domain/data/df_Uid_data_hack.csv}:/data/df_Uid_data_hack.csv:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      domain-postgres:
+        condition: service_healthy
+    networks:
+      - predictor-domain-storage
+      - predictor-runtime
+
+  domain-worker:
+    image: predictor-domain-worker:local
+    build:
+      context: .
+      dockerfile: predictor/domain/src/PredictBoss.Domain.Worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      DOMAIN_DATABASE_URL: Host=domain-postgres;Port=5432;Database=${DOMAIN_POSTGRES_DB:-predictor_domain};Username=${DOMAIN_POSTGRES_USER:-predictor_domain};Password=${DOMAIN_POSTGRES_PASSWORD:-local-domain-password}
+      ESB_BASE_URL: http://esb:8081
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
+    depends_on:
+      domain-api:
+        condition: service_started
+      esb:
+        condition: service_started
+    networks:
+      - predictor-domain-storage
+      - predictor-runtime
+
+  frontend:
+    image: predictor-frontend:local
+    build:
+      context: ./predictor/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      domain-api:
+        condition: service_started
+    networks:
+      - predictor-runtime
   atlas:
     image: arigaio/atlas:latest
     container_name: predictor-atlas
@@ -57,10 +162,10 @@ services:
     working_dir: /migrations
     command: ["migrate", "apply", "--env", "local"]
     environment:
-      ATLAS_DATABASE_URL: clickhouse://clickhouse:9000/default
+      ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
-      - ./predictor/storage:/migrations:ro
+      - ./predictor/storage/clickhouse:/migrations:ro
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -128,14 +233,15 @@ services:
       AGENTS_DIR: /app/agents
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_ENDPOINT: ${S3_ENDPOINT:-}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      S3_CREATE_BUCKET: ${S3_CREATE_BUCKET:-false}
       DOMAIN_API_BASE_URL: ${DOMAIN_API_BASE_URL:-}
       DOMAIN_API_TOKEN: ${DOMAIN_API_TOKEN:-}
     ports:
@@ -144,6 +250,8 @@ services:
       postgres:
         condition: service_healthy
       clickhouse:
+        condition: service_healthy
+      minio:
         condition: service_healthy
       hermes-serezha:
         condition: service_started
@@ -160,6 +268,9 @@ services:
       - predictor-runtime
 
 networks:
+  predictor-domain-storage:
+    name: predictor-domain-storage
+    internal: true
   predictor-runtime:
     name: predictor-runtime
   predictor-storage:
@@ -167,9 +278,11 @@ networks:
     internal: true
 
 volumes:
+  domain-postgres-data:
   clickhouse-data:
   clickhouse-logs:
   postgres-data:
+  minio-data:
   hermes-serezha-data:
   hermes-saveliy-data:
   hermes-valera-data:

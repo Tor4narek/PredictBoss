@@ -1,0 +1,75 @@
+/*
+ * Токены дизайна «Альфа Пульс».
+ * Значения с пометкой [Figma] взяты из переменных Figma (UI Kit, node 13:1502).
+ * Остальные — из экранов макета или добавлены для состояний, которых в Figma нет (hover, focus).
+ */
+:root {
+  /* Цвета [Figma] */
+  --color-accent: #c62828;
+  --color-accent-subtle: #ffeded;
+  --color-text-primary: #111827;
+  --color-text-secondary: #6b7280;
+  --color-canvas: #f3f4f6;
+  --color-surface: #ffffff;
+  --color-field: #f9fafb;
+  --color-border: #e5e7eb;
+  --color-success: #047857;
+  --color-success-subtle: #ecfdf5;
+  --color-warning: #b45309;
+  --color-warning-subtle: #fffbeb;
+
+  /* Цвета с экранов: фон иконки в плашке «Инфо» */
+  --color-accent-tint: #fceae6;
+
+  /* Состояния, которых нет в Figma */
+  --color-accent-hover: #a82222;
+  --color-accent-active: #8e1c1c;
+  --color-focus-ring: rgba(198, 40, 40, 0.24);
+
+  /* Шрифт [Figma] */
+  --font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* Типографика [Figma]: размер / межстрочный интервал */
+  --text-heading-l-size: 28px;
+  --text-heading-l-line: 36px;
+  --text-heading-m-size: 18px;
+  --text-heading-m-line: 24px;
+  --text-body-m-size: 14px;
+  --text-body-m-line: 20px;
+  --text-caption-size: 12px;
+  --text-caption-line: 16px;
+  /* Мелкий текст таблиц и подписей полей на экранах */
+  --text-small-size: 13px;
+  --text-small-line: 18px;
+
+  /* Отступы: шаг 4 px */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Скругления */
+  --radius-sm: 8px; /* кнопки, поля, пункты меню [Figma] */
+  --radius-logo: 10px; /* квадрат логотипа */
+  --radius-md: 12px; /* карточки, шаги [Figma] */
+  --radius-pill: 999px; /* бейджи, чипы [Figma] */
+
+  /* Размеры элементов [Figma] */
+  --control-height-md: 40px;
+  --control-height-lg: 48px;
+  --badge-height: 28px;
+  --nav-item-height: 44px;
+  --sidebar-width: 260px;
+
+  /* Тени: в макете почти не используются, карточки отделены рамкой */
+  --shadow-focus: 0 0 0 3px var(--color-focus-ring);
+
+  --transition-fast: 120ms ease;
+}

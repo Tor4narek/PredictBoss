@@ -11,18 +11,20 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awsS3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
 const MaxProfileBytes = 2 << 20
 
 type Config struct {
-	Bucket    string
-	Region    string
-	Endpoint  string
-	AccessKey string
-	SecretKey string
-	PathStyle bool
+	Bucket       string
+	Region       string
+	Endpoint     string
+	AccessKey    string
+	SecretKey    string
+	PathStyle    bool
+	CreateBucket bool
 }
 
 type Store struct {
@@ -54,6 +56,16 @@ func NewStore(ctx context.Context, cfg Config) (*Store, error) {
 			options.BaseEndpoint = aws.String(strings.TrimRight(cfg.Endpoint, "/"))
 		}
 	})
+	if cfg.CreateBucket {
+		if _, err := client.HeadBucket(ctx, &awsS3.HeadBucketInput{Bucket: aws.String(cfg.Bucket)}); err != nil {
+			if _, createErr := client.CreateBucket(ctx, &awsS3.CreateBucketInput{Bucket: aws.String(cfg.Bucket)}); createErr != nil {
+				var apiErr smithy.APIError
+				if !errors.As(createErr, &apiErr) || apiErr.ErrorCode() != "BucketAlreadyOwnedByYou" {
+					return nil, fmt.Errorf("create S3 bucket %q: %w", cfg.Bucket, createErr)
+				}
+			}
+		}
+	}
 	return &Store{bucket: cfg.Bucket, client: client}, nil
 }
 

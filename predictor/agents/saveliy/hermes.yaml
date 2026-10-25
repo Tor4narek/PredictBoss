@@ -9,7 +9,7 @@ fallback_providers:
     base_url: https://api.alfahack-gateway26.ru/v1
     key_env: LLM_API_KEY
 platform_toolsets:
-  api_server: []
+  api_server: [mcp-esb]
 gateway:
   api_server:
     enabled: true

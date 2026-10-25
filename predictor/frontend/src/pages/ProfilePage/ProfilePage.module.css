@@ -1,0 +1,87 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* Фреймы 04 и 02: две колонки */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-6);
+}
+
+/* Фрейм 14: разделы */
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.sectionHeadings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sectionTitle {
+  font-size: var(--text-heading-m-size);
+  line-height: normal;
+  font-weight: var(--font-weight-bold);
+}
+
+.sectionDescription {
+  font-size: var(--text-small-size);
+  line-height: normal;
+  color: var(--color-text-secondary);
+}
+
+.row3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-6);
+}
+
+.divider {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.footerNote {
+  font-size: var(--text-small-size);
+  color: var(--color-text-secondary);
+}
+
+.success {
+  font-size: var(--text-small-size);
+  color: var(--color-success);
+}
+
+.footerActions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.formError {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-subtle);
+  font-size: var(--text-small-size);
+  color: var(--color-accent);
+}

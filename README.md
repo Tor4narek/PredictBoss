@@ -1,6 +1,8 @@
 # PredictBoss
 
-Каркас асинхронной новостной аналитики на Hermes, ESB, PostgreSQL, ClickHouse и S3. ESB — единственный сервис, подключённый к хранилищам: он принимает `/call` и `/news`, хранит очередь и чаты в PostgreSQL, передаёт задачи Hermes и предоставляет единый MCP endpoint для ClickHouse, S3 и настроек метрик PostgreSQL. Hermes не имеет подключений или учётных данных хранилищ.
+Каркас асинхронной новостной аналитики на .NET Domain, Hermes, ESB, PostgreSQL, ClickHouse и S3. Domain владеет профилями компаний, источниками и ссылками в отдельной PostgreSQL; ESB владеет очередью и чатами в своей PostgreSQL, передаёт задачи Hermes и предоставляет единый MCP endpoint для ClickHouse, S3 и настроек метрик. Hermes не имеет подключений или учётных данных хранилищ.
+
+Реализация Domain в ветке `egor`: [predictor/domain/README.md](predictor/domain/README.md). Она содержит .NET API, фоновый Worker, модель EF Core и миграции. Контракты Domain и ESB сверены с актуальной веткой `oleg` и описаны в [спецификации](predictor/docs/esb-contracts.md).
 
 ## Архитектура ESB: четыре слоя DDD
 
@@ -61,18 +63,19 @@ ATLAS_TOKEN=... docker compose --profile migrations run --rm atlas
 
 На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. На существующем volume примените `predictor/storage/postgres/migrations/20261025130000_konstantin_websocket.sql` вручную перед обновлением ESB. Миграция переводит `company_id` настроек метрик в UUID; существующие значения должны быть UUID.
 
-Снаружи доступен только ESB на `localhost:8081`. PostgreSQL и ClickHouse находятся во внутренней storage-сети Docker; для администрирования используйте `docker compose exec`. `/mcp` — единый endpoint ESB для агентов; отдельного S3 MCP-сервиса нет.
+Снаружи доступны ESB на `localhost:8081`, Domain API на `localhost:8080` и локальный порт PostgreSQL Domain `localhost:5433`. PostgreSQL ESB и ClickHouse находятся во внутренней storage-сети Docker; для администрирования используйте `docker compose exec`. `/mcp` — единый endpoint ESB для агентов; отдельного S3 MCP-сервиса нет.
 
 ## Контракт Domain ↔ ESB
 
 Все защищённые HTTP-вызовы и WebSocket handshake используют `Authorization: Bearer $ESB_API_KEY`. Полные примеры и схемы: [predictor/docs/esb-contracts.md](predictor/docs/esb-contracts.md).
 
 - `POST /call?agent=<тип>` ставит задачу в очередь и отвечает `202 Accepted` с `call_id`. `GET /call?agent=<тип>` с JSON-телом читает статус/отчёт; для Константина тело `{"companyId":"<uuid>"}` возвращает готовый актуальный анализ либо `202 processing`, `conversationId`, `requestId` и `streamUrl`.
-- `POST /news` принимает `{"sourceId":"<uuid>","text":"..."}` (не более 1 MiB). ESB с bearer-токеном из `DOMAIN_API_TOKEN` читает `/internal/news-links/{sourceId}`, фиксирует компанию и источник в PostgreSQL и идемпотентно запускает Серёжу.
+- Domain отправляет новость через `POST /call?agent=serezha` с идентификаторами и метаданными; ESB идемпотентно ставит Серёжу в очередь. Domain не предоставляет ESB обратный lookup.
+- `GET /call?data=facts` читает факты из ClickHouse с фильтрами и пагинацией.
 - `GET /stream?companyId=...&conversationId=...` — WebSocket только Константина. `GET /call?agent=konstantin` возвращает адрес подписки. Клиент отправляет `question` кадры; ESB отвечает `accepted`, затем `assistant_answer` или готовым `analysis_result`. Сообщения и доказательства сначала сохраняются в PostgreSQL. Параметр `afterMessageId` восстанавливает пропущенные кадры при переподключении.
 - `POST /call?agent=konstantin` запускает анализ асинхронно по `{companyId}` и возвращает `202` с `call_id`. Для получения состояния и адреса подписки вызовите `GET /call?agent=konstantin` с тем же `companyId`; вопросы отправляются только кадрами WebSocket `/stream`.
 - Повтор профиля с тем же `(companyId, profileRevision)` безопасен; более старая ревизия отвергается. Новый `sourceId` либо ревизия профиля делает прежний анализ неактуальным.
 
-Адрес Domain API настраивается через `DOMAIN_API_BASE_URL`, сервисный bearer — через `DOMAIN_API_TOKEN`. При пустых значениях приложение запускается, но `POST /news` отвечает `503`.
+Domain API использует отдельные `DOMAIN_JWT_KEY`, issuer и audience. Регистрация `/auth/register` и вход `/auth/login` возвращают JWT; маршруты `/api/v1/*` требуют этот JWT. Запросы Domain к ESB используют `ESB_API_KEY`.
 
-`GET /healthz` открыт для liveness. `/readyz`, `/call`, `/news`, `/stream` и единый `/mcp` требуют `Authorization: Bearer $ESB_API_KEY`.
+`GET /healthz` открыт для liveness. `/readyz`, `/call`, `/stream` и единый `/mcp` требуют `Authorization: Bearer $ESB_API_KEY`.

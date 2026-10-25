@@ -1,0 +1,6 @@
+.git
+**/bin
+**/obj
+.env
+docker-data
+predictor/domain/data

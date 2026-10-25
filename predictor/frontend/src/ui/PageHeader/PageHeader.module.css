@@ -1,0 +1,33 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.headings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--text-heading-l-size);
+  line-height: normal;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.description {
+  font-size: var(--text-body-m-size);
+  line-height: normal;
+  color: var(--color-text-secondary);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}

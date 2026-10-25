@@ -69,7 +69,7 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 func (r *Analytics) FactsByNews(ctx context.Context, newsID string, limit int) ([]domain.Fact, error) {
 	query := fmt.Sprintf(`SELECT f.fact_id, f.news_id, f.source_id, f.source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
 f.fact_text, f.category, f.entities, f.evidence, f.occurred_at, f.confidence
-FROM %s.facts FINAL AS f LEFT JOIN %s.news FINAL AS n ON f.news_id = n.news_id
+FROM %s.facts AS f FINAL LEFT JOIN %s.news AS n FINAL ON f.news_id = n.news_id
 WHERE f.news_id = %s ORDER BY f.inserted_at, f.fact_id LIMIT %d FORMAT JSONEachRow`, r.table("facts"), r.table("news"), escape(newsID), limit)
 	var rows []domain.Fact
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
@@ -97,7 +97,7 @@ func (r *Analytics) CompanyFacts(ctx context.Context, companyID string, limit in
 	query := fmt.Sprintf(`SELECT f.fact_id, f.news_id, f.source_id, f.source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
 f.fact_text, f.category, f.entities, f.evidence, f.occurred_at, f.confidence, m.relevance, m.confidence AS match_confidence
 FROM %s.fact_company AS m FINAL INNER JOIN %s.facts AS f FINAL ON m.fact_id = f.fact_id
-LEFT JOIN %s.news FINAL AS n ON f.news_id = n.news_id
+LEFT JOIN %s.news AS n FINAL ON f.news_id = n.news_id
 WHERE m.company_id = %s ORDER BY m.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("fact_company"), r.table("facts"), r.table("news"), escape(companyID), limit)
 	var rows []domain.CompanyFact
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
@@ -222,8 +222,8 @@ func (r *Analytics) ConsultantContext(ctx context.Context, companyID string, lim
 ifNull(n.source_id, mo.news_id) AS source_id, ifNull(n.source_url, '') AS source_url,
 ifNull(n.material_kind, 'external_news') AS material_kind,
 mo.value, mo.probability, toString(mo.period_from) AS period_from, toString(mo.period_to) AS period_to,
-mo.source_fact_ids FROM %s.metric_observations FINAL AS mo
-LEFT JOIN %s.news FINAL AS n ON mo.news_id = n.news_id
+mo.source_fact_ids FROM %s.metric_observations AS mo FINAL
+LEFT JOIN %s.news AS n FINAL ON mo.news_id = n.news_id
 WHERE mo.company_id = %s ORDER BY mo.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("metric_observations"), r.table("news"), escape(companyID), limit)
 	var observations []domain.MetricObservation
 	if err := r.client.queryRows(ctx, query, &observations); err != nil {

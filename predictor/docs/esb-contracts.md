@@ -1,6 +1,6 @@
 # Контракт Domain ↔ ESB
 
-Уточнённая реализация контракта от 25 октября 2026 года. Внешний источник спецификации задаёт бизнес-поля; ниже зафиксированы маршруты ESB и двусторонний WebSocket-диалог Константина.
+Спецификация Domain и ESB. Контракт ESB синхронизирован с актуальной веткой `oleg`; детали пользовательской аутентификации относятся к Domain API.
 
 ## Общие правила
 
@@ -10,6 +10,41 @@
 - ESB — единственный компонент с credentials и подключениями к PostgreSQL, ClickHouse и S3. Hermes использует хранилища только через MCP ESB.
 - PostgreSQL хранит очередь, чаты, профильные ревизии, реестр входящих источников и сохранённые события Константина. ClickHouse хранит новости, универсальные факты, связи факт–компания, наблюдения и агрегаты. S3 хранит Markdown-профили.
 - Время передаётся в ISO 8601 с часовым поясом. Неизвестные значения полей профиля передаются как `null`.
+
+## Пользовательская регистрация и вход — Domain API
+
+Регистрация и вход выполняются в Domain API. Пароль хранится только в виде стойкого хеша; API выдаёт JWT, подписанный `DOMAIN_JWT_KEY`. `sub` токена — стабильный subject пользователя. Токен действует один час, а `iss` и `aud` сверяются с `DOMAIN_JWT_ISSUER` и `DOMAIN_JWT_AUDIENCE`.
+
+`POST /auth/register` создаёт пользователя и сразу возвращает токен:
+
+```json
+{
+  "login": "director@example.com",
+  "password": "at-least-12-characters",
+  "displayName": "Иван Иванов"
+}
+```
+
+`displayName` можно опустить или передать `null`. Логин — 3–128 символов без пробелов, сравнение без учёта регистра. Пароль — 12–256 символов. Повтор логина отвечает `409 login_already_exists`, неверные поля — `400`, ограничение частоты — `429`.
+
+`POST /auth/login` принимает `login` и `password` и возвращает тот же формат ответа. Для неверного логина или пароля возвращается `401` без уточнения причины.
+
+Формат ответа обеих операций:
+
+```json
+{
+  "access_token": "<JWT>",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "user": {
+    "userId": "11111111-1111-4111-8111-111111111111",
+    "login": "director@example.com",
+    "displayName": "Иван Иванов"
+  }
+}
+```
+
+Публичные маршруты Domain `/api/v1/*` требуют `Authorization: Bearer <JWT>`. Компания принадлежит пользователю из `sub`; запросы к чужой компании возвращают `404`. На регистрацию и вход действует ограничение 10 запросов в минуту с одного IP. ESB не участвует в пользовательском входе и не получает пароль или JWT пользователя.
 
 ## Профиль компании — Валере
 
@@ -23,17 +58,32 @@
     "syntheticU": "U_80",
     "orgType": "КОММ_ОРГ",
     "ownershipForm": "ЧАСТНАЯ СОБСТВЕННОСТЬ",
+    "companyAgeGradation": "16-25",
+    "developmentStage": "Оптимизация",
     "mainOkvedCode": "25.61",
     "mainOkvedName": "Обработка металлов и нанесение покрытий на металлы",
     "negativeMark": false,
+    "workersFnsGradation": "16-100",
     "workersSparkGradation": null,
+    "clientType": "CLOSE_CLIENT",
+    "hasRko": false,
+    "hasGuarantees": false,
+    "hasLoans": false,
     "hasLeasing": true,
+    "hasDeposits": false,
+    "hasPayroll": false,
+    "ftsFlag": false,
+    "ftsCountryName": null,
+    "hasFactoring": false,
     "revenueCompany": 1423218135,
+    "groupId": "group_104611_sb",
     "city": "г. Екатеринбург",
     "region": "Свердловская область"
   }
 }
 ```
+
+Domain отправляет все перечисленные поля `company`; неизвестные значения передаются как `null`. Это соответствует единому примеру запроса Валеры в `predictor/agents/valera/examples/call-u80.json`, преобразованному из полей CSV в camelCase.
 
 Ответ `202 Accepted`:
 
@@ -52,32 +102,52 @@
 
 ## Новость или аналитика Альфа-Банка — Серёже
 
-`POST /news` принимает очищенный текст материала (максимум 1 MiB UTF-8):
+Domain передаёт новость напрямую общим асинхронным маршрутом `POST /call?agent=serezha`; отдельного `POST /news` нет. Поля передаются в JSON-теле:
 
 ```json
 {
-  "sourceId": "22222222-2222-4222-8222-222222222222",
-  "text": "Очищенный текст новости или аналитического материала."
+  "news_id": "22222222-2222-4222-8222-222222222222",
+  "source_id": "22222222-2222-4222-8222-222222222222",
+  "company_id": "11111111-1111-4111-8111-111111111111",
+  "source_url": "https://example.org/news/market-change",
+  "material_kind": "external_news",
+  "media_type": "text/html",
+  "title": "Изменение рынка",
+  "published_at": "2026-10-25T09:00:00Z",
+  "news_text": "Очищенный текст новости или аналитического материала."
 }
 ```
 
-ESB вызывает Domain `GET {DOMAIN_API_BASE_URL}/internal/news-links/{sourceId}` с `Authorization: Bearer $DOMAIN_API_TOKEN`. Domain возвращает:
+`source_id` — UUID записи `news_links.id`; `news_id` задаёт чат Серёжи и идентификатор новости в ClickHouse. `company_id` можно опустить для общего, не связанного с компанией материала. Если он передан, ESB до постановки Серёжи в очередь регистрирует источник в PostgreSQL; нужны `source_url`, `material_kind` (`external_news` или `alpha_analysis`) и `media_type` (`text/html` или `application/pdf`). Текст ограничен 1 MiB UTF-8. Успешный ответ — `202 Accepted` с `call_id`. Повтор `source_id` идемпотентен; если запрос пытается связать этот ID с другой компанией, ESB отвечает `409 source_id_conflict`.
+
+Domain Worker отправляет один такой запрос с `Authorization: Bearer <ESB_API_KEY>`. В текущей модели Domain `news_id` и `source_id` имеют значение `news_links.id`; `company_id`, каноническая ссылка, тип материала и метаданные берутся из записи ссылки и результата парсинга. Поэтому ESB не делает обратный вызов Domain за метаданными.
+
+Серёжа сохраняет исходный текст и универсальные факты в ClickHouse. Савелий может отдельно связать факты с компаниями через MCP ESB.
+
+## Чтение фактов
+
+`GET /call?data=facts` читает факты из ClickHouse. Фильтры передаются JSON-телом и могут сочетаться:
 
 ```json
 {
-  "sourceId": "22222222-2222-4222-8222-222222222222",
   "companyId": "11111111-1111-4111-8111-111111111111",
-  "canonicalUrl": "https://alfabank.ru/example/analysis.pdf",
-  "materialKind": "alpha_analysis",
-  "mediaType": "application/pdf",
-  "title": "Анализ рынка",
-  "publishedAt": "2026-10-25T09:00:00Z"
+  "sourceId": "22222222-2222-4222-8222-222222222222",
+  "category": "market",
+  "entity": "manufacturing",
+  "materialKind": "external_news",
+  "periodFrom": "2026-10-01T00:00:00Z",
+  "periodTo": "2026-10-26T00:00:00Z",
+  "limit": 100
 }
 ```
 
-`materialKind`: `external_news` или `alpha_analysis`; `mediaType`: `application/pdf` или `text/html`. Ответ `POST /news` — `202 Accepted` с `status`, `sourceId` и `callId`. Повтор `sourceId` не создаёт новую запись источника или второй вызов при идентичном запросе. Неизвестный ID даёт `404`.
+`companyId` возвращает факты, уже связанные с этой компанией, вместе с релевантностью связи. `newsId` и `sourceId` выбирают материалы; если `companyId` не передан, возвращаются общие факты без данных о компаниях. Можно дополнительно фильтровать по `category`, `entity`, `materialKind` и периоду публикации (если дата публикации неизвестна — по времени загрузки новости). Период задаётся полуинтервалом `[periodFrom, periodTo)` и ограничен 90 днями. Чтобы не запускать широкий полный просмотр таблицы, требуется `companyId`, `newsId`, `sourceId` или обе границы периода.
 
-ESB регистрирует источник и компанию в PostgreSQL до запуска Серёжи. Серёжа сохраняет текст и универсальные факты в ClickHouse с типом материала, ссылкой и `sourceId`. Настройки Domain API задаются в `DOMAIN_API_BASE_URL` и `DOMAIN_API_TOKEN`.
+Размер страницы по умолчанию — 100, максимум — 100 фактов. Ответ содержит `facts`, `hasMore` и при наличии следующей страницы `nextBeforeFactId`. Для продолжения передайте тот же набор фильтров и `beforeFactId`, равный `nextBeforeFactId`:
+
+```json
+{"data":"facts","facts":[],"hasMore":true,"nextBeforeFactId":"..."}
+```
 
 ## Получить анализ / подписаться на поток Константина
 
@@ -95,9 +165,15 @@ ESB регистрирует источник и компанию в PostgreSQL 
   "companyId": "11111111-1111-4111-8111-111111111111",
   "conversationId": "33333333-3333-4333-8333-333333333333",
   "requestId": "66666666-6666-4666-8666-666666666666",
-  "streamUrl": "/stream?companyId=...&conversationId=...&requestId=..."
+  "streamUrl": "/stream?companyId=...&conversationId=...&requestId=...",
+  "history": [],
+  "historyHasMore": false,
+  "historyFrom": "2026-09-25T00:00:00Z",
+  "historyTo": "2026-10-25T00:00:00Z"
 }
 ```
+
+Оба ответа (`200` и `202`) также содержат страницу истории переписки из PostgreSQL: сообщения пользователя и ответы Константина для этой компании. По умолчанию возвращаются последние 30 дней и не более 100 сообщений. Можно задать `historyFrom` и `historyTo` в RFC 3339; один период не может превышать 90 дней. При `historyHasMore: true` запросите следующую страницу, передав те же границы периода и `beforeMessageId`, равный `historyNextBeforeMessageId` из ответа. Так клиент загружает старые сообщения порциями, не сканируя всю переписку за один запрос.
 
 Клиент подписывается WebSocket-соединением на маршрут `/stream`, используя `streamUrl`. Маршрут зарезервирован только за Константином и не принимает `agent` в query. Уведомление появляется после сохранения полного текста и доказательств в PostgreSQL.
 
@@ -148,3 +224,5 @@ ESB регистрирует источник и компанию в PostgreSQL 
 ## Ошибки
 
 Ошибки HTTP возвращаются как JSON `{ "error": "stable_code" }`. Основные коды: `unauthorized`, `invalid_news_request`, `news_source_not_found`, `analysis_not_ready`, `idempotency_key_conflict`. Все ответы и сообщения чата принадлежат ESB; прямое подключение Domain к PostgreSQL запрещено границами сервиса.
+
+Внутренний `GET /internal/news-links/{sourceId}` удалён: текущая версия ESB не делает обратный вызов в Domain, поскольку Domain передаёт все метаданные новости в `POST /call?agent=serezha`.
