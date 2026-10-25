@@ -1,0 +1,30 @@
+{
+  "company_id": "11111111-1111-4111-8111-111111111111",
+  "profile_revision": 1,
+  "company_data": {
+    "syntheticU": "U_80",
+    "orgType": "КОММ_ОРГ",
+    "ownershipForm": "ЧАСТНАЯ СОБСТВЕННОСТЬ",
+    "companyAgeGradation": "16-25",
+    "developmentStage": "Оптимизация",
+    "mainOkvedCode": "25.61",
+    "mainOkvedName": "Обработка металлов и нанесение покрытий на металлы",
+    "negativeMark": false,
+    "workersFnsGradation": "16-100",
+    "workersSparkGradation": null,
+    "clientType": "CLOSE_CLIENT",
+    "hasRko": false,
+    "hasGuarantees": false,
+    "hasLoans": false,
+    "hasLeasing": true,
+    "hasDeposits": false,
+    "hasPayroll": false,
+    "ftsFlag": false,
+    "ftsCountryName": null,
+    "hasFactoring": false,
+    "revenueCompany": 1423218135,
+    "groupId": "group_104611_sb",
+    "city": "г. Екатеринбург",
+    "region": "Свердловская область"
+  }
+}
