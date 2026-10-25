@@ -147,4 +147,14 @@ LIMIT $2`, companyID, limit)
 	return metrics, rows.Err()
 }
 
+func (r *MetricSettings) CompanyIDForMetric(ctx context.Context, metricID string) (string, error) {
+	var companyID string
+	err := r.pool.QueryRow(ctx, `SELECT m.company_id::text FROM company_metric_settings m
+WHERE m.metric_id = $1::uuid AND COALESCE((SELECT profile_synced FROM company_profile_state WHERE company_id = m.company_id), TRUE)`, metricID).Scan(&companyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrNotFound
+	}
+	return companyID, err
+}
+
 var _ domain.CompanyMetricSettingsRepository = (*MetricSettings)(nil)

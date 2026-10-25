@@ -23,12 +23,23 @@ const (
 )
 
 type Agent struct {
-	Type           AgentType
-	ScopeField     string
-	RequiredFields []string
-	MaxHistory     int
-	RuntimeURL     string
-	Instructions   string
+	Type                 AgentType
+	ScopeField           string
+	RequiredFields       []string
+	MaxHistory           int
+	HistoryRetentionDays int
+	ContextPolicy        ContextPolicy
+	RuntimeURL           string
+	Instructions         string
+}
+
+// ContextPolicy controls model context compaction. MaxHistory remains the
+// maximum number of recent PostgreSQL messages sent to Hermes.
+type ContextPolicy struct {
+	CompressAfterMessages int
+	BatchMessages         int
+	SummaryMaxBytes       int
+	SummaryStorage        string
 }
 
 type CallStatus string
@@ -70,6 +81,23 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+type ContextMessage struct {
+	Message
+	CallID    string    `json:"call_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ContextWindow struct {
+	ConversationID          string
+	Summary                 string
+	SummaryThroughCallID    string
+	SummaryThroughCreatedAt time.Time
+	Recent                  []Message
+	Pending                 []ContextMessage
+	PendingThroughCallID    string
+	PendingThroughCreatedAt time.Time
+}
+
 type News struct {
 	ID           string
 	SourceID     string
@@ -80,6 +108,7 @@ type News struct {
 	Title        string
 	PublishedAt  *string
 	Text         string
+	TextHash     string
 }
 
 type Fact struct {
@@ -179,6 +208,7 @@ type MetricObservation struct {
 }
 
 type MetricTotal struct {
+	CompanyID        string       `json:"company_id"`
 	MetricID         string       `json:"metric_id"`
 	PeriodFrom       string       `json:"period_from"`
 	PeriodTo         string       `json:"period_to"`
@@ -308,7 +338,7 @@ type CallRepository interface {
 	SetStatus(context.Context, string, CallStatus, string) error
 	Complete(context.Context, string, string) error
 	CompleteValera(context.Context, string, string, string, int64) (CompanyProfileSyncState, bool, error)
-	RetryProfileSave(context.Context, string, string, int64) (bool, error)
+	RetryProfileSave(context.Context, string, string, int64, int) (bool, error)
 	Fail(context.Context, string, string) error
 	Recover(context.Context) error
 	ConversationID(context.Context, AgentType, string) (string, error)
@@ -321,6 +351,22 @@ type CallRepository interface {
 	RecordSource(context.Context, CompanySource) (bool, error)
 	SourceRevision(context.Context, string) (int64, error)
 	ProfileRevision(context.Context, string) (int64, error)
+}
+
+// ContextRepository stores compacted summaries separately from the complete
+// message history. Updates use a compare-and-swap cursor to avoid lost writes.
+type ContextRepository interface {
+	LoadContextWindow(context.Context, string, int, int, int) (ContextWindow, error)
+	SaveContextSummary(context.Context, string, string, time.Time, string, time.Time, string) (bool, error)
+	PruneHistory(context.Context, AgentType, int) error
+}
+
+type NewsFinalizer interface {
+	FinalizeNews(context.Context, News) (string, error)
+}
+
+type NewsCallCompleter interface {
+	CompleteNews(context.Context, string, string, string) error
 }
 
 type AgentRuntime interface {
@@ -336,11 +382,13 @@ type RunState struct {
 
 type AnalyticsRepository interface {
 	SaveNewsAndFacts(context.Context, News, []Fact) ([]string, error)
+	FinalizeNews(context.Context, News, string) error
 	FactsByNews(context.Context, string, int) ([]Fact, error)
 	QueryFacts(context.Context, FactQuery) ([]FactRecord, error)
 	SaveFactCompanyLinks(context.Context, string, []FactCompanyLink) error
 	CompanyFacts(context.Context, string, int) ([]CompanyFact, error)
 	SaveMetricObservations(context.Context, string, []MetricObservation) error
+	SaveMetricTotal(context.Context, MetricTotal) error
 	SaveCompanyAnalysis(context.Context, CompanyAnalysis) error
 	CalculateMetricTotal(context.Context, string, string, string) (MetricTotal, error)
 	CompanyReport(context.Context, string, string, string) (CompanyReport, error)
@@ -353,6 +401,7 @@ type CompanyMetricSettingsRepository interface {
 	ReplaceCompanyMetricsAtRevision(context.Context, string, int64, string, []CompanyMetric) error
 	MarkCompanyProfileSynced(context.Context, string, int64, string) error
 	CompanyMetrics(context.Context, string, int) ([]CompanyMetric, error)
+	CompanyIDForMetric(context.Context, string) (string, error)
 }
 
 type ProfileRepository interface {

@@ -25,3 +25,11 @@ trap cleanup EXIT
 
 cd predictor/tests
 ESB_E2E_BASE_URL="http://127.0.0.1:18081" go test -count=1 -v ./...
+
+test_news_id="55555555-5555-4555-8555-555555555555"
+"${compose[@]}" exec --no-TTY clickhouse clickhouse-client --user predictor --password test-clickhouse-password --database default --query \
+  "SELECT throwIf(count() != 0, 'raw source text remains after confirmed completion') FROM news_content FINAL WHERE news_id = '${test_news_id}'"
+"${compose[@]}" exec --no-TTY clickhouse clickhouse-client --user predictor --password test-clickhouse-password --database default --query \
+  "SELECT throwIf(count() = 0, 'news metadata was removed during text cleanup') FROM news FINAL WHERE news_id = '${test_news_id}'"
+"${compose[@]}" exec --no-TTY clickhouse clickhouse-client --user predictor --password test-clickhouse-password --database default --query \
+  "SELECT throwIf(count() = 0, 'facts were removed during text cleanup') FROM facts FINAL WHERE news_id = '${test_news_id}'"

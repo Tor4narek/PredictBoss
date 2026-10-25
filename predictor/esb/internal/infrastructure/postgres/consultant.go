@@ -96,7 +96,7 @@ WHERE c.agent_type = 'konstantin' AND c.request_json->>'request_id' = $1 LIMIT 1
 }
 
 func (r *Calls) EventsAfter(ctx context.Context, companyID, conversationID, afterMessageID string, limit int) ([]domain.ConsultantEvent, error) {
-	if limit < 1 || limit > 500 {
+	if limit < 1 || limit > 10000 {
 		limit = 100
 	}
 	var query string

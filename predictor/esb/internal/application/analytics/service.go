@@ -2,6 +2,8 @@ package analytics
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -17,15 +19,25 @@ var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[
 
 var ErrInvalidAnalyticsInput = errors.New("invalid analytics input")
 
-const (
-	defaultFactsLimit = 100
-	maxFactsLimit     = 100
-	maxFactsPeriod    = 90 * 24 * time.Hour
-)
+type Limits struct {
+	FactsDefaultPageSize        int
+	FactsMaxPageSize            int
+	FactsMaxPeriod              time.Duration
+	CompanyItemsDefaultPageSize int
+	CompanyItemsMaxPageSize     int
+	ConsultantDefaultPageSize   int
+	ConsultantMaxPageSize       int
+	CompanyReportDefaultWindow  time.Duration
+	MaxFactsPerNews             int
+	MaxFactCompanyLinks         int
+	MaxMetricObservations       int
+	MaxCompanyMetrics           int
+}
 
 type Service struct {
 	repository domain.AnalyticsRepository
 	metrics    domain.CompanyMetricSettingsRepository
+	limits     Limits
 }
 
 type FactsRequest struct {
@@ -41,8 +53,8 @@ type FactsRequest struct {
 	Limit        int
 }
 
-func NewService(repository domain.AnalyticsRepository, metrics domain.CompanyMetricSettingsRepository) *Service {
-	return &Service{repository: repository, metrics: metrics}
+func NewService(repository domain.AnalyticsRepository, metrics domain.CompanyMetricSettingsRepository, limits Limits) *Service {
+	return &Service{repository: repository, metrics: metrics, limits: limits}
 }
 
 func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts []domain.Fact) ([]string, error) {
@@ -50,7 +62,7 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 	news.SourceID = strings.TrimSpace(news.SourceID)
 	news.SourceURL = strings.TrimSpace(news.SourceURL)
 	news.Text = strings.TrimSpace(news.Text)
-	if !idPattern.MatchString(news.ID) || news.SourceID == "" || news.Text == "" || len(facts) > 500 {
+	if !idPattern.MatchString(news.ID) || news.SourceID == "" || news.Text == "" || len(facts) > s.limits.MaxFactsPerNews {
 		return nil, ErrInvalidAnalyticsInput
 	}
 	if news.CompanyID != "" && !uuidPattern.MatchString(news.CompanyID) {
@@ -87,11 +99,33 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 	return s.repository.SaveNewsAndFacts(ctx, news, facts)
 }
 
+// FinalizeNews removes source text only after ClickHouse confirms the
+// processing marker, source metadata, and complete fact set.
+func (s *Service) FinalizeNews(ctx context.Context, news domain.News) (string, error) {
+	news.ID = strings.TrimSpace(news.ID)
+	news.SourceID = strings.TrimSpace(news.SourceID)
+	if !idPattern.MatchString(news.ID) || news.SourceID == "" {
+		return "", ErrInvalidAnalyticsInput
+	}
+	hash := strings.TrimSpace(news.TextHash)
+	if hash == "" {
+		if news.Text == "" {
+			return "", ErrInvalidAnalyticsInput
+		}
+		digest := sha256.Sum256([]byte(news.Text))
+		hash = hex.EncodeToString(digest[:])
+	}
+	if err := s.repository.FinalizeNews(ctx, news, hash); err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
 func (s *Service) FactsByNews(ctx context.Context, newsID string, limit int) ([]domain.Fact, error) {
 	if !idPattern.MatchString(strings.TrimSpace(newsID)) {
 		return nil, ErrInvalidAnalyticsInput
 	}
-	return s.repository.FactsByNews(ctx, newsID, clampLimit(limit))
+	return s.repository.FactsByNews(ctx, newsID, clampLimit(limit, s.limits.FactsDefaultPageSize, s.limits.FactsMaxPageSize))
 }
 
 func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.FactPage, error) {
@@ -101,7 +135,7 @@ func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.
 		Category: strings.TrimSpace(request.Category), Entity: strings.TrimSpace(request.Entity),
 		BeforeFactID: strings.ToLower(strings.TrimSpace(request.BeforeFactID)), Limit: request.Limit,
 	}
-	if filter.Limit < 0 || filter.Limit > maxFactsLimit ||
+	if filter.Limit < 0 || filter.Limit > s.limits.FactsMaxPageSize ||
 		(filter.CompanyID != "" && !uuidPattern.MatchString(filter.CompanyID)) ||
 		(filter.NewsID != "" && !idPattern.MatchString(filter.NewsID)) ||
 		(filter.SourceID != "" && !idPattern.MatchString(filter.SourceID)) ||
@@ -111,7 +145,7 @@ func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.
 		return domain.FactPage{}, ErrInvalidAnalyticsInput
 	}
 	if filter.Limit == 0 {
-		filter.Limit = defaultFactsLimit
+		filter.Limit = s.limits.FactsDefaultPageSize
 	}
 	periodFrom, periodTo := strings.TrimSpace(request.PeriodFrom), strings.TrimSpace(request.PeriodTo)
 	if (periodFrom == "") != (periodTo == "") {
@@ -123,7 +157,7 @@ func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.
 			return domain.FactPage{}, ErrInvalidAnalyticsInput
 		}
 		to, err := time.Parse(time.RFC3339Nano, periodTo)
-		if err != nil || !from.Before(to) || to.Sub(from) > maxFactsPeriod {
+		if err != nil || !from.Before(to) || to.Sub(from) > s.limits.FactsMaxPeriod {
 			return domain.FactPage{}, ErrInvalidAnalyticsInput
 		}
 		filter.PeriodFrom, filter.PeriodTo = &from, &to
@@ -152,7 +186,7 @@ func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.
 func (s *Service) SaveFactCompanyLinks(ctx context.Context, companyID string, links []domain.FactCompanyLink) error {
 	companyID = strings.TrimSpace(companyID)
 	companyID = strings.ToLower(companyID)
-	if !idPattern.MatchString(companyID) || len(links) > 1000 {
+	if !idPattern.MatchString(companyID) || len(links) > s.limits.MaxFactCompanyLinks {
 		return ErrInvalidAnalyticsInput
 	}
 	for i := range links {
@@ -169,12 +203,12 @@ func (s *Service) CompanyFacts(ctx context.Context, companyID string, limit int)
 	if !idPattern.MatchString(strings.TrimSpace(companyID)) {
 		return nil, ErrInvalidAnalyticsInput
 	}
-	return s.repository.CompanyFacts(ctx, companyID, clampLimit(limit))
+	return s.repository.CompanyFacts(ctx, companyID, clampLimit(limit, s.limits.CompanyItemsDefaultPageSize, s.limits.CompanyItemsMaxPageSize))
 }
 
 func (s *Service) SaveMetricObservations(ctx context.Context, companyID string, observations []domain.MetricObservation) error {
 	companyID = strings.TrimSpace(companyID)
-	if !idPattern.MatchString(companyID) || len(observations) > 1000 {
+	if !idPattern.MatchString(companyID) || len(observations) > s.limits.MaxMetricObservations {
 		return ErrInvalidAnalyticsInput
 	}
 	for i := range observations {
@@ -248,10 +282,24 @@ func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to s
 		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
 	fromText, toText := fromTime.Format("2006-01-02 15:04:05"), toTime.Format("2006-01-02 15:04:05")
-	if toTime.Before(fromTime) {
-		return emptyMetricTotal(metricID, fromText, toText), nil
+	companyID, err := s.metrics.CompanyIDForMetric(ctx, metricID)
+	if err != nil {
+		return domain.MetricTotal{}, err
 	}
-	return s.repository.CalculateMetricTotal(ctx, metricID, fromText, toText)
+	var total domain.MetricTotal
+	if toTime.Before(fromTime) {
+		total = emptyMetricTotal(metricID, fromText, toText)
+	} else {
+		total, err = s.repository.CalculateMetricTotal(ctx, metricID, fromText, toText)
+		if err != nil {
+			return domain.MetricTotal{}, err
+		}
+	}
+	total.CompanyID = companyID
+	if err := s.repository.SaveMetricTotal(ctx, total); err != nil {
+		return domain.MetricTotal{}, err
+	}
+	return total, nil
 }
 
 func (s *Service) CalculateAllMetricTotals(ctx context.Context, companyID, from, to string) (domain.CompanyMetricTotals, error) {
@@ -263,7 +311,7 @@ func (s *Service) CalculateAllMetricTotals(ctx context.Context, companyID, from,
 	if err != nil {
 		return domain.CompanyMetricTotals{}, ErrInvalidAnalyticsInput
 	}
-	metrics, err := s.metrics.CompanyMetrics(ctx, companyID, 500)
+	metrics, err := s.metrics.CompanyMetrics(ctx, companyID, s.limits.MaxCompanyMetrics)
 	if err != nil {
 		return domain.CompanyMetricTotals{}, err
 	}
@@ -277,6 +325,10 @@ func (s *Service) CalculateAllMetricTotals(ctx context.Context, companyID, from,
 			if err != nil {
 				return domain.CompanyMetricTotals{}, err
 			}
+		}
+		total.CompanyID = companyID
+		if err := s.repository.SaveMetricTotal(ctx, total); err != nil {
+			return domain.CompanyMetricTotals{}, err
 		}
 		result.Items = append(result.Items, domain.CompanyMetricTotal{MetricID: metric.ID, TypeCode: metric.TypeCode,
 			Characteristic: metric.Characteristic, TotalValue: total.TotalValue, TotalProbability: total.TotalProbability,
@@ -295,7 +347,7 @@ func (s *Service) CompanyReport(ctx context.Context, companyID, from, to string)
 	}
 	if from == "" && to == "" {
 		end := time.Now().UTC()
-		from = end.AddDate(0, 0, -30).Format("2006-01-02")
+		from = end.Add(-s.limits.CompanyReportDefaultWindow).Format("2006-01-02")
 		to = end.Format("2006-01-02")
 	}
 	if _, err := dateRange(from, to); err != nil {
@@ -305,7 +357,7 @@ func (s *Service) CompanyReport(ctx context.Context, companyID, from, to string)
 	if err != nil {
 		return domain.CompanyReport{}, err
 	}
-	report.Metrics, err = s.metrics.CompanyMetrics(ctx, companyID, 500)
+	report.Metrics, err = s.metrics.CompanyMetrics(ctx, companyID, s.limits.MaxCompanyMetrics)
 	if err != nil {
 		return domain.CompanyReport{}, err
 	}
@@ -323,12 +375,7 @@ func (s *Service) ConsultantContext(ctx context.Context, companyID string, limit
 	if !uuidPattern.MatchString(companyID) {
 		return domain.ConsultantContext{}, ErrInvalidAnalyticsInput
 	}
-	if limit < 1 {
-		limit = 100
-	}
-	if limit > 500 {
-		limit = 500
-	}
+	limit = clampLimit(limit, s.limits.ConsultantDefaultPageSize, s.limits.ConsultantMaxPageSize)
 	result, err := s.repository.ConsultantContext(ctx, companyID, limit)
 	if err != nil {
 		return domain.ConsultantContext{}, err
@@ -385,7 +432,7 @@ func dateRange(from, to string) (time.Time, error) {
 }
 
 func (s *Service) knownMetricIDs(ctx context.Context, companyID string) (map[string]struct{}, error) {
-	metrics, err := s.metrics.CompanyMetrics(ctx, companyID, 500)
+	metrics, err := s.metrics.CompanyMetrics(ctx, companyID, s.limits.MaxCompanyMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -400,12 +447,12 @@ func probability(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }
 
-func clampLimit(value int) int {
+func clampLimit(value, defaultValue, maxValue int) int {
 	if value < 1 {
-		return 100
+		return defaultValue
 	}
-	if value > 500 {
-		return 500
+	if value > maxValue {
+		return maxValue
 	}
 	return value
 }

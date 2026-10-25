@@ -23,7 +23,7 @@ func (h *callHandler) postCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query parameter agent is required")
 		return
 	}
-	input, err := decodeJSONBody(w, r)
+	input, err := decodeJSONBody(w, r, h.maxJSONBodyBytes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json_body")
 		return
@@ -170,7 +170,7 @@ func (h *callHandler) getCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var query getCallRequest
-	if err := decodeJSONInto(w, r, &query); err != nil {
+	if err := decodeJSONInto(w, r, &query, h.maxJSONBodyBytes); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json_body")
 		return
 	}

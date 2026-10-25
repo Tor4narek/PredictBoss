@@ -6,6 +6,7 @@
 
 - [Архитектура и границы компонентов](predictor/docs/architecture.md)
 - [Подключение Domain к ESB](predictor/docs/integration.md)
+- [Конфигурация окружения](predictor/docs/configuration.md) — переменные, defaults, диапазоны и назначение.
 - [Контракты HTTP, WebSocket и MCP](predictor/docs/api/README.md)
 - [Спецификация E2E](predictor/tests/SPEC.md)
 
@@ -15,7 +16,7 @@ OpenAPI, AsyncAPI и каталог MCP генерируются из Go-код�
 
 Нужны Docker Compose и Go 1.24. Скопируйте `.env.example` в `.env` и задайте локальные секреты. URL Hermes внутри Compose уже настроены:
 
-Для новой базы примените Atlas baseline-миграции перед запуском ESB:
+Для пустой базы примените единственную init-миграцию PostgreSQL через Atlas и init-схему ClickHouse перед запуском ESB:
 
 ```sh
 cp .env.example .env
@@ -26,7 +27,7 @@ docker compose --profile migrations run --rm atlas-clickhouse
 docker compose up --build
 ```
 
-Миграции — начальные схемы `CREATE` в `predictor/storage/postgres/` и `predictor/storage/clickhouse/`. Это новая baseline-история; не применяйте её поверх существующей базы со старой историей Atlas без сверки версии и текущей схемы. Существующие данные и volumes автоматически не удаляются.
+В каждом каталоге `predictor/storage/{postgres,clickhouse}/migrations/` хранится одна версия `*_init.sql` с конечной схемой, состоящей из `CREATE`. Это исходное состояние проекта: миграций для обновления существующих баз нет. Применяйте init только к пустой базе; существующие данные и volumes автоматически не удаляются.
 
 ## Разработка
 
@@ -38,4 +39,4 @@ make docs-check  # проверить, что контракты не устар
 ./predictor/tests/run-e2e.sh
 ```
 
-Роли агентов, `SKILL.md` и конфигурации Hermes находятся в `predictor/agents/`. Ручные архитектурные решения поддерживаются в `predictor/docs/`; детали протокола берутся из сгенерированных спецификаций.
+Роли агентов, `SKILL.md` и конфигурации Hermes находятся в `predictor/agents/`. Compose автоматически читает `.env`; прямой запуск Go-приложения получает только экспортированные переменные и сам `.env` не загружает. Полный список и инструкция — в [справочнике конфигурации](predictor/docs/configuration.md). Ручные архитектурные решения поддерживаются в `predictor/docs/`; детали протокола берутся из сгенерированных спецификаций.

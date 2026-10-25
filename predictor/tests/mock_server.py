@@ -39,6 +39,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"status": "ok"})
             return
 
+        if path == "/test/runs":
+            with LOCK:
+                runs = [dict(run_id=run_id, **run) for run_id, run in RUNS.items()]
+            self.send_json(200, {"runs": runs})
+            return
+
         if path.startswith("/v1/runs/"):
             if not self.authorized("test-hermes-api-key"):
                 self.send_json(401, {"error": "unauthorized"})
@@ -78,7 +84,9 @@ class Handler(BaseHTTPRequestHandler):
             RUN_SEQUENCE += 1
             run_id = "e2e-run-%d" % RUN_SEQUENCE
             kind = agent_input.get("request_kind")
-            if kind in ("analysis", "question"):
+            if "compact historical conversation context" in request.get("instructions", ""):
+                output = "## Facts and identifiers\n- Preserve the conversation's known facts and identifiers.\n\n## Decisions\n- None\n\n## Open tasks\n- None\n\n## Constraints\n- Retain stated restrictions."
+            elif kind in ("analysis", "question"):
                 if kind == "analysis":
                     text = "E2E analysis: market changes affect the company."
                 else:
@@ -92,7 +100,12 @@ class Handler(BaseHTTPRequestHandler):
                 })
             else:
                 output = json.dumps({"status": "completed", "mock": True})
-            RUNS[run_id] = {"output": output, "input": agent_input}
+            RUNS[run_id] = {
+                "output": output,
+                "input": agent_input,
+                "instructions": request.get("instructions", ""),
+                "conversation_history": request.get("conversation_history", []),
+            }
             if key:
                 IDEMPOTENCY[key] = run_id
         self.send_json(202, {"run_id": run_id})

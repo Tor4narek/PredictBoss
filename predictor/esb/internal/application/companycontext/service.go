@@ -22,11 +22,18 @@ var ErrInvalidInput = errors.New("invalid company context input")
 type Service struct {
 	profiles     domain.ProfileRepository
 	metrics      domain.CompanyMetricSettingsRepository
+	limits       Limits
 	profileLocks sync.Map
 }
 
-func NewService(profiles domain.ProfileRepository, metrics domain.CompanyMetricSettingsRepository) *Service {
-	return &Service{profiles: profiles, metrics: metrics}
+type Limits struct {
+	DefaultPageSize      int
+	MaxPageSize          int
+	MaxMetricsPerRequest int
+}
+
+func NewService(profiles domain.ProfileRepository, metrics domain.CompanyMetricSettingsRepository, limits Limits) *Service {
+	return &Service{profiles: profiles, metrics: metrics, limits: limits}
 }
 
 func (s *Service) CompanyProfile(ctx context.Context, companyID string) (string, string, error) {
@@ -45,10 +52,10 @@ func (s *Service) CompanyMetrics(ctx context.Context, companyID string, limit in
 		return nil, ErrInvalidInput
 	}
 	if limit < 1 {
-		limit = 100
+		limit = s.limits.DefaultPageSize
 	}
-	if limit > 500 {
-		limit = 500
+	if limit > s.limits.MaxPageSize {
+		limit = s.limits.MaxPageSize
 	}
 	return s.metrics.CompanyMetrics(ctx, companyID, limit)
 }
@@ -56,7 +63,7 @@ func (s *Service) CompanyMetrics(ctx context.Context, companyID string, limit in
 func (s *Service) SaveCompanyMetrics(ctx context.Context, companyID string, metrics []domain.CompanyMetric) error {
 	companyID = strings.TrimSpace(companyID)
 	companyID = strings.ToLower(companyID)
-	metrics, err := normalizeMetrics(companyID, metrics)
+	metrics, err := normalizeMetrics(companyID, metrics, s.limits.MaxMetricsPerRequest)
 	if err != nil {
 		return err
 	}
@@ -96,7 +103,7 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 	companyLock := lock.(*sync.Mutex)
 	companyLock.Lock()
 	defer companyLock.Unlock()
-	metrics, err := normalizeMetrics(companyID, metrics)
+	metrics, err := normalizeMetrics(companyID, metrics, s.limits.MaxMetricsPerRequest)
 	if err != nil {
 		return "", err
 	}
@@ -136,8 +143,8 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 	return key, nil
 }
 
-func normalizeMetrics(companyID string, metrics []domain.CompanyMetric) ([]domain.CompanyMetric, error) {
-	if !companyIDPattern.MatchString(companyID) || len(metrics) > 500 {
+func normalizeMetrics(companyID string, metrics []domain.CompanyMetric, maxMetrics int) ([]domain.CompanyMetric, error) {
+	if !companyIDPattern.MatchString(companyID) || len(metrics) > maxMetrics {
 		return nil, ErrInvalidInput
 	}
 	seen := make(map[string]struct{}, len(metrics))

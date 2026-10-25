@@ -14,12 +14,23 @@ import (
 )
 
 type Client struct {
-	apiKey string
-	http   *http.Client
+	apiKey           string
+	http             *http.Client
+	maxAttempts      int
+	retryBaseDelay   time.Duration
+	maxResponseBytes int64
 }
 
-func NewClient(apiKey string) *Client {
-	return &Client{apiKey: apiKey, http: &http.Client{Timeout: 45 * time.Second}}
+type ClientConfig struct {
+	RequestTimeout   time.Duration
+	MaxAttempts      int
+	RetryBaseDelay   time.Duration
+	MaxResponseBytes int64
+}
+
+func NewClient(apiKey string, config ClientConfig) *Client {
+	return &Client{apiKey: apiKey, http: &http.Client{Timeout: config.RequestTimeout}, maxAttempts: config.MaxAttempts,
+		retryBaseDelay: config.RetryBaseDelay, maxResponseBytes: config.MaxResponseBytes}
 }
 
 type runRequest struct {
@@ -38,7 +49,7 @@ func (c *Client) Start(ctx context.Context, agent domain.Agent, input string, hi
 		return "", err
 	}
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < c.maxAttempts; attempt++ {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(agent.RuntimeURL, "/")+"/v1/runs", bytes.NewReader(body))
 		if err != nil {
 			return "", err
@@ -48,9 +59,11 @@ func (c *Client) Start(ctx context.Context, agent domain.Agent, input string, hi
 		request.Header.Set("Idempotency-Key", idempotencyKey)
 		response, requestErr := c.http.Do(request)
 		if requestErr == nil {
-			responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+			responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, c.maxResponseBytes+1))
 			response.Body.Close()
-			if readErr == nil && response.StatusCode >= 200 && response.StatusCode < 300 {
+			if readErr == nil && int64(len(responseBody)) > c.maxResponseBytes {
+				requestErr = fmt.Errorf("Hermes response exceeds size limit")
+			} else if readErr == nil && response.StatusCode >= 200 && response.StatusCode < 300 {
 				var result runResponse
 				if err := json.Unmarshal(responseBody, &result); err == nil && result.RunID != "" {
 					return result.RunID, nil
@@ -63,11 +76,12 @@ func (c *Client) Start(ctx context.Context, agent domain.Agent, input string, hi
 			}
 		}
 		lastErr = requestErr
-		if attempt < 4 {
+		if attempt+1 < c.maxAttempts {
+			delay := time.Duration(attempt+1) * c.retryBaseDelay
 			select {
 			case <-ctx.Done():
 				return "", ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * time.Second):
+			case <-time.After(delay):
 			}
 		}
 	}
@@ -94,8 +108,15 @@ func (c *Client) Status(ctx context.Context, agent domain.Agent, runID string) (
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return domain.RunState{}, fmt.Errorf("Hermes returned HTTP %d", response.StatusCode)
 	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, c.maxResponseBytes+1))
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	if int64(len(body)) > c.maxResponseBytes {
+		return domain.RunState{}, fmt.Errorf("Hermes response exceeds size limit")
+	}
 	var state runStateResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&state); err != nil {
+	if err := json.Unmarshal(body, &state); err != nil {
 		return domain.RunState{}, err
 	}
 	return domain.RunState{Status: state.Status, Output: state.Output, Error: state.Error}, nil

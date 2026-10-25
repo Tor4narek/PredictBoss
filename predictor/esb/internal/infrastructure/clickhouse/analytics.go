@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,20 +13,51 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
-type Analytics struct{ client *Client }
+type Analytics struct {
+	client                     *Client
+	companyReportFactsLimit    int
+	companyReportAnalysisLimit int
+}
 
-func NewAnalytics(client *Client) *Analytics { return &Analytics{client: client} }
+func NewAnalytics(client *Client, companyReportFactsLimit, companyReportAnalysisLimit int) *Analytics {
+	return &Analytics{client: client, companyReportFactsLimit: companyReportFactsLimit, companyReportAnalysisLimit: companyReportAnalysisLimit}
+}
 
 type newsRow struct {
 	ID           string  `json:"news_id"`
 	SourceID     string  `json:"source_id"`
 	SourceURL    string  `json:"source_url"`
-	CompanyID    string  `json:"company_id"`
 	MaterialKind string  `json:"material_kind"`
 	MediaType    string  `json:"media_type"`
 	Title        string  `json:"title"`
 	PublishedAt  *string `json:"published_at"`
-	Text         string  `json:"news_text"`
+}
+
+type newsContentRow struct {
+	NewsID      string `json:"news_id"`
+	ContentHash string `json:"content_hash"`
+	Text        string `json:"news_text"`
+}
+
+type newsProcessingRow struct {
+	NewsID      string `json:"news_id"`
+	SourceID    string `json:"source_id"`
+	ContentHash string `json:"content_hash"`
+	FactCount   uint32 `json:"fact_count"`
+}
+
+type newsMetadataRow struct {
+	ID           string `json:"news_id"`
+	SourceID     string `json:"source_id"`
+	SourceURL    string `json:"source_url"`
+	MaterialKind string `json:"material_kind"`
+	MediaType    string `json:"media_type"`
+	Title        string `json:"title"`
+	PublishedAt  string `json:"published_at"`
+}
+
+type countRow struct {
+	Count uint64 `json:"count"`
 }
 
 type factRow struct {
@@ -48,11 +80,21 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 	if news.MediaType == "" {
 		news.MediaType = "text/html"
 	}
-	if err := r.client.Insert(ctx, "news", []newsRow{{ID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, CompanyID: news.CompanyID, MaterialKind: news.MaterialKind, MediaType: news.MediaType, Title: news.Title, PublishedAt: clickHouseTime(news.PublishedAt), Text: news.Text}}); err != nil {
+	contentHash := hashNewsText(news.Text)
+	if previous, found, err := r.newsProcessing(ctx, news.ID); err != nil {
+		return nil, err
+	} else if found && (previous.SourceID != news.SourceID || previous.ContentHash != contentHash) {
+		return nil, domain.ErrConflict
+	}
+	if err := r.client.Insert(ctx, "news", []newsRow{{ID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, MaterialKind: news.MaterialKind, MediaType: news.MediaType, Title: news.Title, PublishedAt: clickHouseTime(news.PublishedAt)}}); err != nil {
+		return nil, err
+	}
+	if err := r.client.Insert(ctx, "news_content", []newsContentRow{{NewsID: news.ID, ContentHash: contentHash, Text: news.Text}}); err != nil {
 		return nil, err
 	}
 	rows := make([]factRow, 0, len(facts))
 	ids := make([]string, 0, len(facts))
+	uniqueIDs := make(map[string]struct{}, len(facts))
 	for _, fact := range facts {
 		id := stableUUID(news.ID + "\x00" + fact.Text)
 		if fact.Entities == nil {
@@ -60,11 +102,130 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 		}
 		rows = append(rows, factRow{ID: id, NewsID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, Text: fact.Text, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: clickHouseTime(fact.OccurredAt), Confidence: fact.Confidence})
 		ids = append(ids, id)
+		uniqueIDs[id] = struct{}{}
 	}
 	if err := r.client.Insert(ctx, "facts", rows); err != nil {
 		return nil, err
 	}
+	if err := r.client.Insert(ctx, "news_processing", []newsProcessingRow{{
+		NewsID: news.ID, SourceID: news.SourceID, ContentHash: contentHash, FactCount: uint32(len(uniqueIDs)),
+	}}); err != nil {
+		return nil, err
+	}
 	return ids, nil
+}
+
+// FinalizeNews verifies the completion marker, metadata, and fact rows before
+// synchronously removing only the raw article text. It is safe to repeat after
+// a partial failure, including after the text has already been deleted.
+func (r *Analytics) FinalizeNews(ctx context.Context, expected domain.News, contentHash string) error {
+	processed, found, err := r.newsProcessing(ctx, expected.ID)
+	if err != nil {
+		return err
+	}
+	if !found || processed.SourceID != expected.SourceID || processed.ContentHash != contentHash {
+		return fmt.Errorf("news processing is not confirmed")
+	}
+	metadata, found, err := r.newsMetadata(ctx, expected.ID)
+	if err != nil {
+		return err
+	}
+	if !found || !metadataMatches(metadata, expected) {
+		return fmt.Errorf("news metadata is not confirmed")
+	}
+	var factCounts []countRow
+	query := fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.facts FINAL WHERE news_id = %s) FORMAT JSONEachRow`, r.table("facts"), escape(expected.ID))
+	if err := r.client.queryRows(ctx, query, &factCounts); err != nil {
+		return err
+	}
+	var factCount uint64
+	if len(factCounts) > 0 {
+		factCount = factCounts[0].Count
+	}
+	if factCount != uint64(processed.FactCount) {
+		return fmt.Errorf("news facts are not confirmed")
+	}
+	var contentCounts []countRow
+	contentQuery := fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.news_content FINAL WHERE news_id = %s AND content_hash = %s) FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID), escape(contentHash))
+	if err := r.client.queryRows(ctx, contentQuery, &contentCounts); err != nil {
+		return err
+	}
+	if len(contentCounts) == 0 || contentCounts[0].Count == 0 {
+		var remaining []countRow
+		if err := r.client.queryRows(ctx, fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.news_content FINAL WHERE news_id = %s) FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID)), &remaining); err != nil {
+			return err
+		}
+		if len(remaining) > 0 && remaining[0].Count > 0 {
+			return fmt.Errorf("raw news text does not match the confirmed content hash")
+		}
+		return nil // A previous successful finalization already removed the text.
+	}
+	deleteQuery := fmt.Sprintf("ALTER TABLE %s.news_content DELETE WHERE news_id = %s SETTINGS mutations_sync = 2", r.table("news_content"), escape(expected.ID))
+	if _, err := r.client.Query(ctx, deleteQuery); err != nil {
+		return err
+	}
+	var remaining []countRow
+	if err := r.client.queryRows(ctx, fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.news_content FINAL WHERE news_id = %s) FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID)), &remaining); err != nil {
+		return err
+	}
+	if len(remaining) > 0 && remaining[0].Count != 0 {
+		return fmt.Errorf("raw news text cleanup is not confirmed")
+	}
+	return nil
+}
+
+func (r *Analytics) newsProcessing(ctx context.Context, newsID string) (newsProcessingRow, bool, error) {
+	var rows []newsProcessingRow
+	query := fmt.Sprintf(`SELECT news_id, source_id, content_hash, fact_count FROM %s.news_processing FINAL WHERE news_id = %s LIMIT 1 FORMAT JSONEachRow`, r.table("news_processing"), escape(newsID))
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return newsProcessingRow{}, false, err
+	}
+	if len(rows) == 0 {
+		return newsProcessingRow{}, false, nil
+	}
+	return rows[0], true, nil
+}
+
+func (r *Analytics) newsMetadata(ctx context.Context, newsID string) (newsMetadataRow, bool, error) {
+	var rows []newsMetadataRow
+	query := fmt.Sprintf(`SELECT news_id, source_id, source_url, material_kind, media_type, title,
+ifNull(toString(published_at), '') AS published_at FROM %s.news FINAL WHERE news_id = %s LIMIT 1 FORMAT JSONEachRow`, r.table("news"), escape(newsID))
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return newsMetadataRow{}, false, err
+	}
+	if len(rows) == 0 {
+		return newsMetadataRow{}, false, nil
+	}
+	return rows[0], true, nil
+}
+
+func metadataMatches(actual newsMetadataRow, expected domain.News) bool {
+	materialKind := expected.MaterialKind
+	if materialKind == "" {
+		materialKind = "external_news"
+	}
+	mediaType := expected.MediaType
+	if mediaType == "" {
+		mediaType = "text/html"
+	}
+	if actual.ID != expected.ID || actual.SourceID != expected.SourceID || actual.SourceURL != expected.SourceURL ||
+		actual.MaterialKind != materialKind || actual.MediaType != mediaType || actual.Title != expected.Title {
+		return false
+	}
+	if expected.PublishedAt == nil {
+		return actual.PublishedAt == ""
+	}
+	expectedTime, err := time.Parse(time.RFC3339Nano, *expected.PublishedAt)
+	if err != nil {
+		return false
+	}
+	actualTime, err := time.ParseInLocation("2006-01-02 15:04:05.000", actual.PublishedAt, time.UTC)
+	return err == nil && actualTime.Equal(expectedTime.Truncate(time.Millisecond))
+}
+
+func hashNewsText(text string) string {
+	digest := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(digest[:])
 }
 
 func (r *Analytics) FactsByNews(ctx context.Context, newsID string, limit int) ([]domain.Fact, error) {
@@ -221,6 +382,18 @@ type metricLinkRow struct {
 	SourceKind string `json:"source_kind"`
 }
 
+type metricTotalSnapshotRow struct {
+	CompanyID        string   `json:"company_id"`
+	MetricID         string   `json:"metric_id"`
+	PeriodFrom       string   `json:"period_from"`
+	PeriodTo         string   `json:"period_to"`
+	TotalValue       *float64 `json:"total_value"`
+	TotalProbability *float64 `json:"total_probability"`
+	FactCount        uint32   `json:"fact_count"`
+	ProbabilityCount uint32   `json:"probability_count"`
+	LinksJSON        string   `json:"links_json"`
+}
+
 func (r *Analytics) CalculateMetricTotal(ctx context.Context, metricID, from, to string) (domain.MetricTotal, error) {
 	observations := fmt.Sprintf("%s.metric_observations", r.table("metric_observations"))
 	news := fmt.Sprintf("%s.news", r.table("news"))
@@ -255,6 +428,25 @@ GROUP BY n.news_id ORDER BY min(n.published_at), n.news_id FORMAT JSONEachRow`, 
 	return result, nil
 }
 
+// SaveMetricTotal stores the latest aggregate snapshot in ClickHouse. Metric
+// definitions remain in PostgreSQL; this row contains only IDs and analytical
+// values needed to reproduce the returned result and its source links.
+func (r *Analytics) SaveMetricTotal(ctx context.Context, total domain.MetricTotal) error {
+	links := total.Links
+	if links == nil {
+		links = []domain.MetricLink{}
+	}
+	encodedLinks, err := json.Marshal(links)
+	if err != nil {
+		return err
+	}
+	return r.client.Insert(ctx, "metric_totals", []metricTotalSnapshotRow{{
+		CompanyID: total.CompanyID, MetricID: total.MetricID, PeriodFrom: total.PeriodFrom, PeriodTo: total.PeriodTo,
+		TotalValue: total.TotalValue, TotalProbability: total.TotalProbability,
+		FactCount: total.FactCount, ProbabilityCount: total.ProbabilityCount, LinksJSON: string(encodedLinks),
+	}})
+}
+
 type analysisResult struct {
 	CompanyID   string   `json:"company_id"`
 	PeriodFrom  string   `json:"period_from"`
@@ -265,13 +457,13 @@ type analysisResult struct {
 }
 
 func (r *Analytics) CompanyReport(ctx context.Context, companyID, from, to string) (domain.CompanyReport, error) {
-	companyFacts, err := r.CompanyFacts(ctx, companyID, 200)
+	companyFacts, err := r.CompanyFacts(ctx, companyID, r.companyReportFactsLimit)
 	if err != nil {
 		return domain.CompanyReport{}, err
 	}
 	analysisQuery := fmt.Sprintf(`SELECT company_id, period_from, period_to, probability, metric_ids, analysis_text
 FROM %s.company_analyses FINAL WHERE company_id = %s AND period_from >= toDate(%s) AND period_to <= toDate(%s)
-ORDER BY generated_at DESC LIMIT 100 FORMAT JSONEachRow`, r.table("company_analyses"), escape(companyID), escape(from), escape(to))
+ORDER BY generated_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("company_analyses"), escape(companyID), escape(from), escape(to), r.companyReportAnalysisLimit)
 	var analysisRows []analysisResult
 	if err := r.client.queryRows(ctx, analysisQuery, &analysisRows); err != nil {
 		return domain.CompanyReport{}, err

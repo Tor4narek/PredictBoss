@@ -114,3 +114,16 @@ CREATE INDEX konstantin_messages_company_history_idx
 CREATE INDEX agent_calls_konstantin_question_history_idx
     ON agent_calls (conversation_id, created_at DESC, call_id DESC)
     WHERE agent_type = 'konstantin' AND request_json->>'request_kind' = 'question';
+
+CREATE TABLE agent_context_summaries (
+    conversation_id UUID PRIMARY KEY REFERENCES agent_conversations(conversation_id),
+    agent_type TEXT NOT NULL CHECK (agent_type IN ('serezha', 'saveliy', 'valera', 'kesha', 'konstantin')),
+    summary TEXT NOT NULL,
+    through_call_created_at TIMESTAMPTZ,
+    through_call_id UUID REFERENCES agent_calls(call_id),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((through_call_created_at IS NULL) = (through_call_id IS NULL))
+);
+
+CREATE INDEX agent_context_summaries_agent_idx
+    ON agent_context_summaries (agent_type, updated_at);

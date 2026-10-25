@@ -2,10 +2,14 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -26,6 +30,23 @@ func (r *Calls) Enqueue(ctx context.Context, agent domain.AgentType, scopeID str
 		if err == nil {
 			if !sameRequest || call.Agent != agent || call.ScopeID != scopeID {
 				return domain.Call{}, false, domain.ErrConflict
+			}
+			if call.Agent == domain.AgentSerezha && (call.Status == domain.CallFailed || call.Status == domain.CallInterrupted || call.Status == domain.CallCancelled) {
+				requeued, ok, retryErr := r.requeueFailedNews(ctx, call.ID)
+				if retryErr != nil {
+					return domain.Call{}, false, retryErr
+				}
+				if ok {
+					return requeued, true, nil
+				}
+				// Another identical retry may have already requeued the call.
+				call, sameRequest, err = r.byIdempotency(ctx, idempotencyKey, input)
+				if err != nil {
+					return domain.Call{}, false, err
+				}
+				if !sameRequest {
+					return domain.Call{}, false, domain.ErrConflict
+				}
 			}
 			return call, true, nil
 		}
@@ -79,7 +100,51 @@ FROM agent_calls c JOIN agent_conversations v USING (conversation_id) WHERE c.id
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Call{}, false, domain.ErrNotFound
 	}
+	if err == nil && call.Agent == domain.AgentSerezha {
+		sameRequest = sameNewsRequest(call.Input, input)
+	}
 	return call, sameRequest, err
+}
+
+func sameNewsRequest(stored, submitted []byte) bool {
+	normalize := func(raw []byte) ([]byte, bool) {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+			return nil, false
+		}
+		if rawText, ok := fields["news_text"]; ok {
+			var text string
+			if err := json.Unmarshal(rawText, &text); err != nil {
+				return nil, false
+			}
+			digest := sha256.Sum256([]byte(text))
+			encoded, _ := json.Marshal(hex.EncodeToString(digest[:]))
+			fields["news_text_sha256"] = encoded
+			delete(fields, "news_text")
+		}
+		encoded, err := json.Marshal(fields)
+		return encoded, err == nil
+	}
+	left, leftOK := normalize(stored)
+	right, rightOK := normalize(submitted)
+	return leftOK && rightOK && string(left) == string(right)
+}
+
+func (r *Calls) requeueFailedNews(ctx context.Context, callID string) (domain.Call, bool, error) {
+	var call domain.Call
+	err := r.pool.QueryRow(ctx, `UPDATE agent_calls c
+SET status = 'queued', hermes_run_id = NULL, output = NULL, error = 'news_retry', updated_at = now()
+FROM agent_conversations v
+WHERE c.call_id = $1 AND c.agent_type = 'serezha' AND c.status IN ('failed','interrupted','cancelled')
+  AND v.conversation_id = c.conversation_id
+RETURNING c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
+c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at`, callID).
+		Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID,
+			&call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Call{}, false, nil
+	}
+	return call, err == nil, err
 }
 
 func (r *Calls) Get(ctx context.Context, id string) (domain.Call, error) {
@@ -134,6 +199,272 @@ WHERE c.call_id = $1 AND m.call_id <> c.call_id ORDER BY m.message_id DESC LIMIT
 		messages = append(messages, message)
 	}
 	return messages, rows.Err()
+}
+
+type contextCursor struct {
+	CallID    string
+	CreatedAt time.Time
+}
+
+type contextHistoryRow struct {
+	MessageID int64
+	CallID    string
+	CreatedAt time.Time
+	Role      string
+	Content   string
+}
+
+// LoadContextWindow reads only turns before the target call. It returns the
+// latest whole-call suffix for Hermes and, when the configured threshold is
+// crossed, a bounded oldest prefix that can be compacted into the summary.
+func (r *Calls) LoadContextWindow(ctx context.Context, callID string, recentLimit, compressAfter, batchMessages int) (domain.ContextWindow, error) {
+	if recentLimit < 0 || compressAfter < 0 || batchMessages < 1 {
+		return domain.ContextWindow{}, domain.ErrConflict
+	}
+	var window domain.ContextWindow
+	var agentType string
+	var targetCreatedAt time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT c.conversation_id::text, c.agent_type, c.created_at
+FROM agent_calls c WHERE c.call_id = $1`, callID).Scan(&window.ConversationID, &agentType, &targetCreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ContextWindow{}, domain.ErrNotFound
+		}
+		return domain.ContextWindow{}, err
+	}
+	var throughAt *time.Time
+	var throughID *string
+	err := r.pool.QueryRow(ctx, `SELECT summary, through_call_created_at, through_call_id::text
+FROM agent_context_summaries WHERE conversation_id = $1::uuid`, window.ConversationID).
+		Scan(&window.Summary, &throughAt, &throughID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return domain.ContextWindow{}, err
+	}
+	if throughAt != nil {
+		window.SummaryThroughCreatedAt = *throughAt
+	}
+	if throughID != nil {
+		window.SummaryThroughCallID = *throughID
+	}
+	var historyCount int
+	countQuery := `SELECT count(*) FROM agent_messages m JOIN agent_calls c USING (conversation_id)
+WHERE c.conversation_id = $1::uuid AND (c.created_at, c.call_id) < ($2, $3::uuid)
+  AND ($4::timestamptz IS NULL OR (c.created_at, c.call_id) > ($4, $5::uuid))`
+	if err := r.pool.QueryRow(ctx, countQuery, window.ConversationID, targetCreatedAt, callID, throughAt, throughID).Scan(&historyCount); err != nil {
+		return domain.ContextWindow{}, err
+	}
+	if recentLimit == 0 || historyCount == 0 {
+		window.Recent = []domain.Message{}
+		return window, nil
+	}
+	recentQuery := `SELECT m.message_id, c.call_id::text, c.created_at, m.role, m.content
+FROM agent_messages m JOIN agent_calls c USING (conversation_id)
+WHERE c.conversation_id = $1::uuid AND (c.created_at, c.call_id) < ($2, $3::uuid)
+  AND ($4::timestamptz IS NULL OR (c.created_at, c.call_id) > ($4, $5::uuid))
+ORDER BY c.created_at DESC, c.call_id DESC,
+  CASE m.role WHEN 'assistant' THEN 2 ELSE 1 END DESC, m.message_id DESC
+LIMIT $6`
+	rows, err := r.pool.Query(ctx, recentQuery, window.ConversationID, targetCreatedAt, callID, throughAt, throughID, recentLimit)
+	if err != nil {
+		return domain.ContextWindow{}, err
+	}
+	recentRows := make([]contextHistoryRow, 0, recentLimit)
+	for rows.Next() {
+		var row contextHistoryRow
+		if err := rows.Scan(&row.MessageID, &row.CallID, &row.CreatedAt, &row.Role, &row.Content); err != nil {
+			rows.Close()
+			return domain.ContextWindow{}, err
+		}
+		recentRows = append(recentRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return domain.ContextWindow{}, err
+	}
+	rows.Close()
+	if len(recentRows) == 0 {
+		window.Recent = []domain.Message{}
+		return window, nil
+	}
+	oldestRecent := recentRows[len(recentRows)-1]
+	recentBoundary := contextCursor{CallID: oldestRecent.CallID, CreatedAt: oldestRecent.CreatedAt}
+	recentMessages, err := r.messagesInContextRange(ctx, window.ConversationID, targetCreatedAt, callID, throughAt, throughID, &recentBoundary, nil)
+	if err != nil {
+		return domain.ContextWindow{}, err
+	}
+	window.Recent = make([]domain.Message, 0, len(recentMessages))
+	for _, message := range recentMessages {
+		window.Recent = append(window.Recent, message.Message)
+	}
+	if historyCount <= compressAfter {
+		return window, nil
+	}
+	var pendingCount int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages m JOIN agent_calls c USING (conversation_id)
+WHERE c.conversation_id = $1::uuid AND (c.created_at, c.call_id) < ($2, $3::uuid)
+  AND (c.created_at, c.call_id) < ($4, $5::uuid)
+  AND ($6::timestamptz IS NULL OR (c.created_at, c.call_id) > ($6, $7::uuid))`,
+		window.ConversationID, targetCreatedAt, callID, recentBoundary.CreatedAt, recentBoundary.CallID, throughAt, throughID).Scan(&pendingCount); err != nil {
+		return domain.ContextWindow{}, err
+	}
+	if pendingCount == 0 {
+		return window, nil
+	}
+	groupRows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.created_at, count(m.message_id)
+FROM agent_messages m JOIN agent_calls c USING (conversation_id)
+WHERE c.conversation_id = $1::uuid AND (c.created_at, c.call_id) < ($2, $3::uuid)
+  AND (c.created_at, c.call_id) < ($4, $5::uuid)
+  AND ($6::timestamptz IS NULL OR (c.created_at, c.call_id) > ($6, $7::uuid))
+GROUP BY c.call_id, c.created_at ORDER BY c.created_at, c.call_id`,
+		window.ConversationID, targetCreatedAt, callID, recentBoundary.CreatedAt, recentBoundary.CallID, throughAt, throughID)
+	if err != nil {
+		return domain.ContextWindow{}, err
+	}
+	selected := 0
+	var pendingThrough contextCursor
+	for groupRows.Next() {
+		var cursor contextCursor
+		var messages int
+		if err := groupRows.Scan(&cursor.CallID, &cursor.CreatedAt, &messages); err != nil {
+			groupRows.Close()
+			return domain.ContextWindow{}, err
+		}
+		if selected > 0 && selected+messages > batchMessages {
+			break
+		}
+		selected += messages
+		pendingThrough = cursor
+		if selected >= batchMessages {
+			break
+		}
+	}
+	if err := groupRows.Err(); err != nil {
+		groupRows.Close()
+		return domain.ContextWindow{}, err
+	}
+	groupRows.Close()
+	if pendingThrough.CallID == "" {
+		return window, nil
+	}
+	window.PendingThroughCallID = pendingThrough.CallID
+	window.PendingThroughCreatedAt = pendingThrough.CreatedAt
+	pending, err := r.messagesInContextRange(ctx, window.ConversationID, targetCreatedAt, callID, throughAt, throughID, nil, &pendingThrough)
+	if err != nil {
+		return domain.ContextWindow{}, err
+	}
+	window.Pending = pending
+	return window, nil
+}
+
+func (r *Calls) messagesInContextRange(ctx context.Context, conversationID string, targetCreatedAt time.Time, targetCallID string, afterAt *time.Time, afterID *string, fromInclusive, toInclusive *contextCursor) ([]domain.ContextMessage, error) {
+	query := `SELECT c.call_id::text, c.created_at, m.role, m.content FROM agent_messages m JOIN agent_calls c USING (conversation_id)
+WHERE c.conversation_id = $1::uuid AND (c.created_at, c.call_id) < ($2, $3::uuid)
+  AND ($4::timestamptz IS NULL OR (c.created_at, c.call_id) > ($4, $5::uuid))`
+	args := []any{conversationID, targetCreatedAt, targetCallID, afterAt, afterID}
+	if fromInclusive != nil {
+		query += fmt.Sprintf(" AND (c.created_at, c.call_id) >= ($%d, $%d::uuid)", len(args)+1, len(args)+2)
+		args = append(args, fromInclusive.CreatedAt, fromInclusive.CallID)
+	}
+	if toInclusive != nil {
+		query += fmt.Sprintf(" AND (c.created_at, c.call_id) <= ($%d, $%d::uuid)", len(args)+1, len(args)+2)
+		args = append(args, toInclusive.CreatedAt, toInclusive.CallID)
+	}
+	query += ` ORDER BY c.created_at, c.call_id,
+CASE m.role WHEN 'assistant' THEN 1 ELSE 0 END, m.message_id`
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := make([]domain.ContextMessage, 0)
+	for rows.Next() {
+		var message domain.ContextMessage
+		if err := rows.Scan(&message.CallID, &message.CreatedAt, &message.Role, &message.Content); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
+func (r *Calls) SaveContextSummary(ctx context.Context, conversationID, expectedCallID string, expectedCreatedAt time.Time, throughCallID string, throughCreatedAt time.Time, summary string) (bool, error) {
+	if conversationID == "" || throughCallID == "" || summary == "" {
+		return false, domain.ErrConflict
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_context_summaries
+(conversation_id, agent_type, summary, through_call_created_at, through_call_id)
+SELECT conversation_id, agent_type, '', NULL, NULL FROM agent_conversations WHERE conversation_id = $1::uuid
+ON CONFLICT (conversation_id) DO NOTHING`, conversationID); err != nil {
+		return false, err
+	}
+	var expectedAt any
+	var expectedID any
+	if expectedCallID != "" {
+		expectedAt, expectedID = expectedCreatedAt, expectedCallID
+	}
+	var updated string
+	err = tx.QueryRow(ctx, `UPDATE agent_context_summaries
+SET summary = $6, through_call_created_at = $5, through_call_id = $4::uuid, updated_at = now()
+WHERE conversation_id = $1::uuid
+  AND through_call_created_at IS NOT DISTINCT FROM $2::timestamptz
+  AND through_call_id IS NOT DISTINCT FROM $3::uuid
+RETURNING conversation_id::text`, conversationID, expectedAt, expectedID, throughCallID, throughCreatedAt, summary).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Calls) PruneHistory(ctx context.Context, agent domain.AgentType, days int) error {
+	if days <= 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// A compacted summary may contain expired messages no longer present in
+	// agent_messages. Drop only summaries whose consumed cursor includes an
+	// expiring call; newer compacted history is retained.
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_context_summaries s USING agent_conversations v
+WHERE s.conversation_id = v.conversation_id AND s.agent_type = $1
+  AND EXISTS (SELECT 1 FROM agent_calls c WHERE c.conversation_id = s.conversation_id
+    AND c.status IN ('completed','failed','cancelled','interrupted')
+    AND c.created_at < now() - ($2::int * interval '1 day')
+    AND (c.created_at, c.call_id) <= (s.through_call_created_at, s.through_call_id))`, string(agent), days); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_messages m USING agent_calls c, agent_conversations v
+WHERE m.call_id = c.call_id AND c.conversation_id = v.conversation_id AND v.agent_type = $1
+  AND c.status IN ('completed','failed','cancelled','interrupted')
+  AND m.created_at < now() - ($2::int * interval '1 day')`, string(agent), days); err != nil {
+		return err
+	}
+	if agent == domain.AgentKonstantin {
+		if _, err := tx.Exec(ctx, `DELETE FROM konstantin_messages m USING agent_conversations v
+WHERE m.conversation_id = v.conversation_id AND v.agent_type = 'konstantin'
+  AND m.created_at < now() - ($1::int * interval '1 day')`, days); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agent_calls c SET request_json = '{}'::jsonb, output = NULL, error = NULL
+FROM agent_conversations v WHERE c.conversation_id = v.conversation_id AND v.agent_type = $1
+  AND c.status IN ('completed','failed','cancelled','interrupted')
+  AND c.created_at < now() - ($2::int * interval '1 day')`, string(agent), days); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Calls) ClaimQueued(ctx context.Context, limit int) ([]domain.Call, error) {
@@ -208,7 +539,15 @@ WHERE call_id = $1 AND status IN ('submitting','started','running')`, callID, st
 }
 
 func (r *Calls) Complete(ctx context.Context, callID, output string) error {
-	_, _, err := r.complete(ctx, callID, output, nil)
+	_, _, err := r.complete(ctx, callID, output, nil, "")
+	return err
+}
+
+func (r *Calls) CompleteNews(ctx context.Context, callID, output, contentHash string) error {
+	if contentHash == "" {
+		return domain.ErrConflict
+	}
+	_, _, err := r.complete(ctx, callID, output, nil, contentHash)
 	return err
 }
 
@@ -216,7 +555,7 @@ func (r *Calls) CompleteValera(ctx context.Context, callID, output, companyID st
 	if expectedRevision < 1 {
 		return domain.CompanyProfileSyncState{}, false, domain.ErrConflict
 	}
-	return r.complete(ctx, callID, output, &valeraProfileCheck{companyID: companyID, revision: expectedRevision})
+	return r.complete(ctx, callID, output, &valeraProfileCheck{companyID: companyID, revision: expectedRevision}, "")
 }
 
 type valeraProfileCheck struct {
@@ -224,7 +563,7 @@ type valeraProfileCheck struct {
 	revision  int64
 }
 
-func (r *Calls) complete(ctx context.Context, callID, output string, profileCheck *valeraProfileCheck) (domain.CompanyProfileSyncState, bool, error) {
+func (r *Calls) complete(ctx context.Context, callID, output string, profileCheck *valeraProfileCheck, newsTextHash string) (domain.CompanyProfileSyncState, bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return domain.CompanyProfileSyncState{}, false, err
@@ -259,6 +598,21 @@ WHERE call_id = $1 AND status IN ('started','running')`
 	if err != nil {
 		return profileState, false, err
 	}
+	if newsTextHash != "" {
+		if agentType != string(domain.AgentSerezha) {
+			return profileState, false, domain.ErrConflict
+		}
+		sanitizedInput, err := sanitizedNewsInput(inputJSON, newsTextHash)
+		if err != nil {
+			return profileState, false, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE agent_calls SET request_json = $2::jsonb WHERE call_id = $1`, callID, sanitizedInput); err != nil {
+			return profileState, false, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE agent_messages SET content = $2 WHERE call_id = $1 AND role = 'user'`, callID, string(sanitizedInput)); err != nil {
+			return profileState, false, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content) VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
 		return profileState, false, err
 	}
@@ -280,15 +634,43 @@ WHERE call_id = $1 AND status IN ('started','running')`
 	return profileState, true, nil
 }
 
-func (r *Calls) RetryProfileSave(ctx context.Context, callID, companyID string, expectedRevision int64) (bool, error) {
+func sanitizedNewsInput(raw []byte, expectedHash string) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, domain.ErrConflict
+	}
+	if encodedText, ok := fields["news_text"]; ok {
+		var text string
+		if err := json.Unmarshal(encodedText, &text); err != nil {
+			return nil, domain.ErrConflict
+		}
+		digest := sha256.Sum256([]byte(text))
+		if hex.EncodeToString(digest[:]) != expectedHash {
+			return nil, domain.ErrConflict
+		}
+		delete(fields, "news_text")
+	} else if encodedHash, ok := fields["news_text_sha256"]; ok {
+		var actualHash string
+		if err := json.Unmarshal(encodedHash, &actualHash); err != nil || actualHash != expectedHash {
+			return nil, domain.ErrConflict
+		}
+	} else {
+		return nil, domain.ErrConflict
+	}
+	encodedHash, _ := json.Marshal(expectedHash)
+	fields["news_text_sha256"] = encodedHash
+	return json.Marshal(fields)
+}
+
+func (r *Calls) RetryProfileSave(ctx context.Context, callID, companyID string, expectedRevision int64, maxRetries int) (bool, error) {
 	result, err := r.pool.Exec(ctx, `UPDATE agent_calls c
-SET status = 'queued', retry_count = 1, hermes_run_id = NULL, output = NULL,
+SET status = 'queued', retry_count = retry_count + 1, hermes_run_id = NULL, output = NULL,
     error = 'profile_sync_retry', updated_at = now()
-WHERE c.call_id = $1 AND c.agent_type = 'valera' AND c.status IN ('started','running') AND c.retry_count = 0
+WHERE c.call_id = $1 AND c.agent_type = 'valera' AND c.status IN ('started','running') AND c.retry_count < $4
   AND EXISTS (SELECT 1 FROM agent_conversations v WHERE v.conversation_id = c.conversation_id AND v.scope_id = $2)
   AND NOT EXISTS (SELECT 1 FROM company_profile_state s WHERE s.company_id = $2::uuid
     AND (s.profile_revision > $3 OR (s.profile_revision = $3 AND s.profile_synced)))`,
-		callID, companyID, expectedRevision)
+		callID, companyID, expectedRevision, maxRetries)
 	if err != nil {
 		return false, err
 	}

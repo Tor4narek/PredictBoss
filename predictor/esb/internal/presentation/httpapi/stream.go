@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 	"github.com/predictboss/predictor/esb/internal/application/calls"
@@ -37,9 +36,9 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	conn.SetReadLimit(1 << 20)
+	conn.SetReadLimit(h.maxFrameBytes)
 	ctx, cancel := context.WithCancel(context.Background())
-	outgoing := make(chan []byte, 64)
+	outgoing := make(chan []byte, h.outgoingQueue)
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -50,7 +49,7 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 				return
 			case payload = <-outgoing:
 			}
-			writeCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+			writeCtx, stop := context.WithTimeout(ctx, h.writeTimeout)
 			err := conn.Write(writeCtx, websocket.MessageText, payload)
 			stop()
 			if err != nil {
@@ -88,10 +87,10 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		return send(event)
 	}
 	if afterMessageID != "" {
-		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, afterMessageID, 500)
+		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, afterMessageID, h.replayLimit)
 		if err != nil {
 			payload, _ := json.Marshal(errorFrame{Kind: "error", Error: "invalid_replay_cursor"})
-			writeCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+			writeCtx, stop := context.WithTimeout(context.Background(), h.writeTimeout)
 			_ = conn.Write(writeCtx, websocket.MessageText, payload)
 			stop()
 			return
@@ -102,7 +101,7 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, "", 500)
+		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, "", h.replayLimit)
 		if err == nil {
 			for _, event := range events {
 				if err := sendEvent(event); err != nil {
@@ -122,7 +121,13 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	for {
-		_, payload, err := conn.Read(ctx)
+		readCtx := ctx
+		cancelRead := func() {}
+		if h.readTimeout > 0 {
+			readCtx, cancelRead = context.WithTimeout(ctx, h.readTimeout)
+		}
+		_, payload, err := conn.Read(readCtx)
+		cancelRead()
 		if err != nil {
 			return
 		}

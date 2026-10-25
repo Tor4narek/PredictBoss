@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -19,7 +16,7 @@ import (
 	"github.com/predictboss/predictor/esb/internal/application/calls"
 	"github.com/predictboss/predictor/esb/internal/application/companycontext"
 	"github.com/predictboss/predictor/esb/internal/application/news"
-	"github.com/predictboss/predictor/esb/internal/domain"
+	"github.com/predictboss/predictor/esb/internal/config"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/clickhouse"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/hermes"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/postgres"
@@ -28,37 +25,6 @@ import (
 	presentationmcp "github.com/predictboss/predictor/esb/internal/presentation/mcp"
 )
 
-const defaultHistoryLimit = 40
-
-type agentFile struct {
-	Name           string   `json:"name"`
-	ScopeField     string   `json:"scope_field"`
-	SkillFile      string   `json:"skill_file"`
-	RuntimeURLEnv  string   `json:"runtime_url_env"`
-	RequiredFields []string `json:"required_fields"`
-	MaxHistory     *int     `json:"max_history_messages"`
-}
-
-type config struct {
-	HTTPAddr       string
-	DatabaseURL    string
-	ESBAPIKey      string
-	HermesAPIKey   string
-	ClickHouseURL  string
-	CHDatabase     string
-	CHUser         string
-	CHPassword     string
-	S3Bucket       string
-	S3Region       string
-	S3Endpoint     string
-	S3AccessKey    string
-	S3SecretKey    string
-	S3PathStyle    bool
-	S3CreateBucket bool
-	PollInterval   time.Duration
-	Agents         []domain.Agent
-}
-
 func main() {
 	if err := runESB(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -66,13 +32,13 @@ func main() {
 }
 
 func runESB() error {
-	cfg, err := loadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	db, err := pgxpool.New(ctx, cfg.Connections.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
@@ -80,7 +46,9 @@ func runESB() error {
 	if err := db.Ping(ctx); err != nil {
 		return fmt.Errorf("ping PostgreSQL: %w", err)
 	}
-	ch, err := clickhouse.NewClient(cfg.ClickHouseURL, cfg.CHDatabase, cfg.CHUser, cfg.CHPassword)
+	ch, err := clickhouse.NewClient(cfg.Connections.ClickHouseURL, cfg.Connections.CHDatabase, cfg.Connections.CHUser, cfg.Connections.CHPassword, clickhouse.ClientConfig{
+		RequestTimeout: cfg.ClickHouse.RequestTimeout, MaxResponseBytes: cfg.ClickHouse.MaxResponse,
+	})
 	if err != nil {
 		return err
 	}
@@ -88,8 +56,9 @@ func runESB() error {
 		return fmt.Errorf("ping ClickHouse: %w", err)
 	}
 	profileStore, err := s3.NewStore(ctx, s3.Config{
-		Bucket: cfg.S3Bucket, Region: cfg.S3Region, Endpoint: cfg.S3Endpoint,
-		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, PathStyle: cfg.S3PathStyle, CreateBucket: cfg.S3CreateBucket,
+		Bucket: cfg.Connections.S3Bucket, Region: cfg.Connections.S3Region, Endpoint: cfg.Connections.S3Endpoint,
+		AccessKey: cfg.Connections.S3AccessKey, SecretKey: cfg.Connections.S3SecretKey,
+		PathStyle: cfg.Connections.S3PathStyle, CreateBucket: cfg.Connections.S3CreateBucket, MaxProfileBytes: cfg.Payload.MaxProfileBytes,
 	})
 	if err != nil {
 		return err
@@ -98,12 +67,38 @@ func runESB() error {
 	if err := callRepository.Recover(ctx); err != nil {
 		return fmt.Errorf("recover PostgreSQL calls: %w", err)
 	}
-	hermesClient := hermes.NewClient(cfg.HermesAPIKey)
-	callService := calls.NewService(callRepository, hermesClient, cfg.Agents, cfg.PollInterval)
-	newsService := news.NewService(callRepository, callService)
 	metricSettings := postgres.NewMetricSettings(db)
-	companyContextService := companycontext.NewService(profileStore, metricSettings)
-	analyticsService := analytics.NewService(clickhouse.NewAnalytics(ch), metricSettings)
+	analyticsService := analytics.NewService(clickhouse.NewAnalytics(ch, cfg.Pagination.CompanyReportFactsLimit, cfg.Pagination.CompanyReportAnalysisLimit), metricSettings, analytics.Limits{
+		FactsDefaultPageSize: cfg.Pagination.FactsDefaultPageSize, FactsMaxPageSize: cfg.Pagination.FactsMaxPageSize,
+		FactsMaxPeriod:              time.Duration(cfg.Pagination.FactsMaxPeriodDays) * 24 * time.Hour,
+		CompanyItemsDefaultPageSize: cfg.Pagination.CompanyItemsDefaultPageSize,
+		CompanyItemsMaxPageSize:     cfg.Pagination.CompanyItemsMaxPageSize,
+		ConsultantDefaultPageSize:   cfg.Pagination.ConsultantDefaultPageSize,
+		ConsultantMaxPageSize:       cfg.Pagination.ConsultantMaxPageSize,
+		CompanyReportDefaultWindow:  time.Duration(cfg.Pagination.CompanyReportDefaultWindowDays) * 24 * time.Hour,
+		MaxFactsPerNews:             cfg.Payload.MaxFactsPerNews, MaxFactCompanyLinks: cfg.Payload.MaxFactCompanyLinks,
+		MaxMetricObservations: cfg.Payload.MaxMetricObservations, MaxCompanyMetrics: cfg.Payload.MaxCompanyMetricsPerRequest,
+	})
+	hermesClient := hermes.NewClient(cfg.Connections.HermesAPIKey, hermes.ClientConfig{
+		RequestTimeout: cfg.Hermes.RequestTimeout, MaxAttempts: cfg.Hermes.MaxAttempts,
+		RetryBaseDelay: cfg.Hermes.RetryBaseDelay, MaxResponseBytes: cfg.Hermes.MaxResponse,
+	})
+	callService := calls.NewService(callRepository, hermesClient, cfg.Agents, calls.Config{
+		PollInterval: cfg.Queue.HermesPollInterval, DispatchBatchSize: cfg.Queue.DispatchBatchSize,
+		HistoryCleanupInterval: cfg.Queue.HistoryCleanupInterval, ContextCompactionTimeout: cfg.Queue.ContextCompactionTimeout,
+		ValeraProfileSyncMaxRetries:      cfg.Queue.ValeraProfileSyncRetries,
+		KonstantinHistoryDefaultPageSize: cfg.Pagination.KonstantinHistoryDefaultPageSize,
+		KonstantinHistoryMaxPageSize:     cfg.Pagination.KonstantinHistoryMaxPageSize,
+		KonstantinDefaultWindow:          time.Duration(cfg.Pagination.KonstantinDefaultWindowDays) * 24 * time.Hour,
+		KonstantinMaxWindow:              time.Duration(cfg.Pagination.KonstantinMaxWindowDays) * 24 * time.Hour,
+		KonstantinEventPollInterval:      cfg.WebSocket.EventPollInterval, MaxQuestionBytes: cfg.Payload.MaxQuestionBytes,
+	}, analyticsService)
+	newsService := news.NewService(callRepository, callService, cfg.Payload.MaxNewsTextBytes)
+	companyContextService := companycontext.NewService(profileStore, metricSettings, companycontext.Limits{
+		DefaultPageSize:      cfg.Pagination.CompanyItemsDefaultPageSize,
+		MaxPageSize:          cfg.Pagination.CompanyItemsMaxPageSize,
+		MaxMetricsPerRequest: cfg.Payload.MaxCompanyMetricsPerRequest,
+	})
 
 	ready := func(ctx context.Context) error {
 		if err := db.Ping(ctx); err != nil {
@@ -113,7 +108,7 @@ func runESB() error {
 			return err
 		}
 		for _, agent := range cfg.Agents {
-			checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			checkCtx, cancel := context.WithTimeout(ctx, cfg.Hermes.HealthTimeout)
 			err := hermesClient.Health(checkCtx, agent)
 			cancel()
 			if err != nil {
@@ -122,102 +117,28 @@ func runESB() error {
 		}
 		return nil
 	}
-	api := httpapi.NewHandler(cfg.ESBAPIKey, callService, analyticsService, companyContextService, newsService, ready)
+	api := httpapi.NewHandler(cfg.Connections.ESBAPIKey, callService, analyticsService, companyContextService, newsService, ready, httpapi.Config{
+		MaxJSONBodyBytes: cfg.HTTP.MaxJSONBodyBytes,
+		MaxFrameBytes:    cfg.WebSocket.MaxFrameBytes, ReadTimeout: cfg.WebSocket.ReadTimeout,
+		WriteTimeout:  cfg.WebSocket.WriteTimeout,
+		OutgoingQueue: cfg.WebSocket.OutgoingQueue, ReplayLimit: cfg.WebSocket.ReplayLimit,
+	})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", presentationmcp.NewStorageHandler(analyticsService, companyContextService, cfg.ESBAPIKey))
+	mux.Handle("/mcp", presentationmcp.NewStorageHandler(analyticsService, companyContextService, cfg.Connections.ESBAPIKey))
 	mux.Handle("/", api)
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: cfg.Connections.HTTPAddr, Handler: http.MaxBytesHandler(mux, cfg.HTTP.MaxJSONBodyBytes),
+		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout, IdleTimeout: cfg.HTTP.IdleTimeout}
 	go callService.Run(ctx)
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	log.Printf("ESB listening on %s", cfg.HTTPAddr)
+	log.Printf("ESB listening on %s", cfg.Connections.HTTPAddr)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
-}
-
-func loadConfig() (config, error) {
-	cfg := config{
-		HTTPAddr: env("HTTP_ADDR", ":8081"), DatabaseURL: os.Getenv("DATABASE_URL"), ESBAPIKey: os.Getenv("ESB_API_KEY"),
-		HermesAPIKey: os.Getenv("HERMES_API_KEY"), ClickHouseURL: strings.TrimRight(env("CLICKHOUSE_URL", "http://localhost:8123"), "/"),
-		CHDatabase: env("CLICKHOUSE_DATABASE", "default"), CHUser: env("CLICKHOUSE_USER", "default"), CHPassword: os.Getenv("CLICKHOUSE_PASSWORD"),
-		S3Bucket: os.Getenv("S3_BUCKET"), S3Region: env("S3_REGION", "us-east-1"), S3Endpoint: os.Getenv("S3_ENDPOINT"),
-		S3AccessKey: os.Getenv("S3_ACCESS_KEY_ID"), S3SecretKey: os.Getenv("S3_SECRET_ACCESS_KEY"), S3PathStyle: strings.EqualFold(os.Getenv("S3_FORCE_PATH_STYLE"), "true"),
-		S3CreateBucket: strings.EqualFold(os.Getenv("S3_CREATE_BUCKET"), "true"),
-		PollInterval:   2 * time.Second,
-	}
-	if cfg.DatabaseURL == "" || cfg.ESBAPIKey == "" || cfg.HermesAPIKey == "" || cfg.S3Bucket == "" {
-		return config{}, errors.New("DATABASE_URL, ESB_API_KEY, HERMES_API_KEY and S3_BUCKET are required")
-	}
-	if raw := os.Getenv("HERMES_POLL_INTERVAL"); raw != "" {
-		interval, err := time.ParseDuration(raw)
-		if err != nil || interval <= 0 {
-			return config{}, fmt.Errorf("invalid HERMES_POLL_INTERVAL %q", raw)
-		}
-		cfg.PollInterval = interval
-	}
-	root := env("AGENTS_DIR", "../agents")
-	for _, name := range []string{"serezha", "saveliy", "valera", "kesha", "konstantin"} {
-		definitionPath := filepath.Join(root, name, "agent.json")
-		data, err := os.ReadFile(definitionPath)
-		if err != nil {
-			return config{}, fmt.Errorf("read agent definition %s: %w", definitionPath, err)
-		}
-		var definition agentFile
-		if err := json.Unmarshal(data, &definition); err != nil {
-			return config{}, fmt.Errorf("parse agent definition %s: %w", definitionPath, err)
-		}
-		if definition.Name != name || definition.ScopeField == "" || definition.SkillFile == "" || definition.RuntimeURLEnv == "" {
-			return config{}, fmt.Errorf("agent definition %s is incomplete", definitionPath)
-		}
-		skillPath := filepath.Join(root, name, definition.SkillFile)
-		skill, err := os.ReadFile(skillPath)
-		if err != nil {
-			return config{}, fmt.Errorf("read skill for %s: %w", name, err)
-		}
-		instructions := skillInstructions(string(skill))
-		runtimeURL := strings.TrimRight(os.Getenv(definition.RuntimeURLEnv), "/")
-		if runtimeURL == "" {
-			return config{}, fmt.Errorf("%s is required", definition.RuntimeURLEnv)
-		}
-		historyLimit, err := maxHistoryLimit(definition)
-		if err != nil {
-			return config{}, fmt.Errorf("agent definition %s: %w", definitionPath, err)
-		}
-		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField, RequiredFields: definition.RequiredFields, MaxHistory: historyLimit, RuntimeURL: runtimeURL, Instructions: instructions})
-	}
-	return cfg, nil
-}
-
-func maxHistoryLimit(definition agentFile) (int, error) {
-	if definition.MaxHistory == nil {
-		return defaultHistoryLimit, nil
-	}
-	if *definition.MaxHistory < 0 {
-		return 0, errors.New("max_history_messages cannot be negative")
-	}
-	return *definition.MaxHistory, nil
-}
-
-func skillInstructions(markdown string) string {
-	markdown = strings.TrimSpace(markdown)
-	if strings.HasPrefix(markdown, "---\n") {
-		if end := strings.Index(markdown[4:], "\n---"); end >= 0 {
-			markdown = markdown[4+end+4:]
-		}
-	}
-	return strings.TrimSpace(markdown)
-}
-
-func env(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }

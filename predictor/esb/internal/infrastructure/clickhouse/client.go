@@ -15,24 +15,34 @@ import (
 	"time"
 )
 
-const maxResponseBytes = 4 << 20
-
 var databasePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-type Client struct {
-	baseURL  string
-	database string
-	user     string
-	password string
-	http     *http.Client
+const maxInsertErrorBodyBytes = 4096
+
+type ClientConfig struct {
+	RequestTimeout   time.Duration
+	MaxResponseBytes int64
 }
 
-func NewClient(baseURL, database, user, password string) (*Client, error) {
+type Client struct {
+	baseURL          string
+	database         string
+	user             string
+	password         string
+	http             *http.Client
+	maxResponseBytes int64
+}
+
+func NewClient(baseURL, database, user, password string, config ClientConfig) (*Client, error) {
 	database = strings.TrimSpace(database)
 	if !databasePattern.MatchString(database) {
 		return nil, errors.New("invalid ClickHouse database name")
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), database: database, user: user, password: password, http: &http.Client{Timeout: 45 * time.Second}}, nil
+	if config.RequestTimeout <= 0 || config.MaxResponseBytes <= 0 {
+		return nil, errors.New("ClickHouse timeout and response limit must be positive")
+	}
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), database: database, user: user, password: password,
+		http: &http.Client{Timeout: config.RequestTimeout}, maxResponseBytes: config.MaxResponseBytes}, nil
 }
 
 func (c *Client) Ping(ctx context.Context) error {
@@ -65,11 +75,11 @@ func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
 		return nil, err
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, c.maxResponseBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(body) > maxResponseBytes {
+	if int64(len(body)) > c.maxResponseBytes {
 		return nil, errors.New("ClickHouse response exceeds size limit")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -80,8 +90,9 @@ func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
 
 func (c *Client) Insert(ctx context.Context, table string, rows any) error {
 	allowed := map[string]bool{
-		"news": true, "facts": true, "fact_company": true, "metric_observations": true,
-		"company_analyses": true,
+		"news": true, "news_content": true, "news_processing": true,
+		"facts": true, "fact_company": true, "metric_observations": true,
+		"metric_totals": true, "company_analyses": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("unknown ClickHouse table %q", table)
@@ -114,7 +125,7 @@ func (c *Client) Insert(ctx context.Context, table string, rows any) error {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		message, _ := io.ReadAll(io.LimitReader(response.Body, maxInsertErrorBodyBytes))
 		return fmt.Errorf("ClickHouse HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
 	}
 	return nil
@@ -144,7 +155,7 @@ func (c *Client) queryRows(ctx context.Context, sql string, target any) error {
 		return err
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Buffer(make([]byte, 64*1024), maxResponseBytes)
+	scanner.Buffer(make([]byte, 64*1024), int(c.maxResponseBytes))
 	items := make([]json.RawMessage, 0)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())

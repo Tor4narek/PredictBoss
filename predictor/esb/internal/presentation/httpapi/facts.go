@@ -10,7 +10,7 @@ import (
 
 func (h *factsHandler) getFacts(w http.ResponseWriter, r *http.Request) {
 	var request getFactsRequest
-	if err := decodeJSONInto(w, r, &request); err != nil {
+	if err := decodeJSONInto(w, r, &request, h.maxJSONBodyBytes); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json_body")
 		return
 	}

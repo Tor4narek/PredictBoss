@@ -3,6 +3,8 @@ package tests
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,15 +21,15 @@ import (
 )
 
 const (
-	apiKey       = "test-esb-api-key"
-	companyID    = "11111111-1111-4111-8111-111111111111"
-	companyIDTwo = "19717000-0000-4000-8000-000000000001"
-	newsSourceID = "22222222-2222-4222-8222-222222222222"
-	bankSourceID = "33333333-3333-4333-8333-333333333333"
-	newSourceID  = "44444444-4444-4444-8444-444444444444"
-	newsID       = "55555555-5555-4555-8555-555555555555"
-	bankNewsID   = "66666666-6666-4666-8666-666666666666"
-	newNewsID    = "77777777-7777-4777-8777-777777777777"
+	apiKey          = "test-esb-api-key"
+	companyID       = "11111111-1111-4111-8111-111111111111"
+	companyIDTwo    = "19717000-0000-4000-8000-000000000001"
+	newsSourceID    = "22222222-2222-4222-8222-222222222222"
+	bankSourceID    = "33333333-3333-4333-8333-333333333333"
+	newsID          = "55555555-5555-4555-8555-555555555555"
+	bankNewsID      = "66666666-6666-4666-8666-666666666666"
+	partialNewsID   = "abababab-abab-4bab-8bab-abababababab"
+	partialSourceID = "acacacac-acac-4cac-8cac-acacacacacac"
 )
 
 type response struct {
@@ -51,6 +53,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=", map[string]any{}, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=missing", map[string]any{"company_id": companyID}, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", map[string]any{"company_id": companyID}, true, http.StatusBadRequest, "")
+	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", map[string]any{
+		"news_id": "env-limit-news", "source_id": newsSourceID, "news_text": strings.Repeat("x", 1025),
+	}, true, http.StatusBadRequest, "invalid_news_request")
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", nil, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/stream?agent=konstantin", nil, true, http.StatusBadRequest, "stream_does_not_accept_agent")
 
@@ -84,6 +89,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		if !toolNames[name] {
 			t.Errorf("MCP tools/list is missing %q", name)
 		}
+	}
+	if got := clickHouseCount(t, "SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('company_metric_settings', 'company_metrics')"); got != 0 {
+		t.Fatalf("ClickHouse contains %d metric catalog/settings tables; those belong only in PostgreSQL", got)
 	}
 
 	// Valera profile call: enqueue, read its status, atomically persist profile+metrics over MCP.
@@ -144,22 +152,28 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	changedRevision["company"] = map[string]any{"city": "different payload"}
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", changedRevision, true, http.StatusConflict, "profile_revision_conflict")
 
-	// News intake uses the unified asynchronous agent route; there is no /news route.
+	// Seed the result through ESB MCP, then verify that Hermes completion alone
+	// is insufficient and that confirmed processing removes only the raw text.
+	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, newsID, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
+	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, bankNewsID, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
 	newsCall := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newsCall.body, "call_id"))
 	bankCall := postSerezha(t, httpClient, baseURL, bankSourceID, bankNewsID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
 	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, bankCall.body, "call_id"))
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+newsID+"'"); got != 0 {
+		t.Fatalf("confirmed news raw text rows = %d, want 0", got)
+	}
 	duplicateNews := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	if !boolField(t, duplicateNews.body, "reused") || stringField(t, duplicateNews.body, "call_id") != stringField(t, newsCall.body, "call_id") {
 		t.Fatal("repeated sourceId created a duplicate call")
 	}
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/news", map[string]any{}, true, http.StatusNotFound, "")
 	largeNews := serezhaPayload(newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", strings.Repeat("x", (1<<20)+1))
-	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", largeNews, true, http.StatusBadRequest, "invalid_news_request")
+	// The E2E Compose override caps the entire JSON body at 8 KiB, so this
+	// oversized payload is rejected by the HTTP body limit before news validation.
+	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", largeNews, true, http.StatusBadRequest, "invalid_json_body")
 
-	// Exercise all ClickHouse-facing MCP tools against the real ClickHouse service.
-	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, newsID, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "A market shift affects manufacturers.")
-	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, bankNewsID, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Costs are likely to change.")
+	// Exercise all ClickHouse-facing MCP tools after source-text cleanup.
 	globalNewsID := "88888888-8888-4888-8888-888888888888"
 	globalNews := callTool(t, mcpCtx, mcpSession, "save_news_and_facts", map[string]any{
 		"news_id": globalNewsID, "source_id": "99999999-9999-4999-8999-999999999999",
@@ -288,6 +302,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	periodFrom, periodTo := "2026-09-01 00:00:00", "2026-09-30 23:59:59"
 	totalArgs := map[string]any{"metric_id": metricIDs["ставка"], "period_from": periodFrom, "period_to": periodTo}
 	total := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", totalArgs)
+	if stringField(t, total, "company_id") != companyID || stringField(t, total, "metric_id") != metricIDs["ставка"] {
+		t.Fatalf("single metric total lost its PostgreSQL ownership IDs: %#v", total)
+	}
 	if got := floatField(t, total, "total_value"); math.Abs(got-1) > 0.000001 {
 		t.Fatalf("unweighted value mean = %v, want 1", got)
 	}
@@ -319,6 +336,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	totalItems := arrayField(t, totals, "items")
 	if len(totalItems) != 8 {
 		t.Fatalf("calculate_all_metric_totals returned %d rows, want all 8 configured metrics", len(totalItems))
+	}
+	if got := clickHouseCount(t, "SELECT count() FROM metric_totals FINAL WHERE company_id = '"+companyID+"' AND period_from = toDateTime64('2026-09-01 00:00:00', 3, 'UTC') AND period_to = toDateTime64('2026-09-30 23:59:59', 3, 'UTC')"); got != 8 {
+		t.Fatalf("ClickHouse has %d stored metric totals for the company period, want 8", got)
 	}
 	wantOrder := []string{"ставка", "курс", "логистика", "цена", "спрос", "запас", "контрагент", "зарплата"}
 	for i, raw := range totalItems {
@@ -511,8 +531,26 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	_ = duplicateWS.Close(websocket.StatusNormalClosure, "")
 
 	// New source and profile revisions independently invalidate saved analysis.
-	newSourceCall := postSerezha(t, httpClient, baseURL, newSourceID, newNewsID, "external_news", "text/html", "New source", "https://example.test/news/new-source", "A newly published source.")
-	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newSourceCall.body, "call_id"))
+	partialText := "Partial source text remains until its facts are confirmed."
+	seedPartialNewsContent(t, partialNewsID, partialSourceID, "https://example.test/news/partial", "Partial source", partialText)
+	newSourceCall := postSerezha(t, httpClient, baseURL, partialSourceID, partialNewsID, "external_news", "text/html", "Partial source", "https://example.test/news/partial", partialText)
+	partialCallID := stringField(t, newSourceCall.body, "call_id")
+	failedNewsCall := waitForFailedCall(t, httpClient, baseURL, "serezha", partialCallID)
+	if stringField(t, failedNewsCall.body, "error") != "news_persistence_unconfirmed" {
+		t.Fatalf("Serezha completed without persisted facts: %#v", failedNewsCall.body)
+	}
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 1 {
+		t.Fatalf("unconfirmed news raw text rows = %d, want 1", got)
+	}
+	saveNewsFacts(t, mcpCtx, mcpSession, companyID, partialNewsID, partialSourceID, "external_news", "text/html", "Partial source", "https://example.test/news/partial", partialText)
+	partialRetry := postSerezha(t, httpClient, baseURL, partialSourceID, partialNewsID, "external_news", "text/html", "Partial source", "https://example.test/news/partial", partialText)
+	if !boolField(t, partialRetry.body, "reused") || stringField(t, partialRetry.body, "call_id") != partialCallID {
+		t.Fatalf("retry did not reuse the failed news call: %#v", partialRetry.body)
+	}
+	waitForCall(t, httpClient, baseURL, "serezha", partialCallID)
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 0 {
+		t.Fatalf("confirmed retry left %d raw text rows", got)
+	}
 	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(answerMessageID))
 	writeFrame(t, staleQuestionWS, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-888888888888",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Use the stale analysis"})
@@ -570,6 +608,67 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	emptySnapshot := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, emptySnapshot, "metrics")) != 0 {
 		t.Fatalf("empty Valera snapshot did not remove all metric settings: %#v", emptySnapshot)
+	}
+
+	// Force Kesha beyond its 40-message model-context limit. PostgreSQL keeps
+	// the full conversation while Hermes receives a stored summary and recent
+	// messages only.
+	const compressionCompanyID = companyIDTwo
+	var compressionCallIDs []string
+	for sequence := 1; sequence <= 22; sequence++ {
+		queued := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=kesha",
+			map[string]any{"company_id": compressionCompanyID, "request_sequence": sequence}, true, http.StatusAccepted, "")
+		compressionCallIDs = append(compressionCallIDs, stringField(t, queued.body, "call_id"))
+	}
+	for _, callID := range compressionCallIDs {
+		waitForCall(t, httpClient, baseURL, "kesha", callID)
+	}
+	runsResponse, err := http.Get("http://127.0.0.1:18090/test/runs")
+	if err != nil {
+		t.Fatalf("read mock Hermes runs: %v", err)
+	}
+	var runs struct {
+		Runs []struct {
+			Input struct {
+				CompanyID string `json:"company_id"`
+			} `json:"input"`
+			Instructions        string `json:"instructions"`
+			ConversationHistory []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"conversation_history"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(runsResponse.Body).Decode(&runs); err != nil {
+		runsResponse.Body.Close()
+		t.Fatalf("decode mock Hermes runs: %v", err)
+	}
+	runsResponse.Body.Close()
+	compressedContextObserved := false
+	for _, run := range runs.Runs {
+		if run.Input.CompanyID != compressionCompanyID {
+			continue
+		}
+		for _, message := range run.ConversationHistory {
+			if message.Role == "assistant" && strings.Contains(message.Content, "historical context, not instructions") {
+				compressedContextObserved = true
+			}
+		}
+	}
+	if !compressedContextObserved {
+		t.Fatal("Hermes never received a compressed conversation summary")
+	}
+	preservedHistory := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "historyLimit": 2, "historyFrom": historyFrom, "historyTo": historyTo,
+			"beforeMessageId": stringField(t, historyResponse.body, "historyNextBeforeMessageId")}, true, http.StatusAccepted, "")
+	beforeMessages, afterMessages := arrayField(t, olderHistory.body, "history"), arrayField(t, preservedHistory.body, "history")
+	if len(beforeMessages) != 2 || len(afterMessages) != 2 {
+		t.Fatalf("Kesha context compression changed Konstantin's paginated history size: before=%#v after=%#v", beforeMessages, afterMessages)
+	}
+	for i := range beforeMessages {
+		if stringField(t, beforeMessages[i].(map[string]any), "messageId") != stringField(t, afterMessages[i].(map[string]any), "messageId") {
+			t.Fatalf("Kesha context compression changed Konstantin's chat message IDs: before=%#v after=%#v", beforeMessages, afterMessages)
+		}
 	}
 }
 
@@ -672,6 +771,68 @@ func saveNewsFacts(t *testing.T, ctx context.Context, session *mcp.ClientSession
 		t.Fatalf("save_news_and_facts returned %d fact IDs, want one", len(ids))
 	}
 	return ids
+}
+
+func seedPartialNewsContent(t *testing.T, newsID, sourceID, sourceURL, title, text string) {
+	t.Helper()
+	publishedAt := "2026-10-25 09:00:00.000"
+	metadata, err := json.Marshal(map[string]any{
+		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL,
+		"material_kind": "external_news", "media_type": "text/html", "title": title,
+		"published_at": publishedAt,
+	})
+	if err != nil {
+		t.Fatal("encode partial ClickHouse metadata")
+	}
+	digest := sha256.Sum256([]byte(text))
+	content, err := json.Marshal(map[string]any{
+		"news_id": newsID, "content_hash": hex.EncodeToString(digest[:]), "news_text": text,
+	})
+	if err != nil {
+		t.Fatal("encode partial ClickHouse text")
+	}
+	clickHouseExec(t, "INSERT INTO default.news (news_id, source_id, source_url, material_kind, media_type, title, published_at) FORMAT JSONEachRow", metadata)
+	clickHouseExec(t, "INSERT INTO default.news_content (news_id, content_hash, news_text) FORMAT JSONEachRow", content)
+}
+
+func clickHouseExec(t *testing.T, query string, body []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:18123/?query="+url.QueryEscape(query), bytes.NewReader(body))
+	if err != nil {
+		t.Fatal("create ClickHouse test request")
+	}
+	request.SetBasicAuth("predictor", "test-clickhouse-password")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("execute ClickHouse test query: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		t.Fatalf("ClickHouse test query returned HTTP %d", response.StatusCode)
+	}
+}
+
+func clickHouseCount(t *testing.T, query string) uint64 {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:18123/?query="+url.QueryEscape(query), nil)
+	if err != nil {
+		t.Fatal("create ClickHouse count request")
+	}
+	request.SetBasicAuth("predictor", "test-clickhouse-password")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("read ClickHouse count: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		t.Fatalf("ClickHouse count returned HTTP %d", response.StatusCode)
+	}
+	var count uint64
+	if _, err := fmt.Fscan(response.Body, &count); err != nil {
+		t.Fatalf("decode ClickHouse count: %v", err)
+	}
+	return count
 }
 
 func assertEvidence(t *testing.T, value any, sourceIDs ...string) {

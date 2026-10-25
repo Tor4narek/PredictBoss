@@ -26,6 +26,8 @@ services:
       interval: 2s
       timeout: 3s
       retries: 40
+    ports:
+      - "18123:8123"
     volumes:
       - ch-data:/var/lib/clickhouse
 
@@ -48,6 +50,8 @@ services:
     command: ["python", "/app/mock_server.py"]
     environment:
       MOCK_PORT: "8090"
+    ports:
+      - "18090:8090"
     volumes:
       - ./mock_server.py:/app/mock_server.py:ro
     healthcheck:
@@ -84,6 +88,8 @@ services:
       S3_SECRET_ACCESS_KEY: test-minio-password
       S3_FORCE_PATH_STYLE: "true"
       S3_CREATE_BUCKET: "true"
+      HTTP_MAX_JSON_BODY_BYTES: "8192"
+      MAX_NEWS_TEXT_BYTES: "1024"
     ports:
       - "18081:8081"
     depends_on:

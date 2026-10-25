@@ -15,26 +15,29 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
-const MaxProfileBytes = 2 << 20
-
 type Config struct {
-	Bucket       string
-	Region       string
-	Endpoint     string
-	AccessKey    string
-	SecretKey    string
-	PathStyle    bool
-	CreateBucket bool
+	Bucket          string
+	Region          string
+	Endpoint        string
+	AccessKey       string
+	SecretKey       string
+	PathStyle       bool
+	CreateBucket    bool
+	MaxProfileBytes int64
 }
 
 type Store struct {
-	bucket string
-	client *awsS3.Client
+	bucket          string
+	client          *awsS3.Client
+	maxProfileBytes int64
 }
 
 func NewStore(ctx context.Context, cfg Config) (*Store, error) {
 	if strings.TrimSpace(cfg.Bucket) == "" {
 		return nil, errors.New("S3 bucket is required")
+	}
+	if cfg.MaxProfileBytes <= 0 {
+		return nil, errors.New("S3 profile size limit must be positive")
 	}
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
@@ -66,7 +69,7 @@ func NewStore(ctx context.Context, cfg Config) (*Store, error) {
 			}
 		}
 	}
-	return &Store{bucket: cfg.Bucket, client: client}, nil
+	return &Store{bucket: cfg.Bucket, client: client, maxProfileBytes: cfg.MaxProfileBytes}, nil
 }
 
 func (s *Store) Get(ctx context.Context, companyID string) (string, string, error) {
@@ -79,11 +82,11 @@ func (s *Store) Get(ctx context.Context, companyID string) (string, string, erro
 		return "", "", fmt.Errorf("read company profile from S3: %w", err)
 	}
 	defer result.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(result.Body, MaxProfileBytes+1))
+	body, err := io.ReadAll(io.LimitReader(result.Body, s.maxProfileBytes+1))
 	if err != nil {
 		return "", "", fmt.Errorf("read company profile body: %w", err)
 	}
-	if len(body) > MaxProfileBytes {
+	if int64(len(body)) > s.maxProfileBytes {
 		return "", "", errors.New("company profile exceeds size limit")
 	}
 	if strings.TrimSpace(string(body)) == "" {
@@ -98,7 +101,7 @@ func (s *Store) Save(ctx context.Context, companyID, markdown string) (string, e
 		return "", err
 	}
 	markdown = strings.TrimSpace(markdown)
-	if markdown == "" || len(markdown) > MaxProfileBytes {
+	if markdown == "" || int64(len(markdown)) > s.maxProfileBytes {
 		return "", errors.New("profile markdown is empty or too large")
 	}
 	_, err = s.client.PutObject(ctx, &awsS3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Body: strings.NewReader(markdown), ContentType: aws.String("text/markdown; charset=utf-8")})

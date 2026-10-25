@@ -1,0 +1,692 @@
+// Package config loads and validates the ESB process configuration from the
+// environment. Agent roles and Hermes runtime configuration remain in agents/.
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/predictboss/predictor/esb/internal/domain"
+)
+
+type LookupEnv func(string) (string, bool)
+
+type Definition struct {
+	Name        string
+	Type        string
+	Default     string
+	Range       string
+	Unit        string
+	Purpose     string
+	Category    string
+	Secret      bool
+	defaultRaw  string
+	minInt      int64
+	maxInt      int64
+	minDuration time.Duration
+	maxDuration time.Duration
+	required    bool
+}
+
+type Connections struct {
+	HTTPAddr       string
+	DatabaseURL    string
+	ESBAPIKey      string
+	HermesAPIKey   string
+	ClickHouseURL  string
+	CHDatabase     string
+	CHUser         string
+	CHPassword     string
+	S3Bucket       string
+	S3Region       string
+	S3Endpoint     string
+	S3AccessKey    string
+	S3SecretKey    string
+	S3PathStyle    bool
+	S3CreateBucket bool
+	AgentsDir      string
+}
+
+type HTTP struct {
+	ReadHeaderTimeout time.Duration
+	IdleTimeout       time.Duration
+	ShutdownTimeout   time.Duration
+	MaxJSONBodyBytes  int64
+}
+
+type Queue struct {
+	HermesPollInterval       time.Duration
+	DispatchBatchSize        int
+	HistoryCleanupInterval   time.Duration
+	ContextCompactionTimeout time.Duration
+	ValeraProfileSyncRetries int
+}
+
+type Hermes struct {
+	RequestTimeout time.Duration
+	HealthTimeout  time.Duration
+	MaxAttempts    int
+	RetryBaseDelay time.Duration
+	MaxResponse    int64
+}
+
+type ClickHouse struct {
+	RequestTimeout time.Duration
+	MaxResponse    int64
+}
+
+type WebSocket struct {
+	MaxFrameBytes     int64
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	OutgoingQueue     int
+	ReplayLimit       int
+	EventPollInterval time.Duration
+}
+
+type Pagination struct {
+	FactsDefaultPageSize             int
+	FactsMaxPageSize                 int
+	FactsMaxPeriodDays               int
+	CompanyItemsDefaultPageSize      int
+	CompanyItemsMaxPageSize          int
+	ConsultantDefaultPageSize        int
+	ConsultantMaxPageSize            int
+	KonstantinHistoryDefaultPageSize int
+	KonstantinHistoryMaxPageSize     int
+	KonstantinDefaultWindowDays      int
+	KonstantinMaxWindowDays          int
+	CompanyReportDefaultWindowDays   int
+	CompanyReportFactsLimit          int
+	CompanyReportAnalysisLimit       int
+}
+
+type PayloadLimits struct {
+	MaxNewsTextBytes            int64
+	MaxQuestionBytes            int64
+	MaxProfileBytes             int64
+	MaxFactsPerNews             int
+	MaxFactCompanyLinks         int
+	MaxMetricObservations       int
+	MaxCompanyMetricsPerRequest int
+}
+
+type Config struct {
+	Connections Connections
+	HTTP        HTTP
+	Queue       Queue
+	Hermes      Hermes
+	ClickHouse  ClickHouse
+	WebSocket   WebSocket
+	Pagination  Pagination
+	Payload     PayloadLimits
+	Agents      []domain.Agent
+}
+
+const (
+	defaultFactsPageSize           = 100
+	defaultFactsMaxPageSize        = 100
+	defaultCompanyPageSize         = 100
+	defaultCompanyMaxPageSize      = 500
+	defaultConsultantPageSize      = 100
+	defaultConsultantMaxPageSize   = 500
+	defaultKonstantinHistoryPage   = 100
+	defaultKonstantinHistoryMax    = 100
+	defaultKonstantinWindowDays    = 30
+	defaultKonstantinMaxWindowDays = 90
+	maxNewsRequestMetadataBytes    = int64(4096)
+)
+
+var definitions = buildDefinitions()
+
+func buildDefinitions() []Definition {
+	return []Definition{
+		stringDef("HTTP_ADDR", ":8081", "ESB listen address inside its network namespace.", "runtime", false),
+		stringDef("DATABASE_URL", "", "PostgreSQL connection URL used only by ESB.", "secret", true),
+		stringDef("ESB_API_KEY", "", "Bearer key required by Domain and Hermes MCP clients.", "secret", true),
+		stringDef("HERMES_API_KEY", "", "Bearer key ESB uses for Hermes runtime calls.", "secret", true),
+		stringDef("HERMES_SEREZHA_URL", "", "Serezha Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
+		stringDef("HERMES_SAVELIY_URL", "", "Saveliy Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
+		stringDef("HERMES_VALERA_URL", "", "Valera Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
+		stringDef("HERMES_KESHA_URL", "", "Kesha Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
+		stringDef("HERMES_KONSTANTIN_URL", "", "Konstantin Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
+		durationDef("HERMES_POLL_INTERVAL", 2*time.Second, time.Millisecond, 10*time.Minute, "interval", "Queue dispatch and Hermes status polling interval.", "runtime"),
+		intDef("QUEUE_DISPATCH_BATCH_SIZE", 100, 1, 10000, "calls", "Maximum queued calls claimed in one dispatch cycle; each claim can start one worker.", "runtime"),
+		durationDef("HISTORY_RETENTION_CLEANUP_INTERVAL", 24*time.Hour, time.Second, 365*24*time.Hour, "duration", "Interval between PostgreSQL history-retention cleanup passes.", "runtime"),
+		durationDef("CONTEXT_COMPACTION_TIMEOUT", 30*time.Second, time.Millisecond, time.Hour, "duration", "Maximum time spent requesting a compressed agent-context summary from Hermes.", "runtime"),
+		intDef("VALERA_PROFILE_SYNC_MAX_RETRIES", 1, 0, 1, "retries", "Maximum automatic retries after Valera output is completed but its profile revision is not confirmed; PostgreSQL retry_count allows 0..1.", "runtime"),
+		durationDef("HERMES_REQUEST_TIMEOUT", 45*time.Second, time.Millisecond, 10*time.Minute, "duration", "HTTP client timeout for Hermes run, status, and health requests.", "runtime"),
+		durationDef("HERMES_HEALTH_TIMEOUT", 2*time.Second, time.Millisecond, time.Minute, "duration", "Per-agent readiness probe timeout.", "runtime"),
+		intDef("HERMES_RETRY_MAX_ATTEMPTS", 5, 1, 20, "attempts", "Total attempts to submit a run to Hermes, including the first attempt.", "runtime"),
+		durationDef("HERMES_RETRY_BASE_DELAY", time.Second, 0, 5*time.Minute, "duration", "Base delay between Hermes submission retries; retry delay grows linearly by attempt.", "runtime"),
+		int64Def("HERMES_MAX_RESPONSE_BYTES", 1<<20, 1024, 16<<20, "bytes", "Maximum response body size accepted from Hermes.", "runtime"),
+		durationDef("CLICKHOUSE_REQUEST_TIMEOUT", 45*time.Second, time.Millisecond, time.Hour, "duration", "HTTP client timeout for ClickHouse requests.", "runtime"),
+		int64Def("CLICKHOUSE_MAX_RESPONSE_BYTES", 4<<20, 1024, 64<<20, "bytes", "Maximum ClickHouse response body size accepted by ESB.", "runtime"),
+		stringDef("CLICKHOUSE_URL", "http://localhost:8123", "ClickHouse HTTP interface URL.", "storage", false),
+		stringDef("CLICKHOUSE_DATABASE", "default", "ClickHouse database name.", "storage", false),
+		stringDef("CLICKHOUSE_USER", "predictor", "ClickHouse account used by ESB.", "storage", false),
+		stringDef("CLICKHOUSE_PASSWORD", "", "ClickHouse account password.", "secret", true),
+		stringDef("S3_BUCKET", "", "S3 bucket for company Markdown profiles.", "storage", true),
+		stringDef("S3_REGION", "us-east-1", "S3 signing region.", "storage", false),
+		stringDef("S3_ENDPOINT", "", "Optional S3-compatible endpoint; empty selects AWS endpoint discovery.", "storage", false),
+		stringDef("S3_ACCESS_KEY_ID", "", "Optional static S3 access key; pair with S3_SECRET_ACCESS_KEY.", "secret", false),
+		stringDef("S3_SECRET_ACCESS_KEY", "", "Optional static S3 secret key; pair with S3_ACCESS_KEY_ID.", "secret", false),
+		boolDef("S3_FORCE_PATH_STYLE", false, "Use path-style S3 URLs; typically enabled for MinIO.", "storage"),
+		boolDef("S3_CREATE_BUCKET", false, "Create the configured S3 bucket during ESB startup when missing.", "storage"),
+		stringDef("AGENTS_DIR", "../agents", "Directory containing agent.json, skills, and Hermes configuration.", "runtime", false),
+		intDef("AGENT_SEREZHA_MAX_HISTORY_MESSAGES", 40, 0, 10000, "messages", "Maximum prior messages passed to Serezha's Hermes run; zero disables history.", "agent-context"),
+		intDef("AGENT_SAVELIY_MAX_HISTORY_MESSAGES", 40, 0, 10000, "messages", "Maximum prior messages passed to Saveliy's Hermes run; zero disables history.", "agent-context"),
+		intDef("AGENT_VALERA_MAX_HISTORY_MESSAGES", 0, 0, 10000, "messages", "Maximum prior messages passed to Valera's Hermes run; zero disables history.", "agent-context"),
+		intDef("AGENT_KESHA_MAX_HISTORY_MESSAGES", 40, 0, 10000, "messages", "Maximum prior messages passed to Kesha's Hermes run; zero disables history.", "agent-context"),
+		intDef("AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES", 80, 0, 10000, "messages", "Maximum prior messages passed to Konstantin's Hermes run; zero disables history.", "agent-context"),
+		intDef("FACTS_DEFAULT_PAGE_SIZE", defaultFactsPageSize, 1, 100000, "facts", "Number of facts returned when a facts query omits limit.", "runtime"),
+		intDef("FACTS_MAX_PAGE_SIZE", defaultFactsMaxPageSize, 1, 100000, "facts", "Maximum facts returned by one paged facts query.", "runtime"),
+		intDef("FACTS_MAX_PERIOD_DAYS", 90, 1, 3650, "days", "Maximum allowed time span for a filtered facts query.", "runtime"),
+		intDef("COMPANY_ITEMS_DEFAULT_PAGE_SIZE", defaultCompanyPageSize, 1, 100000, "items", "Default page size for company fact and metric lists.", "runtime"),
+		intDef("COMPANY_ITEMS_MAX_PAGE_SIZE", defaultCompanyMaxPageSize, 1, 100000, "items", "Maximum page size for company fact and metric lists.", "runtime"),
+		intDef("CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE", defaultConsultantPageSize, 1, 100000, "items", "Default fact/observation page size in real-time consultant context.", "runtime"),
+		intDef("CONSULTANT_CONTEXT_MAX_PAGE_SIZE", defaultConsultantMaxPageSize, 1, 100000, "items", "Maximum fact/observation page size in real-time consultant context.", "runtime"),
+		intDef("KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE", defaultKonstantinHistoryPage, 1, 100000, "messages", "Default number of chat-history messages returned by one request.", "runtime"),
+		intDef("KONSTANTIN_HISTORY_MAX_PAGE_SIZE", defaultKonstantinHistoryMax, 1, 100000, "messages", "Maximum number of chat-history messages returned by one request.", "runtime"),
+		intDef("KONSTANTIN_HISTORY_DEFAULT_WINDOW_DAYS", defaultKonstantinWindowDays, 1, 3650, "days", "Default lookback period for Konstantin chat history.", "runtime"),
+		intDef("KONSTANTIN_HISTORY_MAX_WINDOW_DAYS", defaultKonstantinMaxWindowDays, 1, 3650, "days", "Maximum time span for Konstantin chat-history requests.", "runtime"),
+		intDef("COMPANY_REPORT_DEFAULT_WINDOW_DAYS", 30, 1, 3650, "days", "Default lookback period for company reports when dates are omitted.", "runtime"),
+		intDef("COMPANY_REPORT_FACTS_LIMIT", 200, 1, 100000, "facts", "Maximum company-linked facts included in one report.", "runtime"),
+		intDef("COMPANY_REPORT_ANALYSIS_LIMIT", 100, 1, 100000, "analyses", "Maximum stored company analyses included in one report.", "runtime"),
+		intDef("STREAM_REPLAY_LIMIT", 500, 1, 10000, "events", "Maximum prior Konstantin events replayed after WebSocket subscription.", "runtime"),
+		durationDef("KONSTANTIN_EVENT_POLL_INTERVAL", 300*time.Millisecond, time.Millisecond, time.Minute, "interval", "Interval for checking PostgreSQL for a completed real-time consultant answer.", "runtime"),
+		int64Def("HTTP_MAX_JSON_BODY_BYTES", 2<<20, 1024, 64<<20, "bytes", "Maximum JSON request body accepted by HTTP endpoints.", "runtime"),
+		int64Def("MAX_NEWS_TEXT_BYTES", 1<<20, 1, 64<<20, "bytes", "Maximum raw news text accepted before Hermes processing.", "runtime"),
+		int64Def("MAX_QUESTION_BYTES", 1<<20, 1, 16<<20, "bytes", "Maximum UTF-8 question text accepted over Konstantin WebSocket.", "runtime"),
+		int64Def("WS_MAX_FRAME_BYTES", 1<<20, 1024, 16<<20, "bytes", "Maximum inbound WebSocket frame size.", "runtime"),
+		int64Def("S3_PROFILE_MAX_BYTES", 2<<20, 1, 64<<20, "bytes", "Maximum company Markdown profile read from or written to S3.", "runtime"),
+		intDef("MAX_FACTS_PER_NEWS", 500, 1, 100000, "facts", "Maximum facts stored for a single news item in one MCP call.", "runtime"),
+		intDef("MAX_FACT_COMPANY_LINKS_PER_REQUEST", 1000, 1, 100000, "links", "Maximum fact-to-company links stored in one MCP call.", "runtime"),
+		intDef("MAX_METRIC_OBSERVATIONS_PER_REQUEST", 1000, 1, 100000, "observations", "Maximum metric observations stored in one MCP call.", "runtime"),
+		intDef("MAX_COMPANY_METRICS_PER_REQUEST", 500, 1, 100000, "metrics", "Maximum company metric settings accepted in one update.", "runtime"),
+		durationDef("HTTP_READ_HEADER_TIMEOUT", 5*time.Second, time.Millisecond, 10*time.Minute, "duration", "HTTP server timeout for receiving request headers.", "runtime"),
+		durationDef("HTTP_IDLE_TIMEOUT", 60*time.Second, time.Millisecond, 24*time.Hour, "duration", "HTTP server timeout for idle keep-alive connections.", "runtime"),
+		durationDef("HTTP_SHUTDOWN_TIMEOUT", 10*time.Second, time.Millisecond, 10*time.Minute, "duration", "Grace period for HTTP server shutdown after a termination signal.", "runtime"),
+		durationDef("WS_WRITE_TIMEOUT", 15*time.Second, time.Millisecond, 10*time.Minute, "duration", "Maximum time to write one WebSocket frame.", "runtime"),
+		durationDef("WS_READ_TIMEOUT", 0, 0, time.Hour, "duration", "Maximum idle time waiting for one WebSocket frame; zero keeps subscriptions open indefinitely.", "runtime"),
+		intDef("WS_OUTGOING_QUEUE_SIZE", 64, 1, 65536, "frames", "Bounded queue of outbound WebSocket frames per connection.", "runtime"),
+		stringDef("POSTGRES_DB", "predictor", "Database name for the PostgreSQL Compose service.", "compose", false),
+		stringDef("POSTGRES_USER", "predictor", "Account name for the PostgreSQL Compose service.", "compose", false),
+		stringDef("POSTGRES_PASSWORD", "local-predictor-password", "Local Compose PostgreSQL password; replace for private deployments.", "secret", false),
+		durationDef("POSTGRES_HEALTHCHECK_INTERVAL", 5*time.Second, time.Millisecond, time.Hour, "duration", "PostgreSQL container healthcheck interval in Compose.", "compose"),
+		durationDef("POSTGRES_HEALTHCHECK_TIMEOUT", 3*time.Second, time.Millisecond, time.Hour, "duration", "PostgreSQL container healthcheck command timeout in Compose.", "compose"),
+		intDef("POSTGRES_HEALTHCHECK_RETRIES", 20, 1, 100, "retries", "Consecutive PostgreSQL healthcheck failures before the container is unhealthy.", "compose"),
+		durationDef("CLICKHOUSE_HEALTHCHECK_INTERVAL", 5*time.Second, time.Millisecond, time.Hour, "duration", "ClickHouse container healthcheck interval in Compose.", "compose"),
+		durationDef("CLICKHOUSE_HEALTHCHECK_TIMEOUT", 3*time.Second, time.Millisecond, time.Hour, "duration", "ClickHouse container healthcheck command timeout in Compose.", "compose"),
+		intDef("CLICKHOUSE_HEALTHCHECK_RETRIES", 20, 1, 100, "retries", "Consecutive ClickHouse healthcheck failures before the container is unhealthy.", "compose"),
+		durationDef("MINIO_HEALTHCHECK_INTERVAL", 3*time.Second, time.Millisecond, time.Hour, "duration", "MinIO container healthcheck interval in Compose.", "compose"),
+		durationDef("MINIO_HEALTHCHECK_TIMEOUT", 2*time.Second, time.Millisecond, time.Hour, "duration", "MinIO container healthcheck command timeout in Compose.", "compose"),
+		intDef("MINIO_HEALTHCHECK_RETRIES", 30, 1, 100, "retries", "Consecutive MinIO healthcheck failures before the container is unhealthy.", "compose"),
+		durationDef("ESB_HEALTHCHECK_INTERVAL", 10*time.Second, time.Millisecond, time.Hour, "duration", "ESB container healthcheck interval in Compose.", "compose"),
+		durationDef("ESB_HEALTHCHECK_TIMEOUT", 3*time.Second, time.Millisecond, time.Hour, "duration", "ESB container healthcheck command timeout in Compose.", "compose"),
+		intDef("ESB_HEALTHCHECK_RETRIES", 20, 1, 100, "retries", "Consecutive ESB healthcheck failures before the container is unhealthy.", "compose"),
+		stringDef("MINIO_IMAGE", "dappros/minio:RELEASE.2025-09-07T16-13-09Z", "Image used for the local S3-compatible MinIO service.", "compose", false),
+		stringDef("MINIO_ROOT_USER", "predictor-local", "Local MinIO root account.", "secret", false),
+		stringDef("MINIO_ROOT_PASSWORD", "local-minio-password-change-me", "Local MinIO root password; replace for private deployments.", "secret", false),
+		stringDef("LLM_API_KEY", "", "LLM provider key consumed by Hermes, never by ESB.", "secret", true),
+		stringDef("ATLAS_TOKEN", "", "Optional Atlas token used by the ClickHouse Atlas driver.", "secret", false),
+		intDef("ESB_HOST_PORT", 8081, 1, 65535, "port", "Host port published for the ESB HTTP service.", "compose"),
+		intDef("MINIO_API_HOST_PORT", 9000, 1, 65535, "port", "Host port published for the MinIO S3 API.", "compose"),
+		intDef("MINIO_CONSOLE_HOST_PORT", 9001, 1, 65535, "port", "Host port published for the MinIO console.", "compose"),
+		stringDef("ESB_E2E_BASE_URL", "http://127.0.0.1:18081", "Test-only base URL for the ESB E2E suite.", "test", false),
+		stringDef("MOCK_PORT", "8090", "Test-only listening port for the mock Hermes runtime.", "test", false),
+	}
+}
+
+func stringDef(name, fallback, purpose, category string, required bool) Definition {
+	defaultText := fallback
+	if fallback == "" {
+		if required {
+			defaultText = "required"
+		} else {
+			defaultText = "empty / unset"
+		}
+	}
+	return Definition{Name: name, Type: "string", Default: defaultText, Range: "not validated", Unit: "—", Purpose: purpose,
+		Category: category, Secret: category == "secret", defaultRaw: fallback, required: required}
+}
+
+func boolDef(name string, fallback bool, purpose, category string) Definition {
+	value := strconv.FormatBool(fallback)
+	return Definition{Name: name, Type: "bool", Default: value, Range: "true | false", Unit: "—", Purpose: purpose,
+		Category: category, defaultRaw: value}
+}
+
+func intDef(name string, fallback, min, max int64, unit, purpose, category string) Definition {
+	return Definition{Name: name, Type: "integer", Default: strconv.FormatInt(fallback, 10),
+		Range: fmt.Sprintf("%d…%d", min, max), Unit: unit, Purpose: purpose, Category: category,
+		defaultRaw: strconv.FormatInt(fallback, 10), minInt: min, maxInt: max}
+}
+
+func int64Def(name string, fallback, min, max int64, unit, purpose, category string) Definition {
+	definition := intDef(name, fallback, min, max, unit, purpose, category)
+	definition.Type = "integer (int64)"
+	return definition
+}
+
+func durationDef(name string, fallback, min, max time.Duration, unit, purpose, category string) Definition {
+	minText, maxText := min.String(), max.String()
+	return Definition{Name: name, Type: "duration", Default: fallback.String(), Range: minText + "…" + maxText,
+		Unit: unit, Purpose: purpose, Category: category, defaultRaw: fallback.String(),
+		minDuration: min, maxDuration: max}
+}
+
+func Definitions() []Definition {
+	result := make([]Definition, len(definitions))
+	copy(result, definitions)
+	return result
+}
+
+func Load() (Config, error) { return LoadFrom(os.LookupEnv) }
+
+func LoadFrom(lookup LookupEnv) (Config, error) {
+	if lookup == nil {
+		return Config{}, errors.New("environment lookup is required")
+	}
+	var cfg Config
+	var err error
+	getString := func(name string) (string, error) { return stringValue(lookup, name) }
+	getBool := func(name string) (bool, error) { return boolValue(lookup, name) }
+	getInt := func(name string) (int, error) { return intValue(lookup, name) }
+	getInt64 := func(name string) (int64, error) { return int64Value(lookup, name) }
+	getDuration := func(name string) (time.Duration, error) { return durationValue(lookup, name) }
+
+	if cfg.Connections.HTTPAddr, err = getString("HTTP_ADDR"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.DatabaseURL, err = getString("DATABASE_URL"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.ESBAPIKey, err = getString("ESB_API_KEY"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.HermesAPIKey, err = getString("HERMES_API_KEY"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.ClickHouseURL, err = getString("CLICKHOUSE_URL"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.CHDatabase, err = getString("CLICKHOUSE_DATABASE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.CHUser, err = getString("CLICKHOUSE_USER"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.CHPassword, err = getString("CLICKHOUSE_PASSWORD"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3Bucket, err = getString("S3_BUCKET"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3Region, err = getString("S3_REGION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3Endpoint, err = getString("S3_ENDPOINT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3AccessKey, err = getString("S3_ACCESS_KEY_ID"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3SecretKey, err = getString("S3_SECRET_ACCESS_KEY"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3PathStyle, err = getBool("S3_FORCE_PATH_STYLE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.S3CreateBucket, err = getBool("S3_CREATE_BUCKET"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.AgentsDir, err = getString("AGENTS_DIR"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Connections.DatabaseURL == "" || cfg.Connections.ESBAPIKey == "" || cfg.Connections.HermesAPIKey == "" || cfg.Connections.S3Bucket == "" {
+		return Config{}, errors.New("DATABASE_URL, ESB_API_KEY, HERMES_API_KEY and S3_BUCKET are required")
+	}
+	if (cfg.Connections.S3AccessKey == "") != (cfg.Connections.S3SecretKey == "") {
+		return Config{}, errors.New("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together")
+	}
+	cfg.Connections.ClickHouseURL = strings.TrimRight(cfg.Connections.ClickHouseURL, "/")
+
+	if cfg.HTTP.ReadHeaderTimeout, err = getDuration("HTTP_READ_HEADER_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.HTTP.IdleTimeout, err = getDuration("HTTP_IDLE_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.HTTP.ShutdownTimeout, err = getDuration("HTTP_SHUTDOWN_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.HTTP.MaxJSONBodyBytes, err = getInt64("HTTP_MAX_JSON_BODY_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Queue.HermesPollInterval, err = getDuration("HERMES_POLL_INTERVAL"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Queue.DispatchBatchSize, err = getInt("QUEUE_DISPATCH_BATCH_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Queue.HistoryCleanupInterval, err = getDuration("HISTORY_RETENTION_CLEANUP_INTERVAL"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Queue.ContextCompactionTimeout, err = getDuration("CONTEXT_COMPACTION_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Queue.ValeraProfileSyncRetries, err = getInt("VALERA_PROFILE_SYNC_MAX_RETRIES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Hermes.RequestTimeout, err = getDuration("HERMES_REQUEST_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Hermes.HealthTimeout, err = getDuration("HERMES_HEALTH_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Hermes.MaxAttempts, err = getInt("HERMES_RETRY_MAX_ATTEMPTS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Hermes.RetryBaseDelay, err = getDuration("HERMES_RETRY_BASE_DELAY"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Hermes.MaxResponse, err = getInt64("HERMES_MAX_RESPONSE_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.ClickHouse.RequestTimeout, err = getDuration("CLICKHOUSE_REQUEST_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.ClickHouse.MaxResponse, err = getInt64("CLICKHOUSE_MAX_RESPONSE_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.MaxFrameBytes, err = getInt64("WS_MAX_FRAME_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.ReadTimeout, err = getDuration("WS_READ_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.WriteTimeout, err = getDuration("WS_WRITE_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.OutgoingQueue, err = getInt("WS_OUTGOING_QUEUE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.ReplayLimit, err = getInt("STREAM_REPLAY_LIMIT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.EventPollInterval, err = getDuration("KONSTANTIN_EVENT_POLL_INTERVAL"); err != nil {
+		return Config{}, err
+	}
+
+	if cfg.Pagination.FactsDefaultPageSize, err = getInt("FACTS_DEFAULT_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.FactsMaxPageSize, err = getInt("FACTS_MAX_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.FactsMaxPeriodDays, err = getInt("FACTS_MAX_PERIOD_DAYS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.CompanyItemsDefaultPageSize, err = getInt("COMPANY_ITEMS_DEFAULT_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.CompanyItemsMaxPageSize, err = getInt("COMPANY_ITEMS_MAX_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.ConsultantDefaultPageSize, err = getInt("CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.ConsultantMaxPageSize, err = getInt("CONSULTANT_CONTEXT_MAX_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.KonstantinHistoryDefaultPageSize, err = getInt("KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.KonstantinHistoryMaxPageSize, err = getInt("KONSTANTIN_HISTORY_MAX_PAGE_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.KonstantinDefaultWindowDays, err = getInt("KONSTANTIN_HISTORY_DEFAULT_WINDOW_DAYS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.KonstantinMaxWindowDays, err = getInt("KONSTANTIN_HISTORY_MAX_WINDOW_DAYS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.CompanyReportDefaultWindowDays, err = getInt("COMPANY_REPORT_DEFAULT_WINDOW_DAYS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.CompanyReportFactsLimit, err = getInt("COMPANY_REPORT_FACTS_LIMIT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Pagination.CompanyReportAnalysisLimit, err = getInt("COMPANY_REPORT_ANALYSIS_LIMIT"); err != nil {
+		return Config{}, err
+	}
+	if err := validatePagination(cfg.Pagination); err != nil {
+		return Config{}, err
+	}
+
+	if cfg.Payload.MaxNewsTextBytes, err = getInt64("MAX_NEWS_TEXT_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxQuestionBytes, err = getInt64("MAX_QUESTION_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxProfileBytes, err = getInt64("S3_PROFILE_MAX_BYTES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxFactsPerNews, err = getInt("MAX_FACTS_PER_NEWS"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxFactCompanyLinks, err = getInt("MAX_FACT_COMPANY_LINKS_PER_REQUEST"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxMetricObservations, err = getInt("MAX_METRIC_OBSERVATIONS_PER_REQUEST"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxCompanyMetricsPerRequest, err = getInt("MAX_COMPANY_METRICS_PER_REQUEST"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Payload.MaxNewsTextBytes+maxNewsRequestMetadataBytes > cfg.HTTP.MaxJSONBodyBytes {
+		return Config{}, errors.New("MAX_NEWS_TEXT_BYTES must fit inside HTTP_MAX_JSON_BODY_BYTES with request metadata")
+	}
+	if cfg.Payload.MaxQuestionBytes > cfg.WebSocket.MaxFrameBytes {
+		return Config{}, errors.New("MAX_QUESTION_BYTES cannot exceed WS_MAX_FRAME_BYTES")
+	}
+
+	root := cfg.Connections.AgentsDir
+	if root == "" {
+		root = "../agents"
+	}
+	for _, name := range []string{"serezha", "saveliy", "valera", "kesha", "konstantin"} {
+		definitionPath := filepath.Join(root, name, "agent.json")
+		data, readErr := os.ReadFile(definitionPath)
+		if readErr != nil {
+			return Config{}, fmt.Errorf("read agent definition %s: %w", definitionPath, readErr)
+		}
+		var definition agentFile
+		if err := json.Unmarshal(data, &definition); err != nil {
+			return Config{}, fmt.Errorf("parse agent definition %s: %w", definitionPath, err)
+		}
+		if definition.Name != name || definition.ScopeField == "" || definition.SkillFile == "" || definition.RuntimeURLEnv == "" {
+			return Config{}, fmt.Errorf("agent definition %s is incomplete", definitionPath)
+		}
+		skillPath := filepath.Join(root, name, definition.SkillFile)
+		skill, err := os.ReadFile(skillPath)
+		if err != nil {
+			return Config{}, fmt.Errorf("read skill for %s: %w", name, err)
+		}
+		runtimeURL, err := stringValue(lookup, definition.RuntimeURLEnv)
+		if err != nil {
+			return Config{}, err
+		}
+		if strings.TrimSpace(runtimeURL) == "" {
+			return Config{}, fmt.Errorf("%s is required", definition.RuntimeURLEnv)
+		}
+		historyLimit, err := intValue(lookup, "AGENT_"+strings.ToUpper(name)+"_MAX_HISTORY_MESSAGES")
+		if err != nil {
+			return Config{}, err
+		}
+		policy, err := parseContextPolicy(definition.ContextPolicy)
+		if err != nil {
+			return Config{}, fmt.Errorf("agent definition %s: %w", definitionPath, err)
+		}
+		if definition.HistoryRetentionDays < 0 {
+			return Config{}, fmt.Errorf("agent definition %s: history_retention_days cannot be negative", definitionPath)
+		}
+		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField,
+			RequiredFields: definition.RequiredFields, MaxHistory: historyLimit, HistoryRetentionDays: definition.HistoryRetentionDays,
+			ContextPolicy: policy, RuntimeURL: strings.TrimRight(runtimeURL, "/"), Instructions: skillInstructions(string(skill))})
+	}
+	return cfg, nil
+}
+
+type agentFile struct {
+	Name                 string             `json:"name"`
+	ScopeField           string             `json:"scope_field"`
+	SkillFile            string             `json:"skill_file"`
+	RuntimeURLEnv        string             `json:"runtime_url_env"`
+	RequiredFields       []string           `json:"required_fields"`
+	HistoryRetentionDays int                `json:"history_retention_days"`
+	ContextPolicy        *contextPolicyFile `json:"context_policy"`
+}
+
+type contextPolicyFile struct {
+	CompressAfterMessages int    `json:"compress_after_messages"`
+	BatchMessages         int    `json:"batch_messages"`
+	SummaryMaxBytes       int    `json:"summary_max_bytes"`
+	SummaryStorage        string `json:"summary_storage"`
+}
+
+func parseContextPolicy(raw *contextPolicyFile) (domain.ContextPolicy, error) {
+	if raw == nil {
+		return domain.ContextPolicy{}, nil
+	}
+	if raw.CompressAfterMessages < 0 || raw.BatchMessages < 0 || raw.SummaryMaxBytes < 0 {
+		return domain.ContextPolicy{}, errors.New("context policy values cannot be negative")
+	}
+	if raw.CompressAfterMessages == 0 {
+		if raw.BatchMessages != 0 || raw.SummaryMaxBytes != 0 || raw.SummaryStorage != "" {
+			return domain.ContextPolicy{}, errors.New("disabled context compression cannot set summary options")
+		}
+		return domain.ContextPolicy{}, nil
+	}
+	if raw.BatchMessages < 1 || raw.SummaryMaxBytes < 256 || raw.SummaryStorage != "postgres" {
+		return domain.ContextPolicy{}, errors.New("enabled context compression requires batch_messages, summary_max_bytes >= 256 and summary_storage postgres")
+	}
+	return domain.ContextPolicy{CompressAfterMessages: raw.CompressAfterMessages, BatchMessages: raw.BatchMessages,
+		SummaryMaxBytes: raw.SummaryMaxBytes, SummaryStorage: raw.SummaryStorage}, nil
+}
+
+func skillInstructions(markdown string) string {
+	markdown = strings.TrimSpace(markdown)
+	if strings.HasPrefix(markdown, "---\n") {
+		if end := strings.Index(markdown[4:], "\n---"); end >= 0 {
+			markdown = markdown[4+end+4:]
+		}
+	}
+	return strings.TrimSpace(markdown)
+}
+
+func validatePagination(p Pagination) error {
+	for name, pair := range map[string][2]int{
+		"FACTS_DEFAULT_PAGE_SIZE":              {p.FactsDefaultPageSize, p.FactsMaxPageSize},
+		"COMPANY_ITEMS_DEFAULT_PAGE_SIZE":      {p.CompanyItemsDefaultPageSize, p.CompanyItemsMaxPageSize},
+		"CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE": {p.ConsultantDefaultPageSize, p.ConsultantMaxPageSize},
+		"KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE": {p.KonstantinHistoryDefaultPageSize, p.KonstantinHistoryMaxPageSize},
+	} {
+		if pair[0] > pair[1] {
+			return fmt.Errorf("%s cannot exceed its corresponding maximum", name)
+		}
+	}
+	if p.KonstantinDefaultWindowDays > p.KonstantinMaxWindowDays {
+		return errors.New("KONSTANTIN_HISTORY_DEFAULT_WINDOW_DAYS cannot exceed KONSTANTIN_HISTORY_MAX_WINDOW_DAYS")
+	}
+	return nil
+}
+
+func stringValue(lookup LookupEnv, name string) (string, error) {
+	spec := definition(name)
+	value, ok := lookup(name)
+	if !ok || strings.TrimSpace(value) == "" {
+		if spec.required {
+			return "", fmt.Errorf("%s is required", name)
+		}
+		return spec.defaultRaw, nil
+	}
+	return value, nil
+}
+
+func boolValue(lookup LookupEnv, name string) (bool, error) {
+	value, err := stringValue(lookup, name)
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid %s: expected true or false", name)
+	}
+}
+
+func intValue(lookup LookupEnv, name string) (int, error) {
+	value, err := parseInt64(lookup, name)
+	if err != nil {
+		return 0, err
+	}
+	if int64(int(value)) != value {
+		return 0, fmt.Errorf("invalid %s: integer overflows this platform", name)
+	}
+	return int(value), nil
+}
+
+func int64Value(lookup LookupEnv, name string) (int64, error) { return parseInt64(lookup, name) }
+
+func parseInt64(lookup LookupEnv, name string) (int64, error) {
+	spec := definition(name)
+	value, err := stringValue(lookup, name)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: expected integer in %s", name, spec.Range)
+	}
+	if parsed < spec.minInt || parsed > spec.maxInt {
+		return 0, fmt.Errorf("invalid %s: expected integer in %s", name, spec.Range)
+	}
+	return parsed, nil
+}
+
+func durationValue(lookup LookupEnv, name string) (time.Duration, error) {
+	spec := definition(name)
+	value, err := stringValue(lookup, name)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: expected duration in %s", name, spec.Range)
+	}
+	if parsed < spec.minDuration || parsed > spec.maxDuration {
+		return 0, fmt.Errorf("invalid %s: expected duration in %s", name, spec.Range)
+	}
+	return parsed, nil
+}
+
+func definition(name string) Definition {
+	for _, spec := range definitions {
+		if spec.Name == name {
+			return spec
+		}
+	}
+	panic("unknown ESB configuration setting: " + name)
+}

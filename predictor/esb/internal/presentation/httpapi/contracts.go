@@ -15,7 +15,7 @@ type getCallRequest struct {
 	CompanyIDCamel string `json:"companyId,omitempty" jsonschema:"Company UUID."`
 	PeriodFrom     string `json:"period_from,omitempty" jsonschema:"Inclusive start date for a Kesha report."`
 	PeriodTo       string `json:"period_to,omitempty" jsonschema:"Inclusive end date for a Kesha report."`
-	HistoryLimit   int    `json:"historyLimit,omitempty" jsonschema:"Maximum number of Konstantin history messages in this batch."`
+	HistoryLimit   int    `json:"historyLimit,omitempty" jsonschema:"Number of Konstantin history messages; defaults to KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE and cannot exceed KONSTANTIN_HISTORY_MAX_PAGE_SIZE."`
 	HistoryFrom    string `json:"historyFrom,omitempty" jsonschema:"RFC 3339 lower bound for Konstantin chat history."`
 	HistoryTo      string `json:"historyTo,omitempty" jsonschema:"RFC 3339 upper bound for Konstantin chat history."`
 	BeforeMessage  string `json:"beforeMessageId,omitempty" jsonschema:"Message cursor for loading an older history batch."`
@@ -36,7 +36,7 @@ type getFactsRequest struct {
 	PeriodFromSnake string `json:"period_from,omitempty" jsonschema:"Inclusive RFC 3339 lower bound."`
 	PeriodTo        string `json:"periodTo,omitempty" jsonschema:"Exclusive RFC 3339 upper bound."`
 	PeriodToSnake   string `json:"period_to,omitempty" jsonschema:"Exclusive RFC 3339 upper bound."`
-	Limit           int    `json:"limit,omitempty" jsonschema:"Page size, at most 100."`
+	Limit           int    `json:"limit,omitempty" jsonschema:"Page size; defaults to FACTS_DEFAULT_PAGE_SIZE and cannot exceed FACTS_MAX_PAGE_SIZE."`
 	BeforeFactID    string `json:"beforeFactId,omitempty" jsonschema:"Fact ID cursor for the next page."`
 	BeforeFactSnake string `json:"before_fact_id,omitempty" jsonschema:"Fact ID cursor for the next page."`
 }

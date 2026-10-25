@@ -1,7 +1,7 @@
 {
   "tools": [
     {
-      "description": "Read a company's metric rows from PostgreSQL, recalculate each row from ClickHouse, and return the catalog-ordered results without persisting totals.",
+      "description": "Read a company's metric rows from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -131,7 +131,7 @@
       }
     },
     {
-      "description": "Recalculate one metric row from ClickHouse for an inclusive news-time range; no total is persisted.",
+      "description": "Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. Metric ownership is resolved from PostgreSQL settings.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -158,6 +158,9 @@
       "outputSchema": {
         "additionalProperties": false,
         "properties": {
+          "company_id": {
+            "type": "string"
+          },
           "fact_count": {
             "maximum": 4294967295,
             "minimum": 0,
@@ -221,6 +224,7 @@
           }
         },
         "required": [
+          "company_id",
           "metric_id",
           "period_from",
           "period_to",

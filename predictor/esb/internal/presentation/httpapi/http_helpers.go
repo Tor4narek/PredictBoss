@@ -7,11 +7,9 @@ import (
 	"net/http"
 )
 
-const maxRequestBytes = 2 << 20
-
-func decodeJSONBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, error) {
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (json.RawMessage, error) {
 	var raw json.RawMessage
-	if err := decodeJSONInto(w, r, &raw); err != nil {
+	if err := decodeJSONInto(w, r, &raw, maxBytes); err != nil {
 		return nil, err
 	}
 	var object map[string]json.RawMessage
@@ -21,8 +19,8 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, er
 	return raw, nil
 }
 
-func decodeJSONInto(w http.ResponseWriter, r *http.Request, target any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+func decodeJSONInto(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(target); err != nil {
 		return err
