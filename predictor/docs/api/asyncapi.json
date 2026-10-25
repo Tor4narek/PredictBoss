@@ -1,0 +1,282 @@
+{
+  "asyncapi": "2.6.0",
+  "channels": {
+    "/stream": {
+      "description": "Konstantin's company-scoped conversation. Connect using the streamUrl returned by GET /call?agent=konstantin.",
+      "parameters": {
+        "afterMessageId": {
+          "description": "Optional replay cursor; only later persisted messages are sent.",
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "companyId": {
+          "description": "Company UUID.",
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "conversationId": {
+          "description": "Company-scoped conversation ID.",
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "requestId": {
+          "description": "Optional pending analysis request to await.",
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      },
+      "publish": {
+        "message": {
+          "oneOf": [
+            {
+              "$ref": "#/components/messages/Question"
+            }
+          ]
+        },
+        "operationId": "askKonstantin",
+        "summary": "Send a question to Konstantin."
+      },
+      "subscribe": {
+        "message": {
+          "oneOf": [
+            {
+              "$ref": "#/components/messages/ConsultantEvent"
+            },
+            {
+              "$ref": "#/components/messages/Accepted"
+            },
+            {
+              "$ref": "#/components/messages/StreamError"
+            }
+          ]
+        },
+        "operationId": "receiveKonstantinEvents",
+        "summary": "Receive analysis, answers, acknowledgements, and errors."
+      }
+    }
+  },
+  "components": {
+    "messages": {
+      "Accepted": {
+        "contentType": "application/json",
+        "name": "Accepted",
+        "payload": {
+          "$ref": "#/components/schemas/Accepted"
+        }
+      },
+      "ConsultantEvent": {
+        "contentType": "application/json",
+        "name": "ConsultantEvent",
+        "payload": {
+          "$ref": "#/components/schemas/ConsultantEvent"
+        }
+      },
+      "Question": {
+        "contentType": "application/json",
+        "name": "Question",
+        "payload": {
+          "$ref": "#/components/schemas/Question"
+        }
+      },
+      "StreamError": {
+        "contentType": "application/json",
+        "name": "StreamError",
+        "payload": {
+          "$ref": "#/components/schemas/StreamError"
+        }
+      }
+    },
+    "schemas": {
+      "Accepted": {
+        "additionalProperties": false,
+        "properties": {
+          "callId": {
+            "description": "Queued Hermes call ID.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Message kind; always accepted.",
+            "enum": [
+              "accepted"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Question request ID.",
+            "type": "string"
+          },
+          "reused": {
+            "description": "True when an idempotent earlier call was reused.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "callId",
+          "reused"
+        ],
+        "title": "Accepted",
+        "type": "object"
+      },
+      "ConsultantEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "analysisId": {
+            "type": "string"
+          },
+          "companyId": {
+            "type": "string"
+          },
+          "conversationId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "originKind": {
+                  "type": "string"
+                },
+                "sourceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sourceId",
+                "originKind"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "analysis_result",
+              "assistant_answer"
+            ],
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "kind",
+          "requestId",
+          "companyId",
+          "conversationId",
+          "analysisId",
+          "messageId",
+          "text",
+          "evidence",
+          "createdAt"
+        ],
+        "title": "ConsultantEvent",
+        "type": "object"
+      },
+      "Question": {
+        "additionalProperties": false,
+        "properties": {
+          "analysisId": {
+            "description": "Current ready analysis ID.",
+            "type": "string"
+          },
+          "companyId": {
+            "description": "Optional company UUID; if supplied it must match the subscription.",
+            "type": "string"
+          },
+          "conversationId": {
+            "description": "Optional chat ID; if supplied it must match the subscription.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Message kind; must be question.",
+            "enum": [
+              "question"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Idempotency ID for this user question.",
+            "type": "string"
+          },
+          "text": {
+            "description": "User question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "analysisId",
+          "text"
+        ],
+        "title": "Question",
+        "type": "object"
+      },
+      "StreamError": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "description": "Stable error code.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Message kind; always error.",
+            "enum": [
+              "error"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Related request ID when available.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "error"
+        ],
+        "title": "StreamError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The only WebSocket API in ESB. The client subscribes to a company conversation and may send question frames.",
+    "title": "Predictor ESB Konstantin WebSocket",
+    "version": "0.3.0"
+  },
+  "servers": {
+    "local": {
+      "description": "Send Authorization: Bearer $ESB_API_KEY during the handshake.",
+      "protocol": "ws",
+      "url": "localhost:8081"
+    }
+  }
+}

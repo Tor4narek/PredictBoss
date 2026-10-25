@@ -1,0 +1,1521 @@
+{
+  "components": {
+    "schemas": {
+      "AcceptedCall": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "description": "Selected agent type.",
+            "enum": [
+              "serezha",
+              "saveliy",
+              "valera",
+              "kesha",
+              "konstantin"
+            ],
+            "type": "string"
+          },
+          "call_id": {
+            "description": "Identifier of the queued asynchronous call.",
+            "type": "string"
+          },
+          "call_status": {
+            "description": "Current queue status for news and consultant calls.",
+            "type": "string"
+          },
+          "companyId": {
+            "description": "Company UUID for Valera calls.",
+            "type": "string"
+          },
+          "profileRevision": {
+            "description": "Reserved profile revision for Valera calls.",
+            "type": "integer"
+          },
+          "reused": {
+            "description": "True when an idempotent earlier call was reused.",
+            "type": "boolean"
+          },
+          "scope_id": {
+            "description": "Agent-specific conversation scope.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Acceptance state or queue status.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reused"
+        ],
+        "title": "AcceptedCall",
+        "type": "object"
+      },
+      "Call": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "enum": [
+              "serezha",
+              "saveliy",
+              "valera",
+              "kesha",
+              "konstantin"
+            ],
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "hermes_run_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "output": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id",
+          "agent",
+          "scope_id",
+          "conversation_id",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Call",
+        "type": "object"
+      },
+      "CallLookupBody": {
+        "additionalProperties": false,
+        "properties": {
+          "beforeMessageId": {
+            "description": "Message cursor for loading an older history batch.",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "Read a queued call by its ID.",
+            "type": "string"
+          },
+          "companyId": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "company_id": {
+            "description": "Company UUID; snake_case compatibility alias.",
+            "type": "string"
+          },
+          "historyFrom": {
+            "description": "RFC 3339 lower bound for Konstantin chat history.",
+            "type": "string"
+          },
+          "historyLimit": {
+            "description": "Maximum number of Konstantin history messages in this batch.",
+            "type": "integer"
+          },
+          "historyTo": {
+            "description": "RFC 3339 upper bound for Konstantin chat history.",
+            "type": "string"
+          },
+          "period_from": {
+            "description": "Inclusive start date for a Kesha report.",
+            "type": "string"
+          },
+          "period_to": {
+            "description": "Inclusive end date for a Kesha report.",
+            "type": "string"
+          }
+        },
+        "title": "CallLookupBody",
+        "type": "object"
+      },
+      "CompanyReport": {
+        "additionalProperties": false,
+        "properties": {
+          "analyses": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "company_id": {
+                  "type": "string"
+                },
+                "metric_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "period_from": {
+                  "type": "string"
+                },
+                "period_to": {
+                  "type": "string"
+                },
+                "probability": {
+                  "type": "number"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "company_id",
+                "period_from",
+                "period_to",
+                "probability",
+                "metric_ids",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "company_id": {
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "match_confidence": {
+                  "type": "number"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "relevance": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "news_id",
+                "source_id",
+                "source_url",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence",
+                "relevance",
+                "match_confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "metric_type": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type_code": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type_code",
+                "name",
+                "description",
+                "unit",
+                "metric_type",
+                "characteristic"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "totals": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "fact_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "links": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "news_id": {
+                        "type": "string"
+                      },
+                      "news_time": {
+                        "type": "string"
+                      },
+                      "news_url": {
+                        "type": "string"
+                      },
+                      "source_kind": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "news_id",
+                      "news_url",
+                      "news_time",
+                      "source_kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "probability_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_probability": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "total_value": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "type_code": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "metric_id",
+                "type_code",
+                "characteristic",
+                "total_value",
+                "total_probability",
+                "fact_count",
+                "probability_count",
+                "links"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "facts",
+          "metrics",
+          "totals",
+          "analyses"
+        ],
+        "title": "CompanyReport",
+        "type": "object"
+      },
+      "ConsultantProcessing": {
+        "additionalProperties": false,
+        "properties": {
+          "companyId": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "conversationId": {
+            "description": "Company-scoped chat ID.",
+            "type": "string"
+          },
+          "history": {
+            "description": "Bounded page of this company's chat history.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "analysisId": {
+                  "type": "string"
+                },
+                "companyId": {
+                  "type": "string"
+                },
+                "conversationId": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "originKind": {
+                        "type": "string"
+                      },
+                      "sourceId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sourceId",
+                      "originKind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "messageId": {
+                  "type": "string"
+                },
+                "requestId": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "messageId",
+                "role",
+                "kind",
+                "requestId",
+                "companyId",
+                "conversationId",
+                "analysisId",
+                "text",
+                "evidence",
+                "createdAt"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "historyFrom": {
+            "description": "Inclusive RFC 3339 history window start.",
+            "type": "string"
+          },
+          "historyHasMore": {
+            "description": "Whether an older history page is available.",
+            "type": "boolean"
+          },
+          "historyNextBeforeMessageId": {
+            "description": "Cursor for the next older history page.",
+            "type": "string"
+          },
+          "historyTo": {
+            "description": "Exclusive RFC 3339 history window end.",
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Pending analysis request ID.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Always processing.",
+            "type": "string"
+          },
+          "streamUrl": {
+            "description": "WebSocket subscription URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "companyId",
+          "conversationId",
+          "requestId",
+          "streamUrl",
+          "history",
+          "historyHasMore",
+          "historyFrom",
+          "historyTo"
+        ],
+        "title": "ConsultantProcessing",
+        "type": "object"
+      },
+      "ConsultantReady": {
+        "additionalProperties": false,
+        "properties": {
+          "analysisId": {
+            "description": "Current analysis ID.",
+            "type": "string"
+          },
+          "companyId": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "conversationId": {
+            "description": "Company-scoped chat ID.",
+            "type": "string"
+          },
+          "createdAt": {
+            "description": "Analysis creation time.",
+            "type": "string"
+          },
+          "evidence": {
+            "description": "Source evidence for the analysis.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "originKind": {
+                  "type": "string"
+                },
+                "sourceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sourceId",
+                "originKind"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "history": {
+            "description": "Bounded page of this company's chat history.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "analysisId": {
+                  "type": "string"
+                },
+                "companyId": {
+                  "type": "string"
+                },
+                "conversationId": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "originKind": {
+                        "type": "string"
+                      },
+                      "sourceId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sourceId",
+                      "originKind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "messageId": {
+                  "type": "string"
+                },
+                "requestId": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "messageId",
+                "role",
+                "kind",
+                "requestId",
+                "companyId",
+                "conversationId",
+                "analysisId",
+                "text",
+                "evidence",
+                "createdAt"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "historyFrom": {
+            "description": "Inclusive RFC 3339 history window start.",
+            "type": "string"
+          },
+          "historyHasMore": {
+            "description": "Whether an older history page is available.",
+            "type": "boolean"
+          },
+          "historyNextBeforeMessageId": {
+            "description": "Cursor for the next older history page.",
+            "type": "string"
+          },
+          "historyTo": {
+            "description": "Exclusive RFC 3339 history window end.",
+            "type": "string"
+          },
+          "messageId": {
+            "description": "Persisted analysis message ID.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Always ready.",
+            "type": "string"
+          },
+          "streamUrl": {
+            "description": "WebSocket subscription URL.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Analysis text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "companyId",
+          "conversationId",
+          "analysisId",
+          "messageId",
+          "text",
+          "evidence",
+          "createdAt",
+          "streamUrl",
+          "history",
+          "historyHasMore",
+          "historyFrom",
+          "historyTo"
+        ],
+        "title": "ConsultantReady",
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "description": "Stable error code.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "Error",
+        "type": "object"
+      },
+      "FactsQueryBody": {
+        "additionalProperties": false,
+        "properties": {
+          "beforeFactId": {
+            "description": "Fact ID cursor for the next page.",
+            "type": "string"
+          },
+          "before_fact_id": {
+            "description": "Fact ID cursor for the next page.",
+            "type": "string"
+          },
+          "category": {
+            "description": "Fact category.",
+            "type": "string"
+          },
+          "companyId": {
+            "description": "Company UUID; snake_case compatibility alias is also accepted.",
+            "type": "string"
+          },
+          "company_id": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "entity": {
+            "description": "Entity assigned to the fact.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Page size, at most 100.",
+            "type": "integer"
+          },
+          "materialKind": {
+            "description": "Material kind: external_news or alpha_analysis.",
+            "type": "string"
+          },
+          "material_kind": {
+            "description": "Material kind: external_news or alpha_analysis.",
+            "type": "string"
+          },
+          "newsId": {
+            "description": "Stable news identifier.",
+            "type": "string"
+          },
+          "news_id": {
+            "description": "Stable news identifier.",
+            "type": "string"
+          },
+          "periodFrom": {
+            "description": "Inclusive RFC 3339 lower bound.",
+            "type": "string"
+          },
+          "periodTo": {
+            "description": "Exclusive RFC 3339 upper bound.",
+            "type": "string"
+          },
+          "period_from": {
+            "description": "Inclusive RFC 3339 lower bound.",
+            "type": "string"
+          },
+          "period_to": {
+            "description": "Exclusive RFC 3339 upper bound.",
+            "type": "string"
+          },
+          "sourceId": {
+            "description": "Source UUID.",
+            "type": "string"
+          },
+          "source_id": {
+            "description": "Source UUID.",
+            "type": "string"
+          }
+        },
+        "title": "FactsQueryBody",
+        "type": "object"
+      },
+      "FactsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "description": "Response kind; always facts.",
+            "type": "string"
+          },
+          "facts": {
+            "description": "Page of matching universal facts.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "match_confidence": {
+                  "type": "number"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "relevance": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "news_id",
+                "source_id",
+                "source_url",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "hasMore": {
+            "description": "Whether another page is available.",
+            "type": "boolean"
+          },
+          "nextBeforeFactId": {
+            "description": "Cursor for the next page.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "facts",
+          "hasMore"
+        ],
+        "title": "FactsResponse",
+        "type": "object"
+      },
+      "Health": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "description": "Current service state.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "Health",
+        "type": "object"
+      },
+      "KeshaCallBody": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "period_from": {
+            "description": "Optional inclusive start date for analysis.",
+            "type": "string"
+          },
+          "period_to": {
+            "description": "Optional inclusive end date for analysis.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id"
+        ],
+        "title": "KeshaCallBody",
+        "type": "object"
+      },
+      "KonstantinCallBody": {
+        "additionalProperties": false,
+        "properties": {
+          "companyId": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "company_id": {
+            "description": "Company UUID; snake_case compatibility alias.",
+            "type": "string"
+          }
+        },
+        "title": "KonstantinCallBody",
+        "type": "object"
+      },
+      "SaveliyCallBody": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "facts": {
+            "description": "Optional facts already returned by Serezha.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "description": "Fact category.",
+                  "type": "string"
+                },
+                "confidence": {
+                  "description": "Confidence from 0 to 1.",
+                  "type": "number"
+                },
+                "entities": {
+                  "description": "Entities named in the fact.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "description": "Evidence excerpt from the source.",
+                  "type": "string"
+                },
+                "fact_id": {
+                  "description": "Existing universal fact UUID.",
+                  "type": "string"
+                },
+                "fact_text": {
+                  "description": "Text of the existing fact.",
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "description": "Event timestamp, or null if unknown.",
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                }
+              },
+              "required": [
+                "fact_id",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "news_id": {
+            "description": "News identifier whose facts should be linked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "news_id"
+        ],
+        "title": "SaveliyCallBody",
+        "type": "object"
+      },
+      "SerezhaCallBody": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "description": "Optional company UUID.",
+            "type": "string"
+          },
+          "material_kind": {
+            "description": "Material kind: external_news or alpha_analysis.",
+            "type": "string"
+          },
+          "media_type": {
+            "description": "Source media type: text/html or application/pdf.",
+            "type": "string"
+          },
+          "news_id": {
+            "description": "Stable news identifier.",
+            "type": "string"
+          },
+          "news_text": {
+            "description": "Cleaned text of the news article, up to 1 MiB.",
+            "type": "string"
+          },
+          "published_at": {
+            "description": "Publication timestamp in RFC 3339 format.",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "source_id": {
+            "description": "Source UUID.",
+            "type": "string"
+          },
+          "source_url": {
+            "description": "Canonical URL of the news source.",
+            "type": "string"
+          },
+          "title": {
+            "description": "News title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "news_id",
+          "source_id",
+          "news_text"
+        ],
+        "title": "SerezhaCallBody",
+        "type": "object"
+      },
+      "ValeraCallBody": {
+        "additionalProperties": false,
+        "properties": {
+          "company": {
+            "additionalProperties": true,
+            "description": "Company JSON object used to build the Markdown profile and metric settings.",
+            "type": "object"
+          },
+          "companyId": {
+            "description": "Company UUID.",
+            "type": "string"
+          },
+          "profileRevision": {
+            "description": "Monotonically increasing profile revision.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "companyId",
+          "profileRevision",
+          "company"
+        ],
+        "title": "ValeraCallBody",
+        "type": "object"
+      },
+      "ValeraCallEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "description": "Compatibility field; agent query parameter remains authoritative.",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": false,
+            "description": "Valera payload.",
+            "properties": {
+              "company": {
+                "additionalProperties": true,
+                "description": "Company JSON object used to build the Markdown profile and metric settings.",
+                "type": "object"
+              },
+              "companyId": {
+                "description": "Company UUID.",
+                "type": "string"
+              },
+              "profileRevision": {
+                "description": "Monotonically increasing profile revision.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "companyId",
+              "profileRevision",
+              "company"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "payload"
+        ],
+        "title": "ValeraCallEnvelope",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "ESBBearer": {
+        "bearerFormat": "ESB_API_KEY",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "HTTP contract for Domain integrations. WebSocket messages are documented in asyncapi.json; MCP tools are documented in mcp-tools.md.",
+    "title": "Predictor ESB HTTP API",
+    "version": "0.3.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/call": {
+      "get": {
+        "description": "Use `agent` to read an agent call/report or `data=facts` to query ClickHouse facts. Filters and IDs are sent in the JSON body, including for GET requests. GET for Konstantin by company returns bounded chat history and queues an analysis if its current result is missing or stale.",
+        "operationId": "readCallOrFacts",
+        "parameters": [
+          {
+            "description": "Agent whose call or company report is requested. Mutually exclusive with data=facts.",
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "enum": [
+                "serezha",
+                "saveliy",
+                "valera",
+                "kesha",
+                "konstantin"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set to facts to query ClickHouse facts instead of an agent result.",
+            "in": "query",
+            "name": "data",
+            "required": false,
+            "schema": {
+              "enum": [
+                "facts"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CallLookupBody"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FactsQueryBody"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "Call lookup, consultant history, or fact filters.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Call"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CompanyReport"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ConsultantReady"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FactsResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "A call, report, fact page, or ready consultant result."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsultantProcessing"
+                }
+              }
+            },
+            "description": "The consultant analysis was queued or is still processing."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request or JSON body."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bearer token is missing or invalid."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Requested call or conversation was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with current profile or source state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "ESB could not complete the request."
+          }
+        },
+        "security": [
+          {
+            "ESBBearer": []
+          }
+        ],
+        "summary": "Read a call, company report, facts, or consultant state",
+        "tags": [
+          "calls"
+        ]
+      },
+      "post": {
+        "description": "Select the agent with the `agent` query parameter. Every accepted call returns `call_id`; read its status with GET /call using the same agent. The JSON body shape depends on the agent.",
+        "operationId": "enqueueAgentCall",
+        "parameters": [
+          {
+            "description": "Agent to invoke.",
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "enum": [
+                "serezha",
+                "saveliy",
+                "valera",
+                "kesha",
+                "konstantin"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional request idempotency key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ValeraCallBody"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ValeraCallEnvelope"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SerezhaCallBody"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SaveliyCallBody"
+                  },
+                  {
+                    "$ref": "#/components/schemas/KeshaCallBody"
+                  },
+                  {
+                    "$ref": "#/components/schemas/KonstantinCallBody"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "Agent-specific JSON payload.",
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedCall"
+                }
+              }
+            },
+            "description": "The asynchronous call was accepted."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request or JSON body."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bearer token is missing or invalid."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with current profile or source state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "ESB could not complete the request."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "ESBBearer": []
+          }
+        ],
+        "summary": "Start an asynchronous agent call",
+        "tags": [
+          "calls"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Public process liveness endpoint.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Service is alive."
+          }
+        },
+        "summary": "Liveness check",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Checks the dependencies required by ESB.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "All required dependencies are available."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [
+          {
+            "ESBBearer": []
+          }
+        ],
+        "summary": "Dependency readiness",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8081"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Service health.",
+      "name": "health"
+    },
+    {
+      "description": "Asynchronous agent calls and their results.",
+      "name": "calls"
+    },
+    {
+      "description": "Read-only ClickHouse fact queries.",
+      "name": "facts"
+    }
+  ]
+}

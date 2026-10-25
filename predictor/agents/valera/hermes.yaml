@@ -1,0 +1,29 @@
+model:
+  provider: custom
+  default: google/gemma-4-26b-a4b-it
+  base_url: https://changellenge.up.railway.app/v1
+  key_env: LLM_API_KEY
+platform_toolsets:
+  api_server: []
+gateway:
+  api_server:
+    enabled: true
+    host: 0.0.0.0
+    port: 8642
+    max_concurrent_runs: 0
+agent:
+  max_turns: 10
+  reasoning_effort: low
+  disabled_toolsets: [terminal, browser, web, file, memory, delegation, process, automation]
+skills:
+  external_dirs: [/opt/skills]
+mcp_servers:
+  esb:
+    url: http://esb:8081/mcp
+    headers:
+      Authorization: "Bearer ${ESB_API_KEY}"
+    supports_parallel_tool_calls: false
+    tools:
+      include: [get_company_metrics, save_company_profile_and_metrics]
+      prompts: false
+      resources: false

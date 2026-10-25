@@ -1,0 +1,24 @@
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+
+# Go build and test artifacts
+**/bin/
+**/tmp/
+**/coverage.out
+**/coverage.html
+**/*.test
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Docker and local tooling
+.docker/
+docker-data/
