@@ -1,0 +1,80 @@
+/* Страница занимает экран целиком: сообщения прокручиваются, поле ввода всегда внизу. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  height: calc(100vh - 2 * var(--space-8));
+  min-height: 480px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.headings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.badges {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.title {
+  font-size: var(--text-heading-l-size);
+  line-height: normal;
+  font-weight: var(--font-weight-bold);
+}
+
+.description {
+  font-size: var(--text-body-m-size);
+  line-height: normal;
+  color: var(--color-text-secondary);
+}
+
+.statePanel {
+  flex: 1;
+  justify-content: center;
+}
+
+.messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+}
+
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.secondaryActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.hint {
+  font-size: var(--text-caption-size);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.sendError {
+  font-size: var(--text-caption-size);
+  color: var(--color-accent);
+}

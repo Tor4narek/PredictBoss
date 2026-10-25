@@ -1,0 +1,23 @@
+.action {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  color: var(--color-accent);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.action:disabled {
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
+}

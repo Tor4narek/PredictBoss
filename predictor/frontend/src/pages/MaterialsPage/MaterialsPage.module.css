@@ -1,0 +1,54 @@
+.addButton {
+  min-width: 285px;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.dateField {
+  width: 445px;
+  flex-shrink: 1;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.more {
+  align-self: center;
+}
+
+.tablePanel {
+  overflow: hidden;
+}
+
+.titleCell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.title {
+  overflow: hidden;
+  font-size: var(--text-body-m-size);
+  font-weight: var(--font-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.url {
+  font-size: var(--text-caption-size);
+  color: var(--color-text-secondary);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-caption-size);
+  color: var(--color-text-secondary);
+}

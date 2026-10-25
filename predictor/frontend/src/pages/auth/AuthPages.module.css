@@ -1,0 +1,80 @@
+/* Карточка входа из фреймов «01 · Вход»: ширина 560, отступы 48. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  width: 560px;
+  max-width: 100%;
+  padding: 48px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.about {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.eyebrow {
+  font-size: var(--text-caption-size);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.heroTitle {
+  font-size: 36px;
+  line-height: 43px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.heroText {
+  font-size: 16px;
+  line-height: 26px;
+  color: var(--color-text-secondary);
+}
+
+.title {
+  font-size: 32px;
+  line-height: 43px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.switch {
+  font-size: var(--text-small-size);
+  line-height: var(--text-body-m-line);
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.switch a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.switch a:hover {
+  text-decoration: underline;
+}
+
+.error {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-subtle);
+  font-size: var(--text-small-size);
+  color: var(--color-accent);
+}

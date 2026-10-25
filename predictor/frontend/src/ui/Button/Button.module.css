@@ -1,0 +1,108 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body-m-size);
+  line-height: var(--text-body-m-line);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.md {
+  height: var(--control-height-md);
+}
+
+.lg {
+  height: var(--control-height-lg);
+}
+
+.fullWidth {
+  width: 100%;
+}
+
+.square {
+  padding: 0;
+}
+
+.md.square {
+  width: var(--control-height-md);
+}
+
+.lg.square {
+  width: var(--control-height-lg);
+}
+
+/* Основная */
+.primary {
+  background: var(--color-accent);
+  color: var(--color-surface);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.primary:active:not(:disabled) {
+  background: var(--color-accent-active);
+}
+
+/* Вторичная */
+.secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.secondary:hover:not(:disabled) {
+  background: var(--color-field);
+}
+
+.secondary:active:not(:disabled) {
+  background: var(--color-canvas);
+}
+
+/* Текстовая */
+.ghost {
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--color-canvas);
+}
+
+/* Недоступная — одинакова для всех вариантов (Style=Disabled в Figma) */
+.button:disabled {
+  background: var(--color-border);
+  border-color: transparent;
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
+}
+
+/* Во время загрузки оставляем исходный цвет, чтобы кнопка не «мигала» */
+.button[aria-busy='true'].primary {
+  background: var(--color-accent);
+  color: var(--color-surface);
+  cursor: progress;
+}
+
+.button[aria-busy='true'].secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+  cursor: progress;
+}
+
+.button[aria-busy='true'].ghost {
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: progress;
+}
