@@ -46,7 +46,7 @@ func (h *factsHandler) getFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		log.Printf("read facts from ClickHouse: %v", err)
+		log.Printf("read facts from ClickHouse failed (error_type=%T)", err)
 		writeError(w, http.StatusInternalServerError, "facts_lookup_failed")
 		return
 	}

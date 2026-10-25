@@ -28,6 +28,7 @@ func (r *metricTotalRepositoryFake) SaveMetricTotal(_ context.Context, total dom
 type metricSettingsFake struct {
 	domain.CompanyMetricSettingsRepository
 	metrics   []domain.CompanyMetric
+	metric    domain.CompanyMetric
 	companyID string
 }
 
@@ -45,20 +46,22 @@ func (r *metricSettingsFake) CompanyMetrics(context.Context, string, int) ([]dom
 	return r.metrics, nil
 }
 
-func (r *metricSettingsFake) CompanyIDForMetric(context.Context, string) (string, error) {
-	return r.companyID, nil
+func (r *metricSettingsFake) MetricForID(context.Context, string) (domain.CompanyMetric, string, error) {
+	return r.metric, r.companyID, nil
 }
 
 func TestCalculateMetricTotalPersistsCompanyOwnedSnapshot(t *testing.T) {
 	repository := &metricTotalRepositoryFake{}
-	service := NewService(repository, &metricSettingsFake{companyID: "company-1"}, testLimits())
+	service := NewService(repository, &metricSettingsFake{
+		companyID: "company-1", metric: domain.CompanyMetric{Unit: "₽/месяц"},
+	}, testLimits())
 
 	metricID := "11111111-1111-4111-8111-111111111111"
 	total, err := service.CalculateMetricTotal(context.Background(), metricID, "2026-09-01", "2026-09-30")
 	if err != nil {
 		t.Fatalf("CalculateMetricTotal returned error: %v", err)
 	}
-	if total.CompanyID != "company-1" || len(repository.saved) != 1 || repository.saved[0].MetricID != metricID {
+	if total.CompanyID != "company-1" || total.Unit != "₽/месяц" || len(repository.saved) != 1 || repository.saved[0].MetricID != metricID {
 		t.Fatalf("metric total was not persisted with its PostgreSQL owner: total=%#v saved=%#v", total, repository.saved)
 	}
 }
@@ -66,7 +69,7 @@ func TestCalculateMetricTotalPersistsCompanyOwnedSnapshot(t *testing.T) {
 func TestCalculateAllMetricTotalsPersistsEmptyAndPopulatedRows(t *testing.T) {
 	repository := &metricTotalRepositoryFake{}
 	settings := &metricSettingsFake{metrics: []domain.CompanyMetric{
-		{ID: "11111111-1111-4111-8111-111111111111", TypeCode: "ставка", Characteristic: "лизинга"},
+		{ID: "11111111-1111-4111-8111-111111111111", TypeCode: "ставка", Characteristic: "лизинга", Unit: "% годовых"},
 		{ID: "22222222-2222-4222-8222-222222222222", TypeCode: "цена", Characteristic: "топлива"},
 	}}
 	service := NewService(repository, settings, testLimits())
@@ -77,6 +80,9 @@ func TestCalculateAllMetricTotalsPersistsEmptyAndPopulatedRows(t *testing.T) {
 	}
 	if len(totals.Items) != 2 || len(repository.saved) != 2 || len(repository.calculated) != 0 {
 		t.Fatalf("reversed period did not persist both empty rows: totals=%#v saved=%#v calculated=%#v", totals, repository.saved, repository.calculated)
+	}
+	if totals.Items[0].Unit != "% годовых" {
+		t.Fatalf("metric total did not preserve its PostgreSQL measurement unit: %#v", totals.Items[0])
 	}
 	for _, total := range repository.saved {
 		if total.CompanyID != "22222222-2222-4222-8222-222222222222" || total.TotalValue != nil || total.FactCount != 0 {

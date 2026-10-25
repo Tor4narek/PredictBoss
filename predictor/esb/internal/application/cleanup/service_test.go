@@ -103,16 +103,20 @@ func (f *staleFake) ReconcileStale(_ context.Context, queuedBefore, runningBefor
 }
 
 type analyticsFake struct {
-	calls   int
-	policy  domain.AnalyticsRetention
-	newsIDs []string
-	batch   int
-	err     error
+	calls    int
+	policy   domain.AnalyticsRetention
+	newsIDs  []string
+	batch    int
+	err      error
+	policies chan domain.AnalyticsRetention
 }
 
 func (f *analyticsFake) Prune(_ context.Context, policy domain.AnalyticsRetention, _ time.Time, ids []string, batch int) (map[string]int, error) {
 	f.calls++
 	f.policy, f.newsIDs, f.batch = policy, ids, batch
+	if f.policies != nil {
+		f.policies <- policy
+	}
 	return map[string]int{"processed_news_text": 1}, f.err
 }
 
@@ -204,6 +208,86 @@ func TestRetentionPartialFailureIsRetryableAndDoesNotAdvanceClickHouse(t *testin
 	}
 }
 
+func TestImmediatePassRunsOnlyImmediatePolicies(t *testing.T) {
+	repo := &cleanupRepoFake{}
+	analytics := &analyticsFake{}
+	messages := inertMessages()
+	messages[domain.AgentSaveliy] = domain.RetentionPolicy{Immediate: true}
+	policy := inertAnalyticsRetention()
+	policy.ProcessedNewsText = domain.RetentionPolicy{Immediate: true}
+	policy.UnprocessedNewsText = domain.RetentionPolicy{Immediate: true}
+	policy.Facts = domain.RetentionPolicy{Age: time.Hour}
+	service := NewService(&staleFake{}, repo, analytics, Config{
+		Enabled: true, BatchSize: 7, MessagesRetention: messages,
+		CallPayloadRetention:    domain.RetentionPolicy{Immediate: true},
+		CallRecordRetention:     domain.RetentionPolicy{Never: true},
+		ContextSummaryRetention: domain.RetentionPolicy{Never: true}, Analytics: policy,
+	})
+
+	service.pruneImmediateData(context.Background())
+
+	if repo.payloadCalls != 1 || repo.recordCalls != 0 || repo.messageCalls[domain.AgentSaveliy] != 1 ||
+		len(repo.messageCalls) != 1 || repo.terminalCalls != 1 {
+		t.Fatalf("immediate policies were not isolated: repo=%#v", repo)
+	}
+	if !analytics.policy.ProcessedNewsText.Immediate || !analytics.policy.UnprocessedNewsText.Immediate ||
+		!analytics.policy.Facts.Never || analytics.batch != 7 || len(analytics.newsIDs) != 1 {
+		t.Fatalf("ClickHouse immediate policies = %#v", analytics)
+	}
+}
+
+func TestCompletionSignalTriggersImmediateCleanupPass(t *testing.T) {
+	repo := &cleanupRepoFake{}
+	policyEvents := make(chan domain.AnalyticsRetention, 2)
+	analytics := &analyticsFake{policies: policyEvents}
+	completion := make(chan struct{}, 1)
+	retention := inertAnalyticsRetention()
+	retention.ProcessedNewsText = domain.RetentionPolicy{Immediate: true}
+	retention.Facts = domain.RetentionPolicy{Age: time.Hour}
+	settings := Config{
+		Enabled: true, StatusCheckInterval: time.Hour, RetentionCheckInterval: time.Hour, BatchSize: 5,
+		MessagesRetention: inertMessages(), CallPayloadRetention: domain.RetentionPolicy{Never: true},
+		CallRecordRetention: domain.RetentionPolicy{Never: true}, ContextSummaryRetention: domain.RetentionPolicy{Never: true},
+		Analytics:        retention,
+		CompletionSignal: completion,
+	}
+	service := NewService(&staleFake{}, repo, analytics, settings)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.Run(ctx)
+	}()
+
+	firstPolicy := receivePolicy(t, policyEvents)
+	if firstPolicy.Facts.Age != time.Hour {
+		t.Fatalf("initial retention pass lost its age policy: %#v", firstPolicy)
+	}
+	completion <- struct{}{}
+	secondPolicy := receivePolicy(t, policyEvents)
+	if !secondPolicy.ProcessedNewsText.Immediate || !secondPolicy.Facts.Never {
+		t.Fatalf("completion pass did not select immediate-only policy: %#v", secondPolicy)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup service did not stop after cancellation")
+	}
+}
+
+func receivePolicy(t *testing.T, events <-chan domain.AnalyticsRetention) domain.AnalyticsRetention {
+	t.Helper()
+	select {
+	case policy := <-events:
+		return policy
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retention pass")
+		return domain.AnalyticsRetention{}
+	}
+}
+
 func TestConcurrentRetentionPassSkipsWhenReplicaLockIsBusy(t *testing.T) {
 	repo := &cleanupRepoFake{lockEntered: make(chan struct{}, 1), allowLockFinish: make(chan struct{})}
 	analytics := &analyticsFake{}
@@ -231,7 +315,7 @@ func TestConcurrentRetentionPassSkipsWhenReplicaLockIsBusy(t *testing.T) {
 }
 
 func TestSafeFailureStageNeverIncludesAdapterDetails(t *testing.T) {
-	if got := safeFailureStage(fmt.Errorf("cleanup metric_totals: query contains private values")); got != "metric_totals" {
+	if got := safeFailureStage(cleanupStageError("metric_totals", fmt.Errorf("query contains private values"))); got != "metric_totals" {
 		t.Fatalf("safe stage = %q", got)
 	}
 	if got := safeFailureStage(errors.New("database diagnostic with values")); got != "postgres_or_clickhouse" {

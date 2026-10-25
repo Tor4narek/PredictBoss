@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,6 +16,28 @@ type MetricSettings struct{ pool *pgxpool.Pool }
 
 func NewMetricSettings(pool *pgxpool.Pool) *MetricSettings {
 	return &MetricSettings{pool: pool}
+}
+
+// WithCompanyProfileLock serializes one company's PostgreSQL and S3 profile
+// update across all ESB replicas without holding a database transaction open.
+func (r *MetricSettings) WithCompanyProfileLock(ctx context.Context, companyID string, work func(context.Context) error) (resultErr error) {
+	companyID = strings.TrimSpace(companyID)
+	if companyID == "" || work == nil {
+		return errors.New("company profile lock requires company ID and work")
+	}
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire PostgreSQL connection for profile lock: %w", err)
+	}
+	lockName := "company-profile:" + companyID
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, lockName); err != nil {
+		return discardPoolConnection(ctx, conn, fmt.Errorf("acquire company profile lock: %w", err))
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, releaseAdvisoryLock(ctx, conn,
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockName))
+	}()
+	return work(ctx)
 }
 
 func (r *MetricSettings) ReserveCompanyProfileRevision(ctx context.Context, companyID string, revision int64, requestHash string) error {
@@ -50,12 +74,12 @@ func (r *MetricSettings) ReplaceCompanyMetricsAtRevision(ctx context.Context, co
 	return r.upsertCompanyMetrics(ctx, companyID, &revision, profileHash, metrics)
 }
 
-func (r *MetricSettings) upsertCompanyMetrics(ctx context.Context, companyID string, revision *int64, profileHash string, metrics []domain.CompanyMetric) error {
+func (r *MetricSettings) upsertCompanyMetrics(ctx context.Context, companyID string, revision *int64, profileHash string, metrics []domain.CompanyMetric) (resultErr error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { resultErr = errors.Join(resultErr, rollbackTransaction(ctx, tx)) }()
 	if revision != nil {
 		var accepted string
 		err := tx.QueryRow(ctx, `INSERT INTO company_profile_state (company_id, profile_revision, profile_hash, profile_request_hash, profile_synced)
@@ -147,14 +171,27 @@ LIMIT $2`, companyID, limit)
 	return metrics, rows.Err()
 }
 
-func (r *MetricSettings) CompanyIDForMetric(ctx context.Context, metricID string) (string, error) {
-	var companyID string
-	err := r.pool.QueryRow(ctx, `SELECT m.company_id::text FROM company_metric_settings m
-WHERE m.metric_id = $1::uuid AND COALESCE((SELECT profile_synced FROM company_profile_state WHERE company_id = m.company_id), TRUE)`, metricID).Scan(&companyID)
+func (r *MetricSettings) MetricForID(ctx context.Context, metricID string) (domain.CompanyMetric, string, error) {
+	var metric domain.CompanyMetric
+	var companyID, metricType string
+	var parameters []byte
+	err := r.pool.QueryRow(ctx, `SELECT m.metric_id::text, m.type_code, m.name, m.description, m.unit,
+m.metric_type::text, m.characteristic, m.parameters, m.company_id::text
+FROM company_metric_settings m
+WHERE m.metric_id = $1::uuid AND COALESCE((SELECT profile_synced FROM company_profile_state WHERE company_id = m.company_id), TRUE)`,
+		metricID).Scan(&metric.ID, &metric.TypeCode, &metric.Name, &metric.Description, &metric.Unit,
+		&metricType, &metric.Characteristic, &parameters, &companyID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", domain.ErrNotFound
+		return domain.CompanyMetric{}, "", domain.ErrNotFound
 	}
-	return companyID, err
+	if err != nil {
+		return domain.CompanyMetric{}, "", err
+	}
+	metric.Type = domain.MetricType(metricType)
+	if err := json.Unmarshal(parameters, &metric.Parameters); err != nil {
+		return domain.CompanyMetric{}, "", err
+	}
+	return metric, companyID, nil
 }
 
 var _ domain.CompanyMetricSettingsRepository = (*MetricSettings)(nil)

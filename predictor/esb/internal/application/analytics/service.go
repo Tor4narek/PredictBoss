@@ -282,7 +282,7 @@ func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to s
 		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
 	fromText, toText := fromTime.Format("2006-01-02 15:04:05"), toTime.Format("2006-01-02 15:04:05")
-	companyID, err := s.metrics.CompanyIDForMetric(ctx, metricID)
+	metric, companyID, err := s.metrics.MetricForID(ctx, metricID)
 	if err != nil {
 		return domain.MetricTotal{}, err
 	}
@@ -296,6 +296,7 @@ func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to s
 		}
 	}
 	total.CompanyID = companyID
+	total.Unit = metric.Unit
 	if err := s.repository.SaveMetricTotal(ctx, total); err != nil {
 		return domain.MetricTotal{}, err
 	}
@@ -331,7 +332,8 @@ func (s *Service) CalculateAllMetricTotals(ctx context.Context, companyID, from,
 			return domain.CompanyMetricTotals{}, err
 		}
 		result.Items = append(result.Items, domain.CompanyMetricTotal{MetricID: metric.ID, TypeCode: metric.TypeCode,
-			Characteristic: metric.Characteristic, TotalValue: total.TotalValue, TotalProbability: total.TotalProbability,
+			Characteristic: metric.Characteristic, Unit: metric.Unit,
+			TotalValue: total.TotalValue, TotalProbability: total.TotalProbability,
 			FactCount: total.FactCount, ProbabilityCount: total.ProbabilityCount, Links: total.Links})
 	}
 	return result, nil

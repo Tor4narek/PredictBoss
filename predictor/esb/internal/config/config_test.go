@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -70,19 +71,22 @@ func TestLoadDefaultsAndAgentHistoryZero(t *testing.T) {
 	}
 }
 
-func TestRetentionPolicyParsesDurationsAndNever(t *testing.T) {
+func TestRetentionPolicyParsesDurationsImmediateAndNever(t *testing.T) {
 	tests := []struct {
 		name      string
 		value     string
 		wantAge   time.Duration
 		wantNever bool
+		wantNow   bool
 		wantErr   bool
 	}{
 		{name: "never", value: "never", wantNever: true},
 		{name: "case insensitive never", value: " NEVER ", wantNever: true},
 		{name: "valid duration", value: "168h", wantAge: 168 * time.Hour},
-		{name: "zero", value: "0", wantErr: true},
-		{name: "zero duration", value: "0s", wantErr: true},
+		{name: "zero", value: "0", wantNow: true},
+		{name: "zero duration", value: "0s", wantNow: true},
+		{name: "immediate", value: "immediate", wantNow: true},
+		{name: "case insensitive immediate", value: " IMMEDIATE ", wantNow: true},
 		{name: "negative", value: "-1h", wantErr: true},
 		{name: "invalid", value: "tomorrow", wantErr: true},
 		{name: "overflow", value: "999999999999999999999999h", wantErr: true},
@@ -93,17 +97,16 @@ func TestRetentionPolicyParsesDurationsAndNever(t *testing.T) {
 			if (err != nil) != test.wantErr {
 				t.Fatalf("retentionValue() error = %v, wantErr %t", err, test.wantErr)
 			}
-			if err == nil && (got.Never != test.wantNever || got.Age != test.wantAge) {
-				t.Fatalf("retentionValue() = %#v, want never=%t age=%s", got, test.wantNever, test.wantAge)
+			if err == nil && (got.Never != test.wantNever || got.Immediate != test.wantNow || got.Age != test.wantAge) {
+				t.Fatalf("retentionValue() = %#v, want never=%t immediate=%t age=%s", got, test.wantNever, test.wantNow, test.wantAge)
 			}
 		})
 	}
 }
 
-func TestCleanupConfigurationRejectsZeroAndInvalidValues(t *testing.T) {
+func TestCleanupConfigurationRejectsInvalidValues(t *testing.T) {
 	for _, test := range []struct{ key, value string }{
-		{"CLEANUP_CALL_RECORD_RETENTION", "0"},
-		{"CLEANUP_CONTEXT_SUMMARY_RETENTION", "0s"},
+		{"CLEANUP_CONTEXT_SUMMARY_RETENTION", "-1s"},
 		{"CLEANUP_STATUS_CHECK_INTERVAL", "0s"},
 		{"CLEANUP_BATCH_SIZE", "0"},
 		{"CLEANUP_ACTIVE_MAX_RETRIES", "-1"},
@@ -116,6 +119,19 @@ func TestCleanupConfigurationRejectsZeroAndInvalidValues(t *testing.T) {
 				t.Fatalf("LoadFrom accepted %s=%q", test.key, test.value)
 			}
 		})
+	}
+}
+
+func TestCleanupConfigurationAcceptsImmediateRetention(t *testing.T) {
+	values := testEnvironment(t)
+	values["CLEANUP_CALL_RECORD_RETENTION"] = "0s"
+	values["CLEANUP_CONTEXT_SUMMARY_RETENTION"] = "immediate"
+	cfg, err := LoadFrom(testLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Cleanup.CallRecordRetention.Immediate || !cfg.Cleanup.ContextSummaryRetention.Immediate {
+		t.Fatalf("immediate retention was not applied: call=%#v summary=%#v", cfg.Cleanup.CallRecordRetention, cfg.Cleanup.ContextSummaryRetention)
 	}
 }
 
@@ -360,9 +376,19 @@ func TestSettingsCatalogMatchesEnvExampleAndCompose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envExample, err := os.ReadFile(filepath.Join(root, ".env.example"))
+	envExamplePath := filepath.Join(root, "predictor", "example.env")
+	envExample, err := os.ReadFile(envExamplePath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(envExample), "CLEANUP_PROCESSED_NEWS_TEXT_RETENTION=168h") ||
+		!strings.Contains(string(envExample), "CLEANUP_CALL_RECORD_RETENTION=2160h") ||
+		!strings.Contains(string(envExample), "CLEANUP_MESSAGES_RETENTION_KONSTANTIN=never") {
+		t.Fatal("example.env does not include representative retention policies")
+	}
+	if !strings.Contains(string(envExample), "Company metric units") || !strings.Contains(string(envExample), "0, 0s, or immediate") ||
+		!bytes.Equal(envExample, RenderExampleEnv()) {
+		t.Fatal("example.env is missing unit guidance or differs from the generated configuration catalog")
 	}
 	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.yml"))
 	if err != nil {
@@ -385,7 +411,10 @@ func TestSettingsCatalogMatchesEnvExampleAndCompose(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(string(envExample), setting.Name+"=") {
-			t.Errorf("%s is missing from .env.example", setting.Name)
+			t.Errorf("%s is missing from predictor/example.env", setting.Name)
+		}
+		if !strings.Contains(string(envExample), "# "+setting.Purpose+" (type:") {
+			t.Errorf("%s is missing its explanatory comment in predictor/example.env", setting.Name)
 		}
 		if !strings.Contains(string(compose), setting.Name) {
 			t.Errorf("%s is missing from Docker Compose", setting.Name)

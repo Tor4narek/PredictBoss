@@ -32,11 +32,12 @@ type Agent struct {
 	Instructions   string
 }
 
-// RetentionPolicy is either a positive age or an explicit never policy.
-// A zero age is invalid so it cannot mean immediate deletion.
+// RetentionPolicy describes when an eligible data category may be removed.
+// Immediate removal still respects dependency and retry-safety checks.
 type RetentionPolicy struct {
-	Never bool
-	Age   time.Duration
+	Never     bool
+	Immediate bool
+	Age       time.Duration
 }
 
 type AnalyticsRetention struct {
@@ -73,6 +74,16 @@ const (
 	CallCancelled   CallStatus = "cancelled"
 	CallInterrupted CallStatus = "interrupted"
 )
+
+// Terminal reports whether a call has reached a state that cannot resume.
+func (status CallStatus) Terminal() bool {
+	switch status {
+	case CallCompleted, CallFailed, CallCancelled, CallInterrupted:
+		return true
+	default:
+		return false
+	}
+}
 
 type Call struct {
 	ID             string          `json:"call_id"`
@@ -228,6 +239,7 @@ type MetricObservation struct {
 type MetricTotal struct {
 	CompanyID        string       `json:"company_id"`
 	MetricID         string       `json:"metric_id"`
+	Unit             string       `json:"unit"`
 	PeriodFrom       string       `json:"period_from"`
 	PeriodTo         string       `json:"period_to"`
 	TotalValue       *float64     `json:"total_value"`
@@ -248,6 +260,7 @@ type CompanyMetricTotal struct {
 	MetricID         string       `json:"metric_id"`
 	TypeCode         string       `json:"type_code"`
 	Characteristic   string       `json:"characteristic"`
+	Unit             string       `json:"unit"`
 	TotalValue       *float64     `json:"total_value"`
 	TotalProbability *float64     `json:"total_probability"`
 	FactCount        uint32       `json:"fact_count"`
@@ -435,12 +448,13 @@ type AnalyticsRepository interface {
 }
 
 type CompanyMetricSettingsRepository interface {
+	WithCompanyProfileLock(context.Context, string, func(context.Context) error) error
 	ReserveCompanyProfileRevision(context.Context, string, int64, string) error
 	UpsertCompanyMetrics(context.Context, string, []CompanyMetric) error
 	ReplaceCompanyMetricsAtRevision(context.Context, string, int64, string, []CompanyMetric) error
 	MarkCompanyProfileSynced(context.Context, string, int64, string) error
 	CompanyMetrics(context.Context, string, int) ([]CompanyMetric, error)
-	CompanyIDForMetric(context.Context, string) (string, error)
+	MetricForID(context.Context, string) (CompanyMetric, string, error)
 }
 
 type ProfileRepository interface {

@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
@@ -20,10 +19,9 @@ var companyIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 var ErrInvalidInput = errors.New("invalid company context input")
 
 type Service struct {
-	profiles     domain.ProfileRepository
-	metrics      domain.CompanyMetricSettingsRepository
-	limits       Limits
-	profileLocks sync.Map
+	profiles domain.ProfileRepository
+	metrics  domain.CompanyMetricSettingsRepository
+	limits   Limits
 }
 
 type Limits struct {
@@ -99,10 +97,16 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 	if !companyIDPattern.MatchString(companyID) || markdown == "" || profileRevision < 1 {
 		return "", ErrInvalidInput
 	}
-	lock, _ := s.profileLocks.LoadOrStore(companyID, &sync.Mutex{})
-	companyLock := lock.(*sync.Mutex)
-	companyLock.Lock()
-	defer companyLock.Unlock()
+	var key string
+	err := s.metrics.WithCompanyProfileLock(ctx, companyID, func(lockCtx context.Context) error {
+		var err error
+		key, err = s.saveCompanyProfileAndMetrics(lockCtx, companyID, profileRevision, markdown, metrics)
+		return err
+	})
+	return key, err
+}
+
+func (s *Service) saveCompanyProfileAndMetrics(ctx context.Context, companyID string, profileRevision int64, markdown string, metrics []domain.CompanyMetric) (string, error) {
 	metrics, err := normalizeMetrics(companyID, metrics, s.limits.MaxMetricsPerRequest)
 	if err != nil {
 		return "", err
@@ -127,17 +131,18 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 		Metrics  []domain.CompanyMetric `json:"metrics"`
 	}{markdown, orderedMetrics})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("hash company profile update: %w", err)
 	}
 	digest := sha256.Sum256(payload)
-	if err := s.metrics.ReplaceCompanyMetricsAtRevision(ctx, companyID, profileRevision, hex.EncodeToString(digest[:]), metrics); err != nil {
-		return "", err
+	profileHash := hex.EncodeToString(digest[:])
+	if err := s.metrics.ReplaceCompanyMetricsAtRevision(ctx, companyID, profileRevision, profileHash, metrics); err != nil {
+		return "", fmt.Errorf("save company metric settings: %w", err)
 	}
 	key, err := s.profiles.Save(ctx, companyID, markdown)
 	if err != nil {
 		return "", fmt.Errorf("profile revision and metric settings saved but S3 profile failed: %w", err)
 	}
-	if err := s.metrics.MarkCompanyProfileSynced(ctx, companyID, profileRevision, hex.EncodeToString(digest[:])); err != nil {
+	if err := s.metrics.MarkCompanyProfileSynced(ctx, companyID, profileRevision, profileHash); err != nil {
 		return "", fmt.Errorf("S3 profile saved at %s but revision confirmation failed: %w", key, err)
 	}
 	return key, nil

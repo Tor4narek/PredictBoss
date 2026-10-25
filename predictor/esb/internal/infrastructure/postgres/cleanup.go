@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/predictboss/predictor/esb/internal/domain"
@@ -12,25 +14,26 @@ const cleanupAdvisoryLockKey int64 = 0x505245444943544f
 // WithCleanupLock holds one PostgreSQL session advisory lock across a bounded
 // maintenance pass. The dedicated acquired connection keeps the lock alive
 // while normal pool operations perform work.
-func (r *Calls) WithCleanupLock(ctx context.Context, work func(context.Context) error) (bool, error) {
+func (r *Calls) WithCleanupLock(ctx context.Context, work func(context.Context) error) (locked bool, resultErr error) {
 	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
 		return false, err
 	}
+	if work == nil {
+		conn.Release()
+		return false, errors.New("cleanup lock work is required")
+	}
 	var acquired bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, cleanupAdvisoryLockKey).Scan(&acquired); err != nil {
-		conn.Release()
-		return false, err
+		return false, discardPoolConnection(ctx, conn, fmt.Errorf("acquire PostgreSQL cleanup lock: %w", err))
 	}
 	if !acquired {
 		conn.Release()
 		return false, nil
 	}
 	defer func() {
-		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, cleanupAdvisoryLockKey)
-		conn.Release()
+		resultErr = errors.Join(resultErr, releaseAdvisoryLock(ctx, conn,
+			`SELECT pg_advisory_unlock($1)`, cleanupAdvisoryLockKey))
 	}()
 	return true, work(ctx)
 }

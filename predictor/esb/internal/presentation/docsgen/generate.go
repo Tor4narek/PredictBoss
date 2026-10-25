@@ -81,7 +81,10 @@ func generateMCPTools(ctx context.Context) (*mcp.ListToolsResult, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "predictor-doc-generator", Version: "1"}, nil)
 	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		_ = serverSession.Close()
+		closeErr := serverSession.Close()
+		if closeErr != nil && !errors.Is(closeErr, context.Canceled) {
+			return nil, errors.Join(fmt.Errorf("connect to MCP tool registry: %w", err), fmt.Errorf("close in-memory MCP server: %w", closeErr))
+		}
 		return nil, fmt.Errorf("connect to MCP tool registry: %w", err)
 	}
 	tools, listErr := clientSession.ListTools(ctx, nil)

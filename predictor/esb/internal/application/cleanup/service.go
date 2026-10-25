@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/predictboss/predictor/esb/internal/domain"
@@ -23,6 +22,7 @@ type Config struct {
 	ContextSummaryRetention domain.RetentionPolicy
 	MessagesRetention       map[domain.AgentType]domain.RetentionPolicy
 	Analytics               domain.AnalyticsRetention
+	CompletionSignal        <-chan struct{}
 }
 
 type Service struct {
@@ -43,6 +43,10 @@ func (s *Service) Run(ctx context.Context) {
 	if !s.settings.Enabled {
 		return
 	}
+	if s.settings.StatusCheckInterval <= 0 || s.settings.RetentionCheckInterval <= 0 || s.settings.BatchSize <= 0 {
+		log.Printf("cleanup service stopped (stage=invalid_configuration)")
+		return
+	}
 	statusTicker := time.NewTicker(s.settings.StatusCheckInterval)
 	defer statusTicker.Stop()
 	retentionTicker := time.NewTicker(s.settings.RetentionCheckInterval)
@@ -57,6 +61,8 @@ func (s *Service) Run(ctx context.Context) {
 			s.checkStaleCalls(ctx)
 		case <-retentionTicker.C:
 			s.pruneExpiredData(ctx)
+		case <-s.settings.CompletionSignal:
+			s.pruneImmediateData(ctx)
 		}
 	}
 }
@@ -81,73 +87,85 @@ func (s *Service) checkStaleCalls(ctx context.Context) {
 }
 
 func (s *Service) pruneExpiredData(ctx context.Context) {
+	s.pruneData(ctx, false)
+}
+
+func (s *Service) pruneImmediateData(ctx context.Context) {
+	s.pruneData(ctx, true)
+}
+
+func (s *Service) pruneData(ctx context.Context, immediateOnly bool) {
 	now := time.Now().UTC()
 	counts := make(map[string]int)
 	locked, err := s.repository.WithCleanupLock(ctx, func(lockCtx context.Context) error {
 		var terminalNews []string
-		if !s.settings.Analytics.UnprocessedNewsText.Never {
-			if s.settings.Analytics.UnprocessedNewsText.Age <= 0 {
-				return errors.New("unprocessed news text retention age must be positive or never")
-			}
+		if cutoff, enabled, policyErr := retentionCutoff(s.settings.Analytics.UnprocessedNewsText, now, immediateOnly); policyErr != nil {
+			return cleanupStageError("unprocessed_news_text", policyErr)
+		} else if enabled {
 			ids, listErr := s.repository.TerminalNewsIDs(lockCtx,
-				now.Add(-s.settings.Analytics.UnprocessedNewsText.Age), s.settings.BatchSize)
+				cutoff, s.settings.BatchSize)
 			if listErr != nil {
-				return listErr
+				return cleanupStageError("unprocessed_news_text", listErr)
 			}
 			terminalNews = ids
 		}
 
 		for _, agent := range []domain.AgentType{domain.AgentSerezha, domain.AgentSaveliy, domain.AgentValera, domain.AgentKesha, domain.AgentKonstantin} {
 			policy, configured := s.settings.MessagesRetention[agent]
-			if !configured || policy.Never {
+			if !configured {
 				continue
 			}
-			if policy.Age <= 0 {
-				return errors.New("message retention age must be positive or never")
+			cutoff, enabled, policyErr := retentionCutoff(policy, now, immediateOnly)
+			if policyErr != nil {
+				return cleanupStageError("messages_"+string(agent), policyErr)
 			}
-			count, pruneErr := s.repository.PruneMessages(lockCtx, agent, now.Add(-policy.Age), s.settings.BatchSize)
+			if !enabled {
+				continue
+			}
+			count, pruneErr := s.repository.PruneMessages(lockCtx, agent, cutoff, s.settings.BatchSize)
 			counts["messages_"+string(agent)] = count
 			if pruneErr != nil {
-				return pruneErr
+				return cleanupStageError("messages_"+string(agent), pruneErr)
 			}
 		}
-		if policy := s.settings.ContextSummaryRetention; !policy.Never {
-			if policy.Age <= 0 {
-				return errors.New("context summary retention age must be positive or never")
-			}
-			count, pruneErr := s.repository.PruneContextSummaries(lockCtx, now.Add(-policy.Age), s.settings.BatchSize)
+		if cutoff, enabled, policyErr := retentionCutoff(s.settings.ContextSummaryRetention, now, immediateOnly); policyErr != nil {
+			return cleanupStageError("context_summaries", policyErr)
+		} else if enabled {
+			count, pruneErr := s.repository.PruneContextSummaries(lockCtx, cutoff, s.settings.BatchSize)
 			counts["context_summaries"] = count
 			if pruneErr != nil {
-				return pruneErr
+				return cleanupStageError("context_summaries", pruneErr)
 			}
 		}
-		if policy := s.settings.CallPayloadRetention; !policy.Never {
-			if policy.Age <= 0 {
-				return errors.New("call payload retention age must be positive or never")
-			}
-			count, pruneErr := s.repository.PruneCallPayloads(lockCtx, now.Add(-policy.Age), s.settings.BatchSize)
+		if cutoff, enabled, policyErr := retentionCutoff(s.settings.CallPayloadRetention, now, immediateOnly); policyErr != nil {
+			return cleanupStageError("call_payloads", policyErr)
+		} else if enabled {
+			count, pruneErr := s.repository.PruneCallPayloads(lockCtx, cutoff, s.settings.BatchSize)
 			counts["call_payloads"] = count
 			if pruneErr != nil {
-				return pruneErr
+				return cleanupStageError("call_payloads", pruneErr)
 			}
 		}
-		if policy := s.settings.CallRecordRetention; !policy.Never {
-			if policy.Age <= 0 {
-				return errors.New("call record retention age must be positive or never")
-			}
-			count, pruneErr := s.repository.PruneCallRecords(lockCtx, now.Add(-policy.Age), s.settings.BatchSize)
+		if cutoff, enabled, policyErr := retentionCutoff(s.settings.CallRecordRetention, now, immediateOnly); policyErr != nil {
+			return cleanupStageError("call_records", policyErr)
+		} else if enabled {
+			count, pruneErr := s.repository.PruneCallRecords(lockCtx, cutoff, s.settings.BatchSize)
 			counts["call_records"] = count
 			if pruneErr != nil {
-				return pruneErr
+				return cleanupStageError("call_records", pruneErr)
 			}
 		}
 		if s.analytics != nil {
-			analyticsCounts, pruneErr := s.analytics.Prune(lockCtx, s.settings.Analytics, now, terminalNews, s.settings.BatchSize)
+			policy := s.settings.Analytics
+			if immediateOnly {
+				policy = immediateAnalyticsRetention(policy)
+			}
+			analyticsCounts, pruneErr := s.analytics.Prune(lockCtx, policy, now, terminalNews, s.settings.BatchSize)
 			for category, count := range analyticsCounts {
 				counts["clickhouse_"+category] = count
 			}
 			if pruneErr != nil {
-				return pruneErr
+				return cleanupStageError("clickhouse", pruneErr)
 			}
 		}
 		return nil
@@ -162,18 +180,64 @@ func (s *Service) pruneExpiredData(ctx context.Context) {
 	}
 }
 
+type stageError struct {
+	stage string
+	err   error
+}
+
+func (e *stageError) Error() string { return e.stage + ": " + e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
+func cleanupStageError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &stageError{stage: stage, err: err}
+}
+
+func retentionCutoff(policy domain.RetentionPolicy, now time.Time, immediateOnly bool) (time.Time, bool, error) {
+	if policy.Never || immediateOnly && !policy.Immediate {
+		return time.Time{}, false, nil
+	}
+	if policy.Immediate {
+		return now, true, nil
+	}
+	if policy.Age <= 0 {
+		return time.Time{}, false, errors.New("retention must be positive, immediate, or never")
+	}
+	return now.Add(-policy.Age), true, nil
+}
+
+func immediateAnalyticsRetention(policy domain.AnalyticsRetention) domain.AnalyticsRetention {
+	return domain.AnalyticsRetention{
+		ProcessedNewsText:   immediatePolicy(policy.ProcessedNewsText),
+		UnprocessedNewsText: immediatePolicy(policy.UnprocessedNewsText),
+		NewsMetadata:        immediatePolicy(policy.NewsMetadata),
+		NewsMarker:          immediatePolicy(policy.NewsMarker),
+		Facts:               immediatePolicy(policy.Facts),
+		FactCompany:         immediatePolicy(policy.FactCompany),
+		MetricObservations:  immediatePolicy(policy.MetricObservations),
+		MetricTotals:        immediatePolicy(policy.MetricTotals),
+		CompanyAnalyses:     immediatePolicy(policy.CompanyAnalyses),
+	}
+}
+
+func immediatePolicy(policy domain.RetentionPolicy) domain.RetentionPolicy {
+	if !policy.Immediate {
+		return domain.RetentionPolicy{Never: true}
+	}
+	return policy
+}
+
 // safeFailureStage reports only a fixed cleanup category. Adapter error text
 // can contain query values, so it must never be copied into operational logs.
 func safeFailureStage(err error) string {
 	if err == nil {
 		return "unknown"
 	}
-	message := err.Error()
-	if strings.HasPrefix(message, "cleanup ") {
-		stage, _, ok := strings.Cut(strings.TrimPrefix(message, "cleanup "), ":")
-		if ok && stage != "" {
-			return stage
-		}
+	var failure *stageError
+	if errors.As(err, &failure) {
+		return failure.stage
 	}
 	return "postgres_or_clickhouse"
 }

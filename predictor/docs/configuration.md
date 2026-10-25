@@ -1,61 +1,14 @@
 <!-- Generated from the typed ESB environment setting catalog. Do not edit by hand. -->
 # Конфигурация Predictor
 
-ESB загружает конфигурацию один раз при старте из унаследованных переменных окружения. Compose автоматически читает `.env` из каталога проекта и передаёт значения сервисам. Прямой `go run` не читает `.env`: экспортируйте переменные в оболочке или IDE. Секреты из локального `.env` не включаются в документацию.
+ESB загружает настройки из переменных окружения при старте. Файл `predictor/.env` не попадает в Git. Для Compose из корня репозитория передавайте его явно: `docker compose --env-file predictor/.env up -d`. Прямой `go run` не загружает env-файл автоматически.
 
 ## Переменные окружения
 
-Диапазоны для длительностей включают обе границы. Некорректные числа, длительности и bool останавливают запуск; сообщение содержит имя переменной, но не её значение. Для retention-политик используйте положительную длительность Go или `never`; ноль и отрицательные значения запрещены. Пустые optional string используют default; пустые required значения вызывают ошибку запуска.
+Диапазоны для длительностей включают обе границы. Поддерживаются единицы Go duration `ns`, `us`/`µs`, `ms`, `s`, `m`, `h`; день указывайте как `24h`, неделю как `168h`. Для retention-политик `0`, `0s` или `immediate` означает очистку сразу после завершения вызова и проверки зависимостей; положительная длительность задаёт возраст, `never` отключает очистку категории. Немедленные и периодические политики выполняются только при `CLEANUP_ENABLED=true`. Отрицательные значения запрещены. Пустые optional string используют default; пустые required значения вызывают ошибку запуска.
 
 | Имя | Тип | Default | Допустимый диапазон | Единица | Назначение | Категория |
 | --- | --- | --- | --- | --- | --- | --- |
-| `AGENT_KESHA_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Kesha's Hermes run; zero disables history. | контекст агента |
-| `AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES` | integer | 80 | 0…10000 | messages | Maximum prior messages passed to Konstantin's Hermes run; zero disables history. | контекст агента |
-| `AGENT_SAVELIY_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Saveliy's Hermes run; zero disables history. | контекст агента |
-| `AGENT_SEREZHA_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Serezha's Hermes run; zero disables history. | контекст агента |
-| `AGENT_VALERA_MAX_HISTORY_MESSAGES` | integer | 0 | 0…10000 | messages | Maximum prior messages passed to Valera's Hermes run; zero disables history. | контекст агента |
-| `CLEANUP_ACTIVE_MAX_RETRIES` | integer | 1 | 0…32767 | retries | Maximum cleanup retries for calls Hermes confirms failed or interrupted; active or uncertain runs are never retried. | очистка и хранение |
-| `CLEANUP_BATCH_SIZE` | integer | 500 | 1…10000 | rows | Maximum candidate rows handled per cleanup category in one pass. | очистка и хранение |
-| `CLEANUP_CALL_PAYLOAD_RETENTION` | duration \| never | 2160h | positive Go duration \| never | duration | Age before large request and output fields of terminal calls are cleared; Serezha retry payloads stay available until processing succeeds. | очистка и хранение |
-| `CLEANUP_CALL_RECORD_RETENTION` | duration \| never | 2160h | positive Go duration \| never | duration | Age before terminal call rows are deleted when safe or reduced to idempotency and history tombstones. | очистка и хранение |
-| `CLEANUP_COMPANY_ANALYSES_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for generated company analysis text. | очистка и хранение |
-| `CLEANUP_CONTEXT_SUMMARY_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Independent retention for compacted agent context summaries. | очистка и хранение |
-| `CLEANUP_ENABLED` | bool | true | true \| false | — | Enable ESB stale-call recovery and retention cleanup loops. | очистка и хранение |
-| `CLEANUP_FACTS_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for ClickHouse universal facts. | очистка и хранение |
-| `CLEANUP_FACT_COMPANY_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for ClickHouse fact-to-company links. | очистка и хранение |
-| `CLEANUP_MESSAGES_RETENTION_KESHA` | duration \| never | never | positive Go duration \| never | duration | Retention for Kesha conversation messages. | очистка и хранение |
-| `CLEANUP_MESSAGES_RETENTION_KONSTANTIN` | duration \| never | never | positive Go duration \| never | duration | Retention for Konstantin chat history exposed to Domain. | очистка и хранение |
-| `CLEANUP_MESSAGES_RETENTION_SAVELIY` | duration \| never | never | positive Go duration \| never | duration | Retention for Saveliy conversation messages. | очистка и хранение |
-| `CLEANUP_MESSAGES_RETENTION_SEREZHA` | duration \| never | never | positive Go duration \| never | duration | Retention for Serezha conversation messages. | очистка и хранение |
-| `CLEANUP_MESSAGES_RETENTION_VALERA` | duration \| never | never | positive Go duration \| never | duration | Retention for Valera conversation messages. | очистка и хранение |
-| `CLEANUP_METRIC_OBSERVATIONS_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for metric observations. | очистка и хранение |
-| `CLEANUP_METRIC_TOTALS_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for calculated metric totals. | очистка и хранение |
-| `CLEANUP_NEWS_MARKER_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for processing markers only when no raw text or analytic rows depend on them. | очистка и хранение |
-| `CLEANUP_NEWS_METADATA_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for unreferenced ClickHouse news metadata; metadata required by retained facts or observations is preserved. | очистка и хранение |
-| `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` | duration \| never | 168h | positive Go duration \| never | duration | Retention after ClickHouse confirms news processing and persisted facts; this age starts at the processing marker. | очистка и хранение |
-| `CLEANUP_QUEUED_STALE_AFTER` | duration | 10m0s | 1ms…8760h0m0s | duration | Age after which a submitting call without a saved Hermes run ID can be safely returned to the queue. | очистка и хранение |
-| `CLEANUP_RETENTION_CHECK_INTERVAL` | duration | 24h0m0s | 1ms…8760h0m0s | interval | Interval between bounded PostgreSQL and ClickHouse retention passes. | очистка и хранение |
-| `CLEANUP_RUNNING_STALE_AFTER` | duration | 30m0s | 1ms…8760h0m0s | duration | Minimum age before cleanup independently checks the Hermes status of an active call. | очистка и хранение |
-| `CLEANUP_STATUS_CHECK_INTERVAL` | duration | 1h0m0s | 1ms…8760h0m0s | interval | Interval between stale-call reconciliation passes; kept separate from data-retention cleanup. | очистка и хранение |
-| `CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for raw text only when its news call is terminal and the text is not marked processed. | очистка и хранение |
-| `CLICKHOUSE_HEALTHCHECK_INTERVAL` | duration | 5s | 1ms…1h0m0s | duration | ClickHouse container healthcheck interval in Compose. | Docker Compose |
-| `CLICKHOUSE_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive ClickHouse healthcheck failures before the container is unhealthy. | Docker Compose |
-| `CLICKHOUSE_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | ClickHouse container healthcheck command timeout in Compose. | Docker Compose |
-| `ESB_HEALTHCHECK_INTERVAL` | duration | 10s | 1ms…1h0m0s | duration | ESB container healthcheck interval in Compose. | Docker Compose |
-| `ESB_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive ESB healthcheck failures before the container is unhealthy. | Docker Compose |
-| `ESB_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | ESB container healthcheck command timeout in Compose. | Docker Compose |
-| `ESB_HOST_PORT` | integer | 8081 | 1…65535 | port | Host port published for the ESB HTTP service. | Docker Compose |
-| `MINIO_API_HOST_PORT` | integer | 9000 | 1…65535 | port | Host port published for the MinIO S3 API. | Docker Compose |
-| `MINIO_CONSOLE_HOST_PORT` | integer | 9001 | 1…65535 | port | Host port published for the MinIO console. | Docker Compose |
-| `MINIO_HEALTHCHECK_INTERVAL` | duration | 3s | 1ms…1h0m0s | duration | MinIO container healthcheck interval in Compose. | Docker Compose |
-| `MINIO_HEALTHCHECK_RETRIES` | integer | 30 | 1…100 | retries | Consecutive MinIO healthcheck failures before the container is unhealthy. | Docker Compose |
-| `MINIO_HEALTHCHECK_TIMEOUT` | duration | 2s | 1ms…1h0m0s | duration | MinIO container healthcheck command timeout in Compose. | Docker Compose |
-| `MINIO_IMAGE` | string | dappros/minio:RELEASE.2025-09-07T16-13-09Z | not validated | — | Image used for the local S3-compatible MinIO service. | Docker Compose |
-| `POSTGRES_DB` | string | predictor | not validated | — | Database name for the PostgreSQL Compose service. | Docker Compose |
-| `POSTGRES_HEALTHCHECK_INTERVAL` | duration | 5s | 1ms…1h0m0s | duration | PostgreSQL container healthcheck interval in Compose. | Docker Compose |
-| `POSTGRES_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive PostgreSQL healthcheck failures before the container is unhealthy. | Docker Compose |
-| `POSTGRES_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | PostgreSQL container healthcheck command timeout in Compose. | Docker Compose |
-| `POSTGRES_USER` | string | predictor | not validated | — | Account name for the PostgreSQL Compose service. | Docker Compose |
 | `AGENTS_DIR` | string | ../agents | not validated | — | Directory containing agent.json, skills, and Hermes configuration. | runtime ESB |
 | `CLICKHOUSE_MAX_RESPONSE_BYTES` | integer (int64) | 4194304 | 1024…67108864 | bytes | Maximum ClickHouse response body size accepted by ESB. | runtime ESB |
 | `CLICKHOUSE_REQUEST_TIMEOUT` | duration | 45s | 1ms…1h0m0s | duration | HTTP client timeout for ClickHouse requests. | runtime ESB |
@@ -105,17 +58,6 @@ ESB загружает конфигурацию один раз при стар�
 | `WS_OUTGOING_QUEUE_SIZE` | integer | 64 | 1…65536 | frames | Bounded queue of outbound WebSocket frames per connection. | runtime ESB |
 | `WS_READ_TIMEOUT` | duration | 0s | 0s…1h0m0s | duration | Maximum idle time waiting for one WebSocket frame; zero keeps subscriptions open indefinitely. | runtime ESB |
 | `WS_WRITE_TIMEOUT` | duration | 15s | 1ms…10m0s | duration | Maximum time to write one WebSocket frame. | runtime ESB |
-| `ATLAS_TOKEN` | string | empty / unset | not validated | — | Optional Atlas token used by the ClickHouse Atlas driver. | секрет / credential |
-| `CLICKHOUSE_PASSWORD` | string | required | not validated | — | ClickHouse account password. | секрет / credential |
-| `DATABASE_URL` | string | required | not validated | — | PostgreSQL connection URL used only by ESB. | секрет / credential |
-| `ESB_API_KEY` | string | required | not validated | — | Bearer key required by Domain and Hermes MCP clients. | секрет / credential |
-| `HERMES_API_KEY` | string | required | not validated | — | Bearer key ESB uses for Hermes runtime calls. | секрет / credential |
-| `LLM_API_KEY` | string | required | not validated | — | LLM provider key consumed by Hermes, never by ESB. | секрет / credential |
-| `MINIO_ROOT_PASSWORD` | string | локальный placeholder из `.env.example` | not validated | — | Local MinIO root password; replace for private deployments. | секрет / credential |
-| `MINIO_ROOT_USER` | string | локальный placeholder из `.env.example` | not validated | — | Local MinIO root account. | секрет / credential |
-| `POSTGRES_PASSWORD` | string | локальный placeholder из `.env.example` | not validated | — | Local Compose PostgreSQL password; replace for private deployments. | секрет / credential |
-| `S3_ACCESS_KEY_ID` | string | empty / unset | not validated | — | Optional static S3 access key; pair with S3_SECRET_ACCESS_KEY. | секрет / credential |
-| `S3_SECRET_ACCESS_KEY` | string | empty / unset | not validated | — | Optional static S3 secret key; pair with S3_ACCESS_KEY_ID. | секрет / credential |
 | `CLICKHOUSE_DATABASE` | string | default | not validated | — | ClickHouse database name. | подключение к хранилищу |
 | `CLICKHOUSE_URL` | string | http://localhost:8123 | not validated | — | ClickHouse HTTP interface URL. | подключение к хранилищу |
 | `CLICKHOUSE_USER` | string | predictor | not validated | — | ClickHouse account used by ESB. | подключение к хранилищу |
@@ -124,6 +66,64 @@ ESB загружает конфигурацию один раз при стар�
 | `S3_ENDPOINT` | string | empty / unset | not validated | — | Optional S3-compatible endpoint; empty selects AWS endpoint discovery. | подключение к хранилищу |
 | `S3_FORCE_PATH_STYLE` | bool | false | true \| false | — | Use path-style S3 URLs; typically enabled for MinIO. | подключение к хранилищу |
 | `S3_REGION` | string | us-east-1 | not validated | — | S3 signing region. | подключение к хранилищу |
+| `AGENT_KESHA_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Kesha's Hermes run; zero disables history. | контекст агента |
+| `AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES` | integer | 80 | 0…10000 | messages | Maximum prior messages passed to Konstantin's Hermes run; zero disables history. | контекст агента |
+| `AGENT_SAVELIY_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Saveliy's Hermes run; zero disables history. | контекст агента |
+| `AGENT_SEREZHA_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Serezha's Hermes run; zero disables history. | контекст агента |
+| `AGENT_VALERA_MAX_HISTORY_MESSAGES` | integer | 0 | 0…10000 | messages | Maximum prior messages passed to Valera's Hermes run; zero disables history. | контекст агента |
+| `CLEANUP_ACTIVE_MAX_RETRIES` | integer | 1 | 0…32767 | retries | Maximum cleanup retries for calls Hermes confirms failed or interrupted; active or uncertain runs are never retried. | очистка и хранение |
+| `CLEANUP_BATCH_SIZE` | integer | 500 | 1…10000 | rows | Maximum candidate rows handled per cleanup category in one pass. | очистка и хранение |
+| `CLEANUP_CALL_PAYLOAD_RETENTION` | duration \| immediate \| never | 2160h | 0 \| immediate \| positive Go duration \| never | duration | Age before large request and output fields of terminal calls are cleared; Serezha retry payloads stay available until processing succeeds. | очистка и хранение |
+| `CLEANUP_CALL_RECORD_RETENTION` | duration \| immediate \| never | 2160h | 0 \| immediate \| positive Go duration \| never | duration | Age before terminal call rows are deleted when safe or reduced to idempotency and history tombstones. | очистка и хранение |
+| `CLEANUP_COMPANY_ANALYSES_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for generated company analysis text. | очистка и хранение |
+| `CLEANUP_CONTEXT_SUMMARY_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Independent retention for compacted agent context summaries. | очистка и хранение |
+| `CLEANUP_ENABLED` | bool | true | true \| false | — | Enable ESB stale-call recovery and retention cleanup loops, including immediate cleanup after terminal calls. | очистка и хранение |
+| `CLEANUP_FACTS_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for ClickHouse universal facts. | очистка и хранение |
+| `CLEANUP_FACT_COMPANY_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for ClickHouse fact-to-company links. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_KESHA` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for Kesha conversation messages. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_KONSTANTIN` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for Konstantin chat history exposed to Domain. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_SAVELIY` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for Saveliy conversation messages. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_SEREZHA` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for Serezha conversation messages. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_VALERA` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for Valera conversation messages. | очистка и хранение |
+| `CLEANUP_METRIC_OBSERVATIONS_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for metric observations. | очистка и хранение |
+| `CLEANUP_METRIC_TOTALS_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for calculated metric totals. | очистка и хранение |
+| `CLEANUP_NEWS_MARKER_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for processing markers only when no raw text or analytic rows depend on them. | очистка и хранение |
+| `CLEANUP_NEWS_METADATA_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for unreferenced ClickHouse news metadata; metadata required by retained facts or observations is preserved. | очистка и хранение |
+| `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` | duration \| immediate \| never | 168h | 0 \| immediate \| positive Go duration \| never | duration | Retention after ClickHouse confirms news processing and persisted facts; this age starts at the processing marker. | очистка и хранение |
+| `CLEANUP_QUEUED_STALE_AFTER` | duration | 10m0s | 1ms…8760h0m0s | duration | Age after which a submitting call without a saved Hermes run ID can be safely returned to the queue. | очистка и хранение |
+| `CLEANUP_RETENTION_CHECK_INTERVAL` | duration | 24h0m0s | 1ms…8760h0m0s | interval | Interval between bounded PostgreSQL and ClickHouse retention passes. | очистка и хранение |
+| `CLEANUP_RUNNING_STALE_AFTER` | duration | 30m0s | 1ms…8760h0m0s | duration | Minimum age before cleanup independently checks the Hermes status of an active call. | очистка и хранение |
+| `CLEANUP_STATUS_CHECK_INTERVAL` | duration | 1h0m0s | 1ms…8760h0m0s | interval | Interval between stale-call reconciliation passes; kept separate from data-retention cleanup. | очистка и хранение |
+| `CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION` | duration \| immediate \| never | never | 0 \| immediate \| positive Go duration \| never | duration | Retention for raw text only when its news call is terminal and the text is not marked processed. | очистка и хранение |
+| `ATLAS_TOKEN` | string | empty / unset | not validated | — | Optional Atlas token used by the ClickHouse Atlas driver. | секрет / credential |
+| `CLICKHOUSE_PASSWORD` | string | required | not validated | — | ClickHouse account password. | секрет / credential |
+| `DATABASE_URL` | string | required | not validated | — | PostgreSQL connection URL used only by ESB. | секрет / credential |
+| `ESB_API_KEY` | string | required | not validated | — | Bearer key required by Domain and Hermes MCP clients. | секрет / credential |
+| `HERMES_API_KEY` | string | required | not validated | — | Bearer key ESB uses for Hermes runtime calls. | секрет / credential |
+| `LLM_API_KEY` | string | required | not validated | — | LLM provider key consumed by Hermes, never by ESB. | секрет / credential |
+| `MINIO_ROOT_PASSWORD` | string | локальный placeholder из `predictor/example.env` | not validated | — | Local MinIO root password; replace for private deployments. | секрет / credential |
+| `MINIO_ROOT_USER` | string | локальный placeholder из `predictor/example.env` | not validated | — | Local MinIO root account. | секрет / credential |
+| `POSTGRES_PASSWORD` | string | локальный placeholder из `predictor/example.env` | not validated | — | Local Compose PostgreSQL password; replace for private deployments. | секрет / credential |
+| `S3_ACCESS_KEY_ID` | string | empty / unset | not validated | — | Optional static S3 access key; pair with S3_SECRET_ACCESS_KEY. | секрет / credential |
+| `S3_SECRET_ACCESS_KEY` | string | empty / unset | not validated | — | Optional static S3 secret key; pair with S3_ACCESS_KEY_ID. | секрет / credential |
+| `CLICKHOUSE_HEALTHCHECK_INTERVAL` | duration | 5s | 1ms…1h0m0s | duration | ClickHouse container healthcheck interval in Compose. | Docker Compose |
+| `CLICKHOUSE_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive ClickHouse healthcheck failures before the container is unhealthy. | Docker Compose |
+| `CLICKHOUSE_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | ClickHouse container healthcheck command timeout in Compose. | Docker Compose |
+| `ESB_HEALTHCHECK_INTERVAL` | duration | 10s | 1ms…1h0m0s | duration | ESB container healthcheck interval in Compose. | Docker Compose |
+| `ESB_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive ESB healthcheck failures before the container is unhealthy. | Docker Compose |
+| `ESB_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | ESB container healthcheck command timeout in Compose. | Docker Compose |
+| `ESB_HOST_PORT` | integer | 8081 | 1…65535 | port | Host port published for the ESB HTTP service. | Docker Compose |
+| `MINIO_API_HOST_PORT` | integer | 9000 | 1…65535 | port | Host port published for the MinIO S3 API. | Docker Compose |
+| `MINIO_CONSOLE_HOST_PORT` | integer | 9001 | 1…65535 | port | Host port published for the MinIO console. | Docker Compose |
+| `MINIO_HEALTHCHECK_INTERVAL` | duration | 3s | 1ms…1h0m0s | duration | MinIO container healthcheck interval in Compose. | Docker Compose |
+| `MINIO_HEALTHCHECK_RETRIES` | integer | 30 | 1…100 | retries | Consecutive MinIO healthcheck failures before the container is unhealthy. | Docker Compose |
+| `MINIO_HEALTHCHECK_TIMEOUT` | duration | 2s | 1ms…1h0m0s | duration | MinIO container healthcheck command timeout in Compose. | Docker Compose |
+| `MINIO_IMAGE` | string | dappros/minio:RELEASE.2025-09-07T16-13-09Z | not validated | — | Image used for the local S3-compatible MinIO service. | Docker Compose |
+| `POSTGRES_DB` | string | predictor | not validated | — | Database name for the PostgreSQL Compose service. | Docker Compose |
+| `POSTGRES_HEALTHCHECK_INTERVAL` | duration | 5s | 1ms…1h0m0s | duration | PostgreSQL container healthcheck interval in Compose. | Docker Compose |
+| `POSTGRES_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive PostgreSQL healthcheck failures before the container is unhealthy. | Docker Compose |
+| `POSTGRES_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | PostgreSQL container healthcheck command timeout in Compose. | Docker Compose |
+| `POSTGRES_USER` | string | predictor | not validated | — | Account name for the PostgreSQL Compose service. | Docker Compose |
 | `ESB_E2E_BASE_URL` | string | http://127.0.0.1:18081 | not validated | — | Test-only base URL for the ESB E2E suite. | только тесты |
 | `MOCK_PORT` | string | 8090 | not validated | — | Test-only listening port for the mock Hermes runtime. | только тесты |
 
@@ -172,8 +172,10 @@ ESB загружает конфигурацию один раз при стар�
 
 ESB запускает отдельные циклы сверки зависших вызовов и очистки по сроку хранения. PostgreSQL advisory lock не допускает параллельное выполнение одного прохода несколькими экземплярами. Все запросы ограничены `CLEANUP_BATCH_SIZE`; ошибки повтора безопасны, а ошибки Hermes/хранилищ не считаются подтверждением удаления. Активные вызовы и вызовы с неустановленным статусом остаются в PostgreSQL.
 
-Текст обработанной новости в ClickHouse хранится `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` после подтверждения маркера, метаданных и числа фактов. Политика необработанного текста ClickHouse применяется только к новости с терминальным вызовом Серёжи. Необработанный `news_text` в PostgreSQL сохраняется, пока вызов остаётся повторяемым; очистка не удаляет этот payload только из-за срока хранения вызовов. Метаданные, нужные сохранённым фактам или наблюдениям, остаются до снятия зависимостей; факты сохраняются, пока на них ссылаются связи с компаниями или наблюдения. Сообщения, резюме, payload и запись вызова используют независимые сроки хранения. История Константина и аналитические данные по умолчанию не удаляются. Профили компаний и текущие настройки метрик очистка не затрагивает.
+Текст обработанной новости в ClickHouse хранится `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` после подтверждения маркера, метаданных и числа фактов. `0s`/`immediate` удаляет его после подтверждённой обработки; этот сигнал также запускает очистку сразу после терминального состояния вызова. Политика необработанного текста ClickHouse применяется только к новости с терминальным вызовом Серёжи. Необработанный `news_text` в PostgreSQL сохраняется, пока вызов остаётся повторяемым; очистка не удаляет этот payload только из-за срока хранения вызовов. Метаданные, нужные сохранённым фактам или наблюдениям, остаются до снятия зависимостей; факты сохраняются, пока на них ссылаются связи с компаниями или наблюдения. Порядок очистки сначала удаляет зависимые связи и наблюдения, а затем факты и метаданные. Сообщения, резюме, payload и запись вызова используют независимые сроки хранения. Немедленная очистка `CLEANUP_CALL_PAYLOAD_RETENTION` удаляет вывод, который вызывающий клиент ещё мог бы запросить; немедленная очистка сообщений Константина удаляет доступную Domain историю. Установите для этих категорий положительный срок или `never`, если чтение нужно после завершения. История Константина и аналитические данные по умолчанию не удаляются. Профили компаний и текущие настройки метрик очистка не затрагивает.
+
+Единица измерения метрики компании (`unit`) — данные конкретной компании, а не переменная процесса. Валера записывает её в `company_metric_settings` PostgreSQL через MCP ESB; агрегаты и отчёты возвращают единицу из PostgreSQL. ClickHouse хранит только `company_id`, `metric_id` и аналитические значения. Допустимы значения домена: `₽`, `%`, `тонн/месяц`, `USD/баррель` и другие строки, смысл которых задаётся профилем компании.
 
 ## Прямой запуск ESB
 
-Скопируйте `.env.example` в `.env`. `docker compose` подхватит его автоматически. При запуске Go-процесса напрямую задайте нужные переменные в оболочке/IDE (например, через свой менеджер окружения); бинарник намеренно не загружает `.env` неявно. Укажите `AGENTS_DIR` и пять `HERMES_<TYPE>_URL` адресов, доступных из процесса.
+Скопируйте `predictor/example.env` в `predictor/.env`, задайте credentials и запустите `docker compose --env-file predictor/.env up -d` из корня репозитория. При прямом запуске Go-процесса экспортируйте переменные в оболочке/IDE; бинарник намеренно не загружает env-файл неявно. Укажите `AGENTS_DIR` и пять `HERMES_<TYPE>_URL` адресов, доступных из процесса.

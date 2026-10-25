@@ -143,6 +143,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	for _, rawMetric := range metricRows {
 		row := rawMetric.(map[string]any)
 		metricIDs[stringField(t, row, "type_code")] = stringField(t, row, "metric_id")
+		if stringField(t, row, "type_code") == "цена" && stringField(t, row, "unit") != "₽/шт." {
+			t.Fatalf("metric measurement unit was not retained by PostgreSQL/MCP: %#v", row)
+		}
 	}
 	profileRetry := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
 	if !boolField(t, profileRetry.body, "reused") {
@@ -407,6 +410,17 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-09-01", "period_to": "2026-09-30"})
 	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 8 || len(arrayField(t, companyReport, "totals")) != 8 || len(arrayField(t, companyReport, "analyses")) != 1 {
 		t.Fatalf("company report is missing ClickHouse or PostgreSQL data: %#v", companyReport)
+	}
+	var priceTotal map[string]any
+	for _, rawTotal := range arrayField(t, companyReport, "totals") {
+		item, ok := rawTotal.(map[string]any)
+		if ok && stringField(t, item, "type_code") == "цена" {
+			priceTotal = item
+			break
+		}
+	}
+	if priceTotal == nil || stringField(t, priceTotal, "unit") != "₽/шт." {
+		t.Fatalf("metric total did not return its PostgreSQL unit: %#v", priceTotal)
 	}
 	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, consultantContext, "facts")) != 2 || len(arrayField(t, consultantContext, "observations")) != 13 || len(arrayField(t, consultantContext, "totals")) == 0 {
@@ -697,9 +711,13 @@ func metricSettingsForVector() []any {
 	}
 	result := make([]any, 0, len(types))
 	for i, item := range types {
+		metricType, unit := "score", ""
+		if item.code == "цена" {
+			metricType, unit = "currency", "₽/шт."
+		}
 		result = append(result, map[string]any{
 			"type_code": item.code, "name": item.code, "description": "Показатель компании: " + item.code,
-			"metric_type": "score", "characteristic": item.characteristic, "unit": "",
+			"metric_type": metricType, "characteristic": item.characteristic, "unit": unit,
 			"parameters": map[string]any{"source_fields": []string{fmt.Sprintf("source_%d", i+1)}},
 		})
 	}

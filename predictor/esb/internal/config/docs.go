@@ -7,11 +7,16 @@ import (
 	"strings"
 )
 
+var categoryOrder = map[string]int{
+	"runtime": 1, "storage": 2, "agent-context": 3, "cleanup": 4,
+	"secret": 5, "compose": 6, "test": 7,
+}
+
 func RenderDocumentation() []byte {
 	settings := Definitions()
 	sort.Slice(settings, func(i, j int) bool {
-		if settings[i].Category != settings[j].Category {
-			return settings[i].Category < settings[j].Category
+		if categoryOrder[settings[i].Category] != categoryOrder[settings[j].Category] {
+			return categoryOrder[settings[i].Category] < categoryOrder[settings[j].Category]
 		}
 		return settings[i].Name < settings[j].Name
 	})
@@ -19,14 +24,14 @@ func RenderDocumentation() []byte {
 	var document bytes.Buffer
 	document.WriteString("<!-- Generated from the typed ESB environment setting catalog. Do not edit by hand. -->\n")
 	document.WriteString("# Конфигурация Predictor\n\n")
-	document.WriteString("ESB загружает конфигурацию один раз при старте из унаследованных переменных окружения. Compose автоматически читает `.env` из каталога проекта и передаёт значения сервисам. Прямой `go run` не читает `.env`: экспортируйте переменные в оболочке или IDE. Секреты из локального `.env` не включаются в документацию.\n\n")
+	document.WriteString("ESB загружает настройки из переменных окружения при старте. Файл `predictor/.env` не попадает в Git. Для Compose из корня репозитория передавайте его явно: `docker compose --env-file predictor/.env up -d`. Прямой `go run` не загружает env-файл автоматически.\n\n")
 	document.WriteString("## Переменные окружения\n\n")
-	document.WriteString("Диапазоны для длительностей включают обе границы. Некорректные числа, длительности и bool останавливают запуск; сообщение содержит имя переменной, но не её значение. Для retention-политик используйте положительную длительность Go или `never`; ноль и отрицательные значения запрещены. Пустые optional string используют default; пустые required значения вызывают ошибку запуска.\n\n")
+	document.WriteString("Диапазоны для длительностей включают обе границы. Поддерживаются единицы Go duration `ns`, `us`/`µs`, `ms`, `s`, `m`, `h`; день указывайте как `24h`, неделю как `168h`. Для retention-политик `0`, `0s` или `immediate` означает очистку сразу после завершения вызова и проверки зависимостей; положительная длительность задаёт возраст, `never` отключает очистку категории. Немедленные и периодические политики выполняются только при `CLEANUP_ENABLED=true`. Отрицательные значения запрещены. Пустые optional string используют default; пустые required значения вызывают ошибку запуска.\n\n")
 	document.WriteString("| Имя | Тип | Default | Допустимый диапазон | Единица | Назначение | Категория |\n| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, setting := range settings {
 		defaultValue := setting.Default
 		if setting.Secret && defaultValue != "required" && defaultValue != "empty / unset" {
-			defaultValue = "локальный placeholder из `.env.example`"
+			defaultValue = "локальный placeholder из `predictor/example.env`"
 		}
 		document.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s | %s |\n",
 			setting.Name, escapeCell(setting.Type), escapeCell(defaultValue), escapeCell(setting.Range),
@@ -67,11 +72,103 @@ func RenderDocumentation() []byte {
 	document.WriteString("\n")
 	document.WriteString("## Безопасность очистки\n\n")
 	document.WriteString("ESB запускает отдельные циклы сверки зависших вызовов и очистки по сроку хранения. PostgreSQL advisory lock не допускает параллельное выполнение одного прохода несколькими экземплярами. Все запросы ограничены `CLEANUP_BATCH_SIZE`; ошибки повтора безопасны, а ошибки Hermes/хранилищ не считаются подтверждением удаления. Активные вызовы и вызовы с неустановленным статусом остаются в PostgreSQL.\n\n")
-	document.WriteString("Текст обработанной новости в ClickHouse хранится `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` после подтверждения маркера, метаданных и числа фактов. Политика необработанного текста ClickHouse применяется только к новости с терминальным вызовом Серёжи. Необработанный `news_text` в PostgreSQL сохраняется, пока вызов остаётся повторяемым; очистка не удаляет этот payload только из-за срока хранения вызовов. Метаданные, нужные сохранённым фактам или наблюдениям, остаются до снятия зависимостей; факты сохраняются, пока на них ссылаются связи с компаниями или наблюдения. Сообщения, резюме, payload и запись вызова используют независимые сроки хранения. История Константина и аналитические данные по умолчанию не удаляются. Профили компаний и текущие настройки метрик очистка не затрагивает.\n")
+	document.WriteString("Текст обработанной новости в ClickHouse хранится `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` после подтверждения маркера, метаданных и числа фактов. `0s`/`immediate` удаляет его после подтверждённой обработки; этот сигнал также запускает очистку сразу после терминального состояния вызова. Политика необработанного текста ClickHouse применяется только к новости с терминальным вызовом Серёжи. Необработанный `news_text` в PostgreSQL сохраняется, пока вызов остаётся повторяемым; очистка не удаляет этот payload только из-за срока хранения вызовов. Метаданные, нужные сохранённым фактам или наблюдениям, остаются до снятия зависимостей; факты сохраняются, пока на них ссылаются связи с компаниями или наблюдения. Порядок очистки сначала удаляет зависимые связи и наблюдения, а затем факты и метаданные. Сообщения, резюме, payload и запись вызова используют независимые сроки хранения. Немедленная очистка `CLEANUP_CALL_PAYLOAD_RETENTION` удаляет вывод, который вызывающий клиент ещё мог бы запросить; немедленная очистка сообщений Константина удаляет доступную Domain историю. Установите для этих категорий положительный срок или `never`, если чтение нужно после завершения. История Константина и аналитические данные по умолчанию не удаляются. Профили компаний и текущие настройки метрик очистка не затрагивает.\n\n")
+	document.WriteString("Единица измерения метрики компании (`unit`) — данные конкретной компании, а не переменная процесса. Валера записывает её в `company_metric_settings` PostgreSQL через MCP ESB; агрегаты и отчёты возвращают единицу из PostgreSQL. ClickHouse хранит только `company_id`, `metric_id` и аналитические значения. Допустимы значения домена: `₽`, `%`, `тонн/месяц`, `USD/баррель` и другие строки, смысл которых задаётся профилем компании.\n")
 	document.WriteString("\n")
 	document.WriteString("## Прямой запуск ESB\n\n")
-	document.WriteString("Скопируйте `.env.example` в `.env`. `docker compose` подхватит его автоматически. При запуске Go-процесса напрямую задайте нужные переменные в оболочке/IDE (например, через свой менеджер окружения); бинарник намеренно не загружает `.env` неявно. Укажите `AGENTS_DIR` и пять `HERMES_<TYPE>_URL` адресов, доступных из процесса.\n")
+	document.WriteString("Скопируйте `predictor/example.env` в `predictor/.env`, задайте credentials и запустите `docker compose --env-file predictor/.env up -d` из корня репозитория. При прямом запуске Go-процесса экспортируйте переменные в оболочке/IDE; бинарник намеренно не загружает env-файл неявно. Укажите `AGENTS_DIR` и пять `HERMES_<TYPE>_URL` адресов, доступных из процесса.\n")
 	return document.Bytes()
+}
+
+// RenderExampleEnv renders a safe-to-commit environment template from the
+// same definitions used by LoadFrom and the configuration reference.
+func RenderExampleEnv() []byte {
+	settings := Definitions()
+	sort.Slice(settings, func(i, j int) bool {
+		left, right := settings[i], settings[j]
+		leftOrder, rightOrder := categoryOrder[left.Category], categoryOrder[right.Category]
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return left.Name < right.Name
+	})
+
+	var example strings.Builder
+	example.WriteString("# Generated from the typed ESB configuration catalog. Run `make docs` after changing it.\n")
+	example.WriteString("# Copy this file to predictor/.env. Replace every sample credential before a private deployment.\n")
+	example.WriteString("# Duration units: ns, us/µs, ms, s, m, h. One day is 24h; one week is 168h.\n")
+	example.WriteString("# Byte limits use bytes (1 MiB = 1048576); *_DAYS settings use days; count limits use their named rows/items.\n")
+	example.WriteString("# Retention values: 0, 0s, or immediate = clean after processing and safety checks; a positive duration = retain that long; never = keep.\n")
+	example.WriteString("# CLEANUP_ENABLED=false disables scheduled retention and immediate cleanup notifications.\n")
+	example.WriteString("# Company metric units (for example ₽, %, тонн/месяц) are saved per company in PostgreSQL by Valera through ESB MCP.\n\n")
+	currentCategory := ""
+	for _, setting := range settings {
+		if setting.Category != currentCategory {
+			if currentCategory != "" {
+				example.WriteByte('\n')
+			}
+			currentCategory = setting.Category
+			example.WriteString("# " + exampleCategoryName(currentCategory) + "\n")
+		}
+		defaultValue := setting.Default
+		if setting.Secret {
+			defaultValue = "sample/required"
+		}
+		comment := fmt.Sprintf("# %s (type: %s; default: %s; unit: %s; range: %s)",
+			setting.Purpose, setting.Type, defaultValue, setting.Unit, setting.Range)
+		example.WriteString(comment + "\n")
+		example.WriteString(setting.Name + "=" + exampleValue(setting) + "\n")
+	}
+	return []byte(example.String())
+}
+
+func exampleValue(setting Definition) string {
+	switch setting.Name {
+	case "ESB_API_KEY":
+		return "replace-with-a-random-esb-bearer-key"
+	case "HERMES_API_KEY":
+		return "replace-with-a-random-hermes-bearer-key"
+	case "LLM_API_KEY":
+		return "replace-with-your-LLM-provider-key"
+	case "S3_BUCKET":
+		return "company-profiles"
+	case "S3_ENDPOINT":
+		return "http://minio:9000"
+	case "S3_ACCESS_KEY_ID":
+		return "predictor-local"
+	case "S3_SECRET_ACCESS_KEY":
+		return "local-minio-password-change-me"
+	case "S3_FORCE_PATH_STYLE", "S3_CREATE_BUCKET":
+		return "true"
+	case "CLICKHOUSE_PASSWORD":
+		return "local-clickhouse-password"
+	case "DATABASE_URL", "CLICKHOUSE_URL", "AGENTS_DIR", "HERMES_SEREZHA_URL", "HERMES_SAVELIY_URL",
+		"HERMES_VALERA_URL", "HERMES_KESHA_URL", "HERMES_KONSTANTIN_URL":
+		return ""
+	default:
+		return setting.defaultRaw
+	}
+}
+
+func exampleCategoryName(category string) string {
+	switch category {
+	case "runtime":
+		return "ESB runtime"
+	case "storage":
+		return "Storage endpoints"
+	case "agent-context":
+		return "Agent context passed to Hermes"
+	case "cleanup":
+		return "Retention and cleanup"
+	case "secret":
+		return "Credentials and secrets: placeholders only"
+	case "compose":
+		return "Docker Compose runtime"
+	case "test":
+		return "Test-only settings"
+	default:
+		return category
+	}
 }
 
 func escapeCell(value string) string {

@@ -21,7 +21,7 @@ type Calls struct{ pool *pgxpool.Pool }
 
 func NewCalls(pool *pgxpool.Pool) *Calls { return &Calls{pool: pool} }
 
-func (r *Calls) Enqueue(ctx context.Context, agent domain.AgentType, scopeID string, input json.RawMessage, idempotencyKey string) (domain.Call, bool, error) {
+func (r *Calls) Enqueue(ctx context.Context, agent domain.AgentType, scopeID string, input json.RawMessage, idempotencyKey string) (returned domain.Call, reused bool, resultErr error) {
 	if len(idempotencyKey) > 255 || !visibleASCII(idempotencyKey) {
 		return domain.Call{}, false, domain.ErrConflict
 	}
@@ -59,7 +59,7 @@ func (r *Calls) Enqueue(ctx context.Context, agent domain.AgentType, scopeID str
 	if err != nil {
 		return domain.Call{}, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { resultErr = errors.Join(resultErr, rollbackTransaction(ctx, tx)) }()
 	var conversationID string
 	err = tx.QueryRow(ctx, `INSERT INTO agent_conversations (agent_type, scope_id)
 VALUES ($1, $2)
@@ -118,7 +118,10 @@ func sameNewsRequest(stored, submitted []byte) bool {
 				return nil, false
 			}
 			digest := sha256.Sum256([]byte(text))
-			encoded, _ := json.Marshal(hex.EncodeToString(digest[:]))
+			encoded, err := json.Marshal(hex.EncodeToString(digest[:]))
+			if err != nil {
+				return nil, false
+			}
 			fields["news_text_sha256"] = encoded
 			delete(fields, "news_text")
 		}
@@ -386,7 +389,7 @@ CASE m.role WHEN 'assistant' THEN 1 ELSE 0 END, m.message_id`
 	return messages, rows.Err()
 }
 
-func (r *Calls) SaveContextSummary(ctx context.Context, conversationID, expectedCallID string, expectedCreatedAt time.Time, throughCallID string, throughCreatedAt time.Time, summary string) (bool, error) {
+func (r *Calls) SaveContextSummary(ctx context.Context, conversationID, expectedCallID string, expectedCreatedAt time.Time, throughCallID string, throughCreatedAt time.Time, summary string) (saved bool, resultErr error) {
 	if conversationID == "" || throughCallID == "" || summary == "" {
 		return false, domain.ErrConflict
 	}
@@ -394,7 +397,7 @@ func (r *Calls) SaveContextSummary(ctx context.Context, conversationID, expected
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { resultErr = errors.Join(resultErr, rollbackTransaction(ctx, tx)) }()
 	if _, err := tx.Exec(ctx, `INSERT INTO agent_context_summaries
 (conversation_id, agent_type, summary, through_call_created_at, through_call_id)
 SELECT conversation_id, agent_type, '', NULL, NULL FROM agent_conversations WHERE conversation_id = $1::uuid
@@ -521,13 +524,12 @@ type valeraProfileCheck struct {
 	revision  int64
 }
 
-func (r *Calls) complete(ctx context.Context, callID, output string, profileCheck *valeraProfileCheck, newsTextHash string) (domain.CompanyProfileSyncState, bool, error) {
+func (r *Calls) complete(ctx context.Context, callID, output string, profileCheck *valeraProfileCheck, newsTextHash string) (profileState domain.CompanyProfileSyncState, completed bool, resultErr error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return domain.CompanyProfileSyncState{}, false, err
 	}
-	defer tx.Rollback(ctx)
-	var profileState domain.CompanyProfileSyncState
+	defer func() { resultErr = errors.Join(resultErr, rollbackTransaction(ctx, tx)) }()
 	if profileCheck != nil {
 		err = tx.QueryRow(ctx, `SELECT profile_revision, profile_synced FROM company_profile_state
 WHERE company_id = $1::uuid FOR UPDATE`, profileCheck.companyID).Scan(&profileState.Revision, &profileState.Synced)
@@ -615,7 +617,10 @@ func sanitizedNewsInput(raw []byte, expectedHash string) ([]byte, error) {
 	} else {
 		return nil, domain.ErrConflict
 	}
-	encodedHash, _ := json.Marshal(expectedHash)
+	encodedHash, err := json.Marshal(expectedHash)
+	if err != nil {
+		return nil, err
+	}
 	fields["news_text_sha256"] = encodedHash
 	return json.Marshal(fields)
 }

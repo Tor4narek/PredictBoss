@@ -17,8 +17,6 @@ import (
 
 var databasePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-const maxInsertErrorBodyBytes = 4096
-
 type ClientConfig struct {
 	RequestTimeout   time.Duration
 	MaxResponseBytes int64
@@ -41,11 +39,22 @@ func NewClient(baseURL, database, user, password string, config ClientConfig) (*
 	if config.RequestTimeout <= 0 || config.MaxResponseBytes <= 0 {
 		return nil, errors.New("ClickHouse timeout and response limit must be positive")
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), database: database, user: user, password: password,
-		http: &http.Client{Timeout: config.RequestTimeout}, maxResponseBytes: config.MaxResponseBytes}, nil
+	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || !parsedURL.IsAbs() || parsedURL.Host == "" ||
+		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") ||
+		parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+		return nil, errors.New("invalid ClickHouse HTTP URL")
+	}
+	return &Client{baseURL: strings.TrimRight(parsedURL.String(), "/"), database: database, user: user, password: password,
+		http: &http.Client{
+			Timeout: config.RequestTimeout,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}, maxResponseBytes: config.MaxResponseBytes}, nil
 }
 
-func (c *Client) Ping(ctx context.Context) error {
+func (c *Client) Ping(ctx context.Context) (resultErr error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/ping", nil)
 	if err != nil {
 		return err
@@ -55,14 +64,14 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("ClickHouse returned HTTP %d", response.StatusCode)
 	}
 	return nil
 }
 
-func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
+func (c *Client) Query(ctx context.Context, sql string) (body []byte, resultErr error) {
 	values := url.Values{}
 	values.Set("query", sql)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/?"+values.Encode(), nil)
@@ -74,8 +83,8 @@ func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, c.maxResponseBytes+1))
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
+	body, err = io.ReadAll(io.LimitReader(response.Body, c.maxResponseBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -83,12 +92,12 @@ func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
 		return nil, errors.New("ClickHouse response exceeds size limit")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("ClickHouse HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("ClickHouse returned HTTP %d", response.StatusCode)
 	}
 	return body, nil
 }
 
-func (c *Client) Insert(ctx context.Context, table string, rows any) error {
+func (c *Client) Insert(ctx context.Context, table string, rows any) (resultErr error) {
 	allowed := map[string]bool{
 		"news": true, "news_content": true, "news_processing": true,
 		"facts": true, "fact_company": true, "metric_observations": true,
@@ -123,10 +132,16 @@ func (c *Client) Insert(ctx context.Context, table string, rows any) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, maxInsertErrorBodyBytes))
-		return fmt.Errorf("ClickHouse HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+		return fmt.Errorf("ClickHouse returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func closeResponseBody(body io.Closer) error {
+	if err := body.Close(); err != nil {
+		return fmt.Errorf("close ClickHouse response body: %w", err)
 	}
 	return nil
 }
@@ -166,18 +181,15 @@ func (c *Client) queryRows(ctx context.Context, sql string, target any) error {
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	return json.Unmarshal(mustMarshal(items), target)
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("encode ClickHouse rows: %w", err)
+	}
+	return json.Unmarshal(encoded, target)
 }
-
-func mustMarshal(value any) []byte { data, _ := json.Marshal(value); return data }
 
 func escape(value string) string {
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `'`, `\'`)
 	return `'` + value + `'`
-}
-
-func checkedDate(value string) bool {
-	_, err := time.Parse("2006-01-02", value)
-	return err == nil
 }

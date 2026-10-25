@@ -45,6 +45,8 @@ func callRequestID(raw json.RawMessage) string {
 	var value struct {
 		RequestID string `json:"request_id"`
 	}
-	_ = json.Unmarshal(raw, &value)
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
 	return value.RequestID
 }

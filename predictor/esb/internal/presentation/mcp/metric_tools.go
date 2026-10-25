@@ -43,7 +43,7 @@ func registerMetricTools(server *mcp.Server, service *analytics.Service) {
 		return nil, insertedOutput{Inserted: len(observations)}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "calculate_metric_total", Description: "Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. Metric ownership is resolved from PostgreSQL settings."}, func(ctx context.Context, _ *mcp.CallToolRequest, input metricTotalInput) (*mcp.CallToolResult, domain.MetricTotal, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "calculate_metric_total", Description: "Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. Metric ownership and its returned unit are read from PostgreSQL settings."}, func(ctx context.Context, _ *mcp.CallToolRequest, input metricTotalInput) (*mcp.CallToolResult, domain.MetricTotal, error) {
 		total, err := service.CalculateMetricTotal(ctx, input.MetricID, input.PeriodFrom, input.PeriodTo)
 		if err != nil {
 			return nil, domain.MetricTotal{}, err
@@ -51,7 +51,7 @@ func registerMetricTools(server *mcp.Server, service *analytics.Service) {
 		return nil, total, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{Name: "calculate_all_metric_totals", Description: "Read a company's metric rows from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results."}, func(ctx context.Context, _ *mcp.CallToolRequest, input periodInput) (*mcp.CallToolResult, domain.CompanyMetricTotals, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "calculate_all_metric_totals", Description: "Read a company's metric rows and units from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results."}, func(ctx context.Context, _ *mcp.CallToolRequest, input periodInput) (*mcp.CallToolResult, domain.CompanyMetricTotals, error) {
 		totals, err := service.CalculateAllMetricTotals(ctx, input.CompanyID, input.PeriodFrom, input.PeriodTo)
 		if err != nil {
 			return nil, domain.CompanyMetricTotals{}, err

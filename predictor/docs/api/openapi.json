@@ -388,12 +388,16 @@
                 },
                 "type_code": {
                   "type": "string"
+                },
+                "unit": {
+                  "type": "string"
                 }
               },
               "required": [
                 "metric_id",
                 "type_code",
                 "characteristic",
+                "unit",
                 "total_value",
                 "total_probability",
                 "fact_count",

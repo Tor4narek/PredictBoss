@@ -176,7 +176,7 @@ func buildDefinitions() []Definition {
 		intDef("QUEUE_DISPATCH_BATCH_SIZE", 100, 1, 10000, "calls", "Maximum queued calls claimed in one dispatch cycle; each claim can start one worker.", "runtime"),
 		durationDef("CONTEXT_COMPACTION_TIMEOUT", 30*time.Second, time.Millisecond, time.Hour, "duration", "Maximum time spent requesting a compressed agent-context summary from Hermes.", "runtime"),
 		intDef("VALERA_PROFILE_SYNC_MAX_RETRIES", 1, 0, 1, "retries", "Maximum automatic retries after Valera output is completed but its profile revision is not confirmed; PostgreSQL retry_count allows 0..1.", "runtime"),
-		boolDef("CLEANUP_ENABLED", true, "Enable ESB stale-call recovery and retention cleanup loops.", "cleanup"),
+		boolDef("CLEANUP_ENABLED", true, "Enable ESB stale-call recovery and retention cleanup loops, including immediate cleanup after terminal calls.", "cleanup"),
 		durationDef("CLEANUP_STATUS_CHECK_INTERVAL", time.Hour, time.Millisecond, 365*24*time.Hour, "interval", "Interval between stale-call reconciliation passes; kept separate from data-retention cleanup.", "cleanup"),
 		durationDef("CLEANUP_RETENTION_CHECK_INTERVAL", 24*time.Hour, time.Millisecond, 365*24*time.Hour, "interval", "Interval between bounded PostgreSQL and ClickHouse retention passes.", "cleanup"),
 		intDef("CLEANUP_BATCH_SIZE", 500, 1, 10000, "rows", "Maximum candidate rows handled per cleanup category in one pass.", "cleanup"),
@@ -322,7 +322,7 @@ func durationDef(name string, fallback, min, max time.Duration, unit, purpose, c
 }
 
 func retentionDef(name, fallback, purpose string) Definition {
-	return Definition{Name: name, Type: "duration | never", Default: fallback, Range: "positive Go duration | never", Unit: "duration",
+	return Definition{Name: name, Type: "duration | immediate | never", Default: fallback, Range: "0 | immediate | positive Go duration | never", Unit: "duration",
 		Purpose: purpose, Category: "cleanup", defaultRaw: fallback, allowNever: true}
 }
 
@@ -697,14 +697,19 @@ func skillInstructions(markdown string) string {
 }
 
 func validatePagination(p Pagination) error {
-	for name, pair := range map[string][2]int{
-		"FACTS_DEFAULT_PAGE_SIZE":              {p.FactsDefaultPageSize, p.FactsMaxPageSize},
-		"COMPANY_ITEMS_DEFAULT_PAGE_SIZE":      {p.CompanyItemsDefaultPageSize, p.CompanyItemsMaxPageSize},
-		"CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE": {p.ConsultantDefaultPageSize, p.ConsultantMaxPageSize},
-		"KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE": {p.KonstantinHistoryDefaultPageSize, p.KonstantinHistoryMaxPageSize},
-	} {
-		if pair[0] > pair[1] {
-			return fmt.Errorf("%s cannot exceed its corresponding maximum", name)
+	limits := []struct {
+		name         string
+		defaultValue int
+		maximum      int
+	}{
+		{"FACTS_DEFAULT_PAGE_SIZE", p.FactsDefaultPageSize, p.FactsMaxPageSize},
+		{"COMPANY_ITEMS_DEFAULT_PAGE_SIZE", p.CompanyItemsDefaultPageSize, p.CompanyItemsMaxPageSize},
+		{"CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE", p.ConsultantDefaultPageSize, p.ConsultantMaxPageSize},
+		{"KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE", p.KonstantinHistoryDefaultPageSize, p.KonstantinHistoryMaxPageSize},
+	}
+	for _, limit := range limits {
+		if limit.defaultValue > limit.maximum {
+			return fmt.Errorf("%s cannot exceed its corresponding maximum", limit.name)
 		}
 	}
 	if p.KonstantinDefaultWindowDays > p.KonstantinMaxWindowDays {
@@ -794,12 +799,19 @@ func retentionValue(lookup LookupEnv, name string) (domain.RetentionPolicy, erro
 	if err != nil {
 		return domain.RetentionPolicy{}, err
 	}
-	if strings.EqualFold(strings.TrimSpace(value), "never") {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "never") {
 		return domain.RetentionPolicy{Never: true}, nil
 	}
-	parsed, err := time.ParseDuration(strings.TrimSpace(value))
-	if err != nil || parsed <= 0 {
-		return domain.RetentionPolicy{}, fmt.Errorf("invalid %s: expected a positive Go duration or never", name)
+	if strings.EqualFold(value, "immediate") {
+		return domain.RetentionPolicy{Immediate: true}, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 0 {
+		return domain.RetentionPolicy{}, fmt.Errorf("invalid %s: expected 0, immediate, a positive Go duration, or never", name)
+	}
+	if parsed == 0 {
+		return domain.RetentionPolicy{Immediate: true}, nil
 	}
 	return domain.RetentionPolicy{Age: parsed}, nil
 }

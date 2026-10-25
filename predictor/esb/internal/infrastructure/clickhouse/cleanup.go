@@ -53,22 +53,26 @@ func (r *Analytics) Prune(ctx context.Context, policy domain.AnalyticsRetention,
 		{"unprocessed_news_text", policy.UnprocessedNewsText, func(cutoff time.Time) (int, error) {
 			return r.pruneUnprocessedNewsText(ctx, cutoff, terminalNewsIDs, batchSize)
 		}},
-		{"news_metadata", policy.NewsMetadata, func(cutoff time.Time) (int, error) { return r.pruneNewsMetadata(ctx, cutoff, batchSize) }},
-		{"news_marker", policy.NewsMarker, func(cutoff time.Time) (int, error) { return r.pruneNewsMarker(ctx, cutoff, batchSize) }},
-		{"facts", policy.Facts, func(cutoff time.Time) (int, error) { return r.pruneFacts(ctx, cutoff, batchSize) }},
 		{"fact_company", policy.FactCompany, func(cutoff time.Time) (int, error) { return r.pruneFactCompany(ctx, cutoff, batchSize) }},
 		{"metric_observations", policy.MetricObservations, func(cutoff time.Time) (int, error) { return r.pruneMetricObservations(ctx, cutoff, batchSize) }},
 		{"metric_totals", policy.MetricTotals, func(cutoff time.Time) (int, error) { return r.pruneMetricTotals(ctx, cutoff, batchSize) }},
 		{"company_analyses", policy.CompanyAnalyses, func(cutoff time.Time) (int, error) { return r.pruneCompanyAnalyses(ctx, cutoff, batchSize) }},
+		{"facts", policy.Facts, func(cutoff time.Time) (int, error) { return r.pruneFacts(ctx, cutoff, batchSize) }},
+		{"news_metadata", policy.NewsMetadata, func(cutoff time.Time) (int, error) { return r.pruneNewsMetadata(ctx, cutoff, batchSize) }},
+		{"news_marker", policy.NewsMarker, func(cutoff time.Time) (int, error) { return r.pruneNewsMarker(ctx, cutoff, batchSize) }},
 	}
 	for _, step := range steps {
 		if step.policy.Never {
 			continue
 		}
-		if step.policy.Age <= 0 {
-			return counts, fmt.Errorf("%s retention must be positive or never", step.name)
+		cutoff := now
+		if !step.policy.Immediate {
+			if step.policy.Age <= 0 {
+				return counts, fmt.Errorf("%s retention must be positive, immediate, or never", step.name)
+			}
+			cutoff = now.Add(-step.policy.Age)
 		}
-		count, err := step.prune(now.Add(-step.policy.Age))
+		count, err := step.prune(cutoff)
 		if err != nil {
 			return counts, fmt.Errorf("cleanup %s: %w", step.name, err)
 		}

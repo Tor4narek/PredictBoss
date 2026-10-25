@@ -51,7 +51,7 @@ func (h *callHandler) postCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			log.Printf("enqueue Konstantin analysis: %v", err)
+			log.Printf("enqueue Konstantin analysis failed (error_type=%T)", err)
 			writeError(w, http.StatusInternalServerError, "analysis_request_failed")
 			return
 		}
@@ -77,7 +77,7 @@ func (h *callHandler) postCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			log.Printf("enqueue Serezha news call: %v", err)
+			log.Printf("enqueue Serezha news call failed (error_type=%T)", err)
 			writeError(w, http.StatusInternalServerError, "news_ingestion_failed")
 			return
 		}
@@ -103,7 +103,10 @@ func (h *callHandler) postCall(w http.ResponseWriter, r *http.Request) {
 			CompanyID       string `json:"company_id"`
 			ProfileRevision int64  `json:"profile_revision"`
 		}
-		_ = json.Unmarshal(input, &valeraInput)
+		if err := json.Unmarshal(input, &valeraInput); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_valera_payload")
+			return
+		}
 		companyID, profileRevision = valeraInput.CompanyID, valeraInput.ProfileRevision
 		if profileRevision > 0 {
 			if h.companyContext == nil {
@@ -119,7 +122,7 @@ func (h *callHandler) postCall(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusBadRequest, "invalid_valera_payload")
 					return
 				}
-				log.Printf("reserve company profile revision: %v", err)
+				log.Printf("reserve company profile revision failed (error_type=%T)", err)
 				writeError(w, http.StatusInternalServerError, "profile_revision_reservation_failed")
 				return
 			}
@@ -136,7 +139,7 @@ func (h *callHandler) postCall(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "idempotency_key_conflict")
 			return
 		}
-		log.Printf("enqueue agent call: %v", err)
+		log.Printf("enqueue agent call failed (agent=%s error_type=%T)", agent, err)
 		writeError(w, http.StatusInternalServerError, "call_persistence_failed")
 		return
 	}
@@ -192,7 +195,7 @@ func (h *callHandler) getCall(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "unknown_agent")
 				return
 			}
-			log.Printf("read call: %v", err)
+			log.Printf("read call failed (agent=%s error_type=%T)", agent, err)
 			writeError(w, http.StatusInternalServerError, "call_lookup_failed")
 			return
 		}
@@ -218,7 +221,7 @@ func (h *callHandler) getCall(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, "profile_update_pending")
 				return
 			}
-			log.Printf("start Konstantin analysis: %v", err)
+			log.Printf("start Konstantin analysis failed (company_id=%s error_type=%T)", query.CompanyID, err)
 			writeError(w, http.StatusInternalServerError, "analysis_request_failed")
 			return
 		}
@@ -233,7 +236,7 @@ func (h *callHandler) getCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			log.Printf("read Konstantin chat history: %v", err)
+			log.Printf("read Konstantin chat history failed (company_id=%s error_type=%T)", query.CompanyID, err)
 			writeError(w, http.StatusInternalServerError, "chat_history_lookup_failed")
 			return
 		}
@@ -277,7 +280,7 @@ func (h *callHandler) getCall(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_company_or_period")
 			return
 		}
-		log.Printf("read company analytics: %v", err)
+		log.Printf("read company analytics failed (company_id=%s error_type=%T)", query.CompanyID, err)
 		writeError(w, http.StatusInternalServerError, "company_analytics_lookup_failed")
 		return
 	}

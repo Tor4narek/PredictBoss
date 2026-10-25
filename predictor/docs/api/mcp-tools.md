@@ -5,8 +5,8 @@
 
 | Инструмент | Назначение |
 | --- | --- |
-| `calculate_all_metric_totals` | Read a company's metric rows from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results. |
-| `calculate_metric_total` | Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. Metric ownership is resolved from PostgreSQL settings. |
+| `calculate_all_metric_totals` | Read a company's metric rows and units from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results. |
+| `calculate_metric_total` | Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. Metric ownership and its returned unit are read from PostgreSQL settings. |
 | `get_company_facts` | Read universal facts that have already been linked to a company. Limit accepts an integer or numeric string. |
 | `get_company_metrics` | Read the company's structured metric settings from PostgreSQL through the ESB. Limit accepts an integer or numeric string. |
 | `get_company_profile` | Read the company's Markdown profile from S3 through the ESB. |
