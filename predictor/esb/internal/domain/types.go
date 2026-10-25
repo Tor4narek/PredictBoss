@@ -193,6 +193,27 @@ type ConsultantEvent struct {
 	CreatedAt      time.Time            `json:"createdAt"`
 }
 
+type ConsultantHistoryMessage struct {
+	MessageID      string               `json:"messageId"`
+	Role           string               `json:"role"`
+	Kind           string               `json:"kind"`
+	RequestID      string               `json:"requestId"`
+	CompanyID      string               `json:"companyId"`
+	ConversationID string               `json:"conversationId"`
+	AnalysisID     string               `json:"analysisId"`
+	Text           string               `json:"text"`
+	Evidence       []ConsultantEvidence `json:"evidence"`
+	CreatedAt      time.Time            `json:"createdAt"`
+}
+
+type ConsultantHistoryPage struct {
+	Messages            []ConsultantHistoryMessage `json:"messages"`
+	HasMore             bool                       `json:"hasMore"`
+	NextBeforeMessageID string                     `json:"nextBeforeMessageId,omitempty"`
+	From                time.Time                  `json:"historyFrom"`
+	To                  time.Time                  `json:"historyTo"`
+}
+
 type ConsultantRequest struct {
 	Kind           string `json:"kind"`
 	RequestID      string `json:"requestId"`
@@ -237,6 +258,7 @@ type CallRepository interface {
 	Event(context.Context, string) (ConsultantEvent, error)
 	RequestStatus(context.Context, string) (Call, error)
 	EventsAfter(context.Context, string, string, string, int) ([]ConsultantEvent, error)
+	KonstantinHistory(context.Context, string, time.Time, time.Time, string, int) (ConsultantHistoryPage, error)
 	AnalysisReady(context.Context, string, string) (bool, error)
 	RecordSource(context.Context, CompanySource) (bool, error)
 	SourceRevision(context.Context, string) (int64, error)

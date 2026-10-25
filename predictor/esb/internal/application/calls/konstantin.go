@@ -17,6 +17,14 @@ import (
 var uuidInputPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var ErrAnalysisNotReady = errors.New("analysis_not_ready")
+var ErrInvalidHistoryRequest = errors.New("invalid_history_request")
+
+const (
+	defaultKonstantinHistoryLimit = 100
+	maxKonstantinHistoryLimit     = 100
+	defaultKonstantinHistorySpan  = 30 * 24 * time.Hour
+	maxKonstantinHistorySpan      = 90 * 24 * time.Hour
+)
 
 type konstantinAnalysisInput struct {
 	CompanyID       string `json:"company_id"`
@@ -161,6 +169,44 @@ func (s *Service) KonstantinEventsAfter(ctx context.Context, companyID, conversa
 	}
 	companyID, conversationID, afterMessageID = strings.ToLower(companyID), strings.ToLower(conversationID), strings.ToLower(afterMessageID)
 	return s.repository.EventsAfter(ctx, companyID, conversationID, afterMessageID, limit)
+}
+
+func (s *Service) KonstantinHistory(ctx context.Context, companyID, fromText, toText, beforeMessageID string, limit int) (domain.ConsultantHistoryPage, error) {
+	companyID = strings.ToLower(strings.TrimSpace(companyID))
+	fromText = strings.TrimSpace(fromText)
+	toText = strings.TrimSpace(toText)
+	beforeMessageID = strings.ToLower(strings.TrimSpace(beforeMessageID))
+	if !uuidInputPattern.MatchString(companyID) || (beforeMessageID != "" && !uuidInputPattern.MatchString(beforeMessageID)) || limit < 0 || limit > maxKonstantinHistoryLimit {
+		return domain.ConsultantHistoryPage{}, ErrInvalidHistoryRequest
+	}
+	if limit == 0 {
+		limit = defaultKonstantinHistoryLimit
+	}
+	to := time.Now().UTC()
+	if toText != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, toText)
+		if err != nil {
+			return domain.ConsultantHistoryPage{}, ErrInvalidHistoryRequest
+		}
+		to = parsed.UTC()
+	}
+	from := to.Add(-defaultKonstantinHistorySpan)
+	if fromText != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, fromText)
+		if err != nil {
+			return domain.ConsultantHistoryPage{}, ErrInvalidHistoryRequest
+		}
+		from = parsed.UTC()
+	}
+	if !from.Before(to) || to.Sub(from) > maxKonstantinHistorySpan {
+		return domain.ConsultantHistoryPage{}, ErrInvalidHistoryRequest
+	}
+	page, err := s.repository.KonstantinHistory(ctx, companyID, from, to, beforeMessageID, limit)
+	if err != nil {
+		return domain.ConsultantHistoryPage{}, err
+	}
+	page.From, page.To = from, to
+	return page, nil
 }
 
 func (s *Service) WaitKonstantinEvent(ctx context.Context, requestID string) (domain.ConsultantEvent, error) {

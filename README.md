@@ -59,7 +59,7 @@ docker compose up --build
 ATLAS_TOKEN=... docker compose --profile migrations run --rm atlas
 ```
 
-На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. На существующем volume примените `predictor/storage/postgres/migrations/20261025130000_konstantin_websocket.sql` вручную перед обновлением ESB. Миграция переводит `company_id` настроек метрик в UUID; существующие значения должны быть UUID.
+На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. На существующем volume примените последовательно миграции `20261025130000_konstantin_websocket.sql` и `20261025150000_konstantin_chat_history.sql` из `predictor/storage/postgres/migrations/` перед обновлением ESB. Первая миграция переводит `company_id` настроек метрик в UUID; существующие значения должны быть UUID. Вторая добавляет индексы для ограниченных по периоду чтений истории Константина.
 
 Снаружи доступен только ESB на `localhost:8081`. PostgreSQL и ClickHouse находятся во внутренней storage-сети Docker; для администрирования используйте `docker compose exec`. `/mcp` — единый endpoint ESB для агентов; отдельного S3 MCP-сервиса нет.
 

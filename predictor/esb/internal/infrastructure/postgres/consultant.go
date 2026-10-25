@@ -21,6 +21,38 @@ type consultantEventRow struct {
 	Evidence       []byte
 }
 
+const konstantinHistoryCTE = `WITH history_messages AS (
+    SELECT m.message_id::text AS message_id, 'assistant'::text AS role, m.kind,
+           m.request_id::text AS request_id, m.company_id::text AS company_id,
+           m.conversation_id::text AS conversation_id, m.analysis_id::text AS analysis_id,
+           m.text, m.evidence, m.created_at
+    FROM konstantin_messages m
+    WHERE m.company_id = $1::uuid AND m.created_at >= $2 AND m.created_at < $3
+    UNION ALL
+    SELECT c.call_id::text AS message_id, 'user'::text AS role, 'user_question'::text AS kind,
+           c.request_json->>'request_id' AS request_id, v.scope_id AS company_id,
+           v.conversation_id::text AS conversation_id, c.request_json->>'analysis_id' AS analysis_id,
+           c.request_json->>'text' AS text, '[]'::jsonb AS evidence, c.created_at
+    FROM agent_calls c
+    JOIN agent_conversations v USING (conversation_id)
+    WHERE c.agent_type = 'konstantin' AND v.scope_id = $1::text
+      AND c.created_at >= $2 AND c.created_at < $3
+      AND c.request_json->>'request_kind' = 'question'
+)`
+
+type consultantHistoryRow struct {
+	MessageID      string
+	Role           string
+	Kind           string
+	RequestID      string
+	CompanyID      string
+	ConversationID string
+	AnalysisID     string
+	Text           string
+	Evidence       []byte
+	CreatedAt      time.Time
+}
+
 func (r *Calls) ConversationID(ctx context.Context, agent domain.AgentType, scopeID string) (string, error) {
 	var id string
 	err := r.pool.QueryRow(ctx, `INSERT INTO agent_conversations (agent_type, scope_id)
@@ -112,6 +144,72 @@ ORDER BY created_at, message_id LIMIT $5`
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+func (r *Calls) KonstantinHistory(ctx context.Context, companyID string, from, to time.Time, beforeMessageID string, limit int) (domain.ConsultantHistoryPage, error) {
+	var cursor any
+	if beforeMessageID != "" {
+		cursor = beforeMessageID
+		var found bool
+		if err := r.pool.QueryRow(ctx, konstantinHistoryCTE+` SELECT EXISTS (
+		    SELECT 1 FROM history_messages WHERE message_id = $4
+		)`, companyID, from, to, beforeMessageID).Scan(&found); err != nil {
+			return domain.ConsultantHistoryPage{}, err
+		}
+		if !found {
+			return domain.ConsultantHistoryPage{}, domain.ErrNotFound
+		}
+	}
+	rows, err := r.pool.Query(ctx, konstantinHistoryCTE+` SELECT message_id, role, kind, request_id, company_id,
+conversation_id, analysis_id, text, evidence, created_at
+FROM history_messages
+WHERE $4::text IS NULL OR (created_at, message_id) < (
+    SELECT created_at, message_id FROM history_messages WHERE message_id = $4
+)
+ORDER BY created_at DESC, message_id DESC
+LIMIT $5`, companyID, from, to, cursor, limit+1)
+	if err != nil {
+		return domain.ConsultantHistoryPage{}, err
+	}
+	defer rows.Close()
+	messages := make([]domain.ConsultantHistoryMessage, 0, limit+1)
+	for rows.Next() {
+		var row consultantHistoryRow
+		if err := rows.Scan(&row.MessageID, &row.Role, &row.Kind, &row.RequestID, &row.CompanyID,
+			&row.ConversationID, &row.AnalysisID, &row.Text, &row.Evidence, &row.CreatedAt); err != nil {
+			return domain.ConsultantHistoryPage{}, err
+		}
+		message := domain.ConsultantHistoryMessage{
+			MessageID: row.MessageID, Role: row.Role, Kind: row.Kind, RequestID: row.RequestID,
+			CompanyID: row.CompanyID, ConversationID: row.ConversationID, AnalysisID: row.AnalysisID,
+			Text: row.Text, CreatedAt: row.CreatedAt,
+		}
+		if err := json.Unmarshal(row.Evidence, &message.Evidence); err != nil {
+			return domain.ConsultantHistoryPage{}, err
+		}
+		if message.Evidence == nil {
+			message.Evidence = []domain.ConsultantEvidence{}
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.ConsultantHistoryPage{}, err
+	}
+	page := domain.ConsultantHistoryPage{Messages: messages}
+	if len(messages) > limit {
+		page.HasMore = true
+		page.Messages = messages[:limit]
+	}
+	for left, right := 0, len(page.Messages)-1; left < right; left, right = left+1, right-1 {
+		page.Messages[left], page.Messages[right] = page.Messages[right], page.Messages[left]
+	}
+	if page.HasMore && len(page.Messages) > 0 {
+		page.NextBeforeMessageID = page.Messages[0].MessageID
+	}
+	if page.Messages == nil {
+		page.Messages = []domain.ConsultantHistoryMessage{}
+	}
+	return page, nil
 }
 
 func (r *Calls) AnalysisReady(ctx context.Context, companyID, analysisID string) (bool, error) {

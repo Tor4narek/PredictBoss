@@ -160,6 +160,10 @@ type getCallRequest struct {
 	CompanyIDCamel string `json:"companyId,omitempty"`
 	PeriodFrom     string `json:"period_from,omitempty"`
 	PeriodTo       string `json:"period_to,omitempty"`
+	HistoryLimit   int    `json:"historyLimit,omitempty"`
+	HistoryFrom    string `json:"historyFrom,omitempty"`
+	HistoryTo      string `json:"historyTo,omitempty"`
+	BeforeMessage  string `json:"beforeMessageId,omitempty"`
 }
 
 func (h *Handler) getCall(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +225,28 @@ func (h *Handler) getCall(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "analysis_request_failed")
 			return
 		}
+		history, err := h.calls.KonstantinHistory(r.Context(), query.CompanyID,
+			query.HistoryFrom, query.HistoryTo, query.BeforeMessage, query.HistoryLimit)
+		if errors.Is(err, calls.ErrInvalidHistoryRequest) {
+			writeError(w, http.StatusBadRequest, "invalid_history_request")
+			return
+		}
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusBadRequest, "history_cursor_not_found")
+			return
+		}
+		if err != nil {
+			log.Printf("read Konstantin chat history: %v", err)
+			writeError(w, http.StatusInternalServerError, "chat_history_lookup_failed")
+			return
+		}
+		historyFields := map[string]any{
+			"history": history.Messages, "historyHasMore": history.HasMore,
+			"historyFrom": history.From.Format(time.RFC3339Nano), "historyTo": history.To.Format(time.RFC3339Nano),
+		}
+		if history.NextBeforeMessageID != "" {
+			historyFields["historyNextBeforeMessageId"] = history.NextBeforeMessageID
+		}
 		conversationID := event.ConversationID
 		requestID := event.RequestID
 		if !ready {
@@ -233,13 +259,20 @@ func (h *Handler) getCall(w http.ResponseWriter, r *http.Request) {
 			response := map[string]any{"status": "ready", "companyId": event.CompanyID, "conversationId": event.ConversationID,
 				"analysisId": event.AnalysisID, "messageId": event.MessageID, "text": event.Text, "evidence": event.Evidence,
 				"createdAt": event.CreatedAt, "streamUrl": streamURL}
+			for key, value := range historyFields {
+				response[key] = value
+			}
 			writeJSON(w, http.StatusOK, response)
 			return
 		}
 		streamValues.Set("requestId", requestID)
 		streamURL := "/stream?" + streamValues.Encode()
-		writeJSON(w, http.StatusAccepted, map[string]any{"status": "processing", "companyId": query.CompanyID,
-			"conversationId": conversationID, "requestId": requestID, "streamUrl": streamURL})
+		response := map[string]any{"status": "processing", "companyId": query.CompanyID,
+			"conversationId": conversationID, "requestId": requestID, "streamUrl": streamURL}
+		for key, value := range historyFields {
+			response[key] = value
+		}
+		writeJSON(w, http.StatusAccepted, response)
 		return
 	}
 	if agent != string(domain.AgentKesha) {

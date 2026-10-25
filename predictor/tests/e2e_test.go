@@ -242,6 +242,37 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertEvidence(t, answer["evidence"], newsSourceID, bankSourceID)
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 
+	// GET /call returns paginated company-scoped chat history from PostgreSQL.
+	historyFrom := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	historyTo := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	historyResponse := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "historyLimit": 2, "historyFrom": historyFrom, "historyTo": historyTo}, true, http.StatusOK, "")
+	history := arrayField(t, historyResponse.body, "history")
+	if len(history) != 2 || !boolField(t, historyResponse.body, "historyHasMore") {
+		t.Fatalf("GET /call did not return the latest page of chat history: %#v", historyResponse.body)
+	}
+	latestQuestion, ok := history[0].(map[string]any)
+	if !ok || stringField(t, latestQuestion, "role") != "user" || stringField(t, latestQuestion, "text") != "Why is this news relevant?" {
+		t.Fatalf("chat history did not include the user's question: %#v", history[0])
+	}
+	latestAnswer, ok := history[1].(map[string]any)
+	if !ok || stringField(t, latestAnswer, "role") != "assistant" || stringField(t, latestAnswer, "messageId") != answerMessageID {
+		t.Fatalf("chat history did not include the assistant's answer: %#v", history[1])
+	}
+	olderHistory := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "historyLimit": 2, "historyFrom": historyFrom, "historyTo": historyTo,
+			"beforeMessageId": stringField(t, historyResponse.body, "historyNextBeforeMessageId")},
+		true, http.StatusOK, "")
+	olderMessages := arrayField(t, olderHistory.body, "history")
+	if len(olderMessages) != 2 || boolField(t, olderHistory.body, "historyHasMore") {
+		t.Fatalf("chat history pagination did not return the earlier analysis messages: %#v", olderHistory.body)
+	}
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "beforeMessageId": "not-a-uuid"}, true, http.StatusBadRequest, "invalid_history_request")
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "historyFrom": time.Now().UTC().Add(-91 * 24 * time.Hour).Format(time.RFC3339Nano),
+			"historyTo": time.Now().UTC().Format(time.RFC3339Nano)}, true, http.StatusBadRequest, "invalid_history_request")
+
 	// Reconnect from the analysis cursor and verify that the saved answer is replayed.
 	replayURL := streamURL + "&afterMessageId=" + url.QueryEscape(analysisMessageID)
 	replayWS := dialWebSocket(t, replayURL)
