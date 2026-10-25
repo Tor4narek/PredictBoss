@@ -1,0 +1,1566 @@
+{
+  "tools": [
+    {
+      "description": "Read a company's metric rows from PostgreSQL, recalculate each row from ClickHouse, and return the catalog-ordered results without persisting totals.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "period_from": {
+            "description": "inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day",
+            "type": "string"
+          },
+          "period_to": {
+            "description": "inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day",
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "period_from",
+          "period_to"
+        ],
+        "type": "object"
+      },
+      "name": "calculate_all_metric_totals",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "fact_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "links": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "news_id": {
+                        "type": "string"
+                      },
+                      "news_time": {
+                        "type": "string"
+                      },
+                      "news_url": {
+                        "type": "string"
+                      },
+                      "source_kind": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "news_id",
+                      "news_url",
+                      "news_time",
+                      "source_kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "probability_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_probability": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "total_value": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "type_code": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "metric_id",
+                "type_code",
+                "characteristic",
+                "total_value",
+                "total_probability",
+                "fact_count",
+                "probability_count",
+                "links"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "period_from": {
+            "type": "string"
+          },
+          "period_to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "period_from",
+          "period_to",
+          "items"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Recalculate one metric row from ClickHouse for an inclusive news-time range; no total is persisted.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "metric_id": {
+            "type": "string"
+          },
+          "period_from": {
+            "description": "inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day",
+            "type": "string"
+          },
+          "period_to": {
+            "description": "inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric_id",
+          "period_from",
+          "period_to"
+        ],
+        "type": "object"
+      },
+      "name": "calculate_metric_total",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "fact_count": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "links": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "news_id": {
+                  "type": "string"
+                },
+                "news_time": {
+                  "type": "string"
+                },
+                "news_url": {
+                  "type": "string"
+                },
+                "source_kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "news_id",
+                "news_url",
+                "news_time",
+                "source_kind"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "metric_id": {
+            "type": "string"
+          },
+          "period_from": {
+            "type": "string"
+          },
+          "period_to": {
+            "type": "string"
+          },
+          "probability_count": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_probability": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "total_value": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "metric_id",
+          "period_from",
+          "period_to",
+          "total_value",
+          "total_probability",
+          "fact_count",
+          "probability_count",
+          "links"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read universal facts that have already been linked to a company. Limit accepts an integer or numeric string.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "limit": {
+            "description": "integer limit; accepts an integer or numeric string"
+          }
+        },
+        "required": [
+          "company_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_company_facts",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "facts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "match_confidence": {
+                  "type": "number"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "relevance": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "news_id",
+                "source_id",
+                "source_url",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence",
+                "relevance",
+                "match_confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "facts"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read the company's structured metric settings from PostgreSQL through the ESB. Limit accepts an integer or numeric string.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "limit": {
+            "description": "integer limit; accepts an integer or numeric string"
+          }
+        },
+        "required": [
+          "company_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_company_metrics",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "metric_type": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type_code": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type_code",
+                "name",
+                "description",
+                "unit",
+                "metric_type",
+                "characteristic"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "metrics"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read the company's Markdown profile from S3 through the ESB.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_company_profile",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "key",
+          "markdown"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read a company report containing linked facts, configured metrics, totals and analyses.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "period_from": {
+            "description": "inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day",
+            "type": "string"
+          },
+          "period_to": {
+            "description": "inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day",
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "period_from",
+          "period_to"
+        ],
+        "type": "object"
+      },
+      "name": "get_company_report",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "analyses": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "company_id": {
+                  "type": "string"
+                },
+                "metric_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "period_from": {
+                  "type": "string"
+                },
+                "period_to": {
+                  "type": "string"
+                },
+                "probability": {
+                  "type": "number"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "company_id",
+                "period_from",
+                "period_to",
+                "probability",
+                "metric_ids",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "company_id": {
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "match_confidence": {
+                  "type": "number"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "relevance": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "news_id",
+                "source_id",
+                "source_url",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence",
+                "relevance",
+                "match_confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "metric_type": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type_code": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type_code",
+                "name",
+                "description",
+                "unit",
+                "metric_type",
+                "characteristic"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "totals": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "fact_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "links": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "news_id": {
+                        "type": "string"
+                      },
+                      "news_time": {
+                        "type": "string"
+                      },
+                      "news_url": {
+                        "type": "string"
+                      },
+                      "source_kind": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "news_id",
+                      "news_url",
+                      "news_time",
+                      "source_kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "probability_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_probability": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "total_value": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "type_code": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "metric_id",
+                "type_code",
+                "characteristic",
+                "total_value",
+                "total_probability",
+                "fact_count",
+                "probability_count",
+                "links"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "facts",
+          "metrics",
+          "totals",
+          "analyses"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read linked facts and observations from ClickHouse and recalculate configured company metric totals through ESB. Results include source IDs; totals use news publication times across stored history. Limit accepts an integer or numeric string.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "limit": {
+            "description": "integer limit; accepts an integer or numeric string"
+          }
+        },
+        "required": [
+          "company_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_consultant_context",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "match_confidence": {
+                  "type": "number"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "relevance": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "news_id",
+                "source_id",
+                "source_url",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence",
+                "relevance",
+                "match_confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "observations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "company_id": {
+                  "type": "string"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "observation_id": {
+                  "type": "string"
+                },
+                "probability": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "source_fact_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                }
+              },
+              "required": [
+                "company_id",
+                "metric_id",
+                "news_id",
+                "value",
+                "probability",
+                "source_fact_ids"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "totals": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "fact_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "links": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "news_id": {
+                        "type": "string"
+                      },
+                      "news_time": {
+                        "type": "string"
+                      },
+                      "news_url": {
+                        "type": "string"
+                      },
+                      "source_kind": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "news_id",
+                      "news_url",
+                      "news_time",
+                      "source_kind"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "probability_count": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_probability": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "total_value": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "type_code": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "metric_id",
+                "type_code",
+                "characteristic",
+                "total_value",
+                "total_probability",
+                "fact_count",
+                "probability_count",
+                "links"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "facts",
+          "observations",
+          "totals"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read universal facts for a news_id from ClickHouse. Limit accepts an integer or numeric string.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "integer limit; accepts an integer or numeric string"
+          },
+          "news_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "news_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_facts",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "facts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "news_id",
+                "source_id",
+                "source_url",
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "facts"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Persist a probability-based analysis. Probability accepts a JSON number or numeric string; ESB normalizes numeric strings.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "metric_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "period_from": {
+            "type": "string"
+          },
+          "period_to": {
+            "type": "string"
+          },
+          "probability": {
+            "description": "probability from 0 to 1; accepts a number or numeric string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "period_from",
+          "period_to",
+          "probability",
+          "metric_ids",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "save_company_analysis",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inserted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inserted"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Idempotently upsert structured metric settings for a company in PostgreSQL through the ESB.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "metric_type": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type_code": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type_code",
+                "name",
+                "description",
+                "unit",
+                "metric_type",
+                "characteristic"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "metrics"
+        ],
+        "type": "object"
+      },
+      "name": "save_company_metrics",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inserted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inserted"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Idempotently save the company Markdown profile to S3 and upsert its structured metric settings in PostgreSQL through the ESB.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "characteristic": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "metric_type": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type_code": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type_code",
+                "name",
+                "description",
+                "unit",
+                "metric_type",
+                "characteristic"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "profile_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "company_id",
+          "profile_revision",
+          "markdown",
+          "metrics"
+        ],
+        "type": "object"
+      },
+      "name": "save_company_profile_and_metrics",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "metrics_saved": {
+            "type": "integer"
+          },
+          "profile_key": {
+            "type": "string"
+          },
+          "profile_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "company_id",
+          "profile_revision",
+          "profile_key",
+          "metrics_saved"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Persist Savely's supported links between universal facts and a company.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "confidence": {
+                  "description": "confidence from 0 to 1; accepts a number or numeric string"
+                },
+                "fact_id": {
+                  "type": "string"
+                },
+                "relevance": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fact_id",
+                "relevance",
+                "confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "links"
+        ],
+        "type": "object"
+      },
+      "name": "save_fact_company_links",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inserted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inserted"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Store metric observations linked to news and facts. Values and probabilities accept JSON numbers or numeric strings; ESB normalizes numeric strings. Use null for unknown values. Period bounds are not stored on observations. ESB derives a stable observation ID from company, metric, news, and source fact IDs; supply a distinct observation_id when separate predictions share the same fact IDs.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "observations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "company_id": {
+                  "description": "optional company ID; when supplied it must match the request company_id",
+                  "type": "string"
+                },
+                "material_kind": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "news_id": {
+                  "type": "string"
+                },
+                "observation_id": {
+                  "type": "string"
+                },
+                "probability": {
+                  "description": "optional probability from 0 to 1; accepts a number, numeric string, or null"
+                },
+                "source_fact_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_url": {
+                  "type": "string"
+                },
+                "value": {
+                  "description": "numeric value or null; accepts a number or numeric string"
+                }
+              },
+              "required": [
+                "metric_id",
+                "news_id",
+                "value",
+                "source_fact_ids"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "observations"
+        ],
+        "type": "object"
+      },
+      "name": "save_metric_observations",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inserted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inserted"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Store submitted news and company-independent facts in ClickHouse. Confidence accepts a JSON number or a numeric string; ESB normalizes numeric strings.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "description": "confidence from 0 to 1; accepts a number or numeric string"
+                },
+                "entities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "fact_text": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                }
+              },
+              "required": [
+                "fact_text",
+                "category",
+                "entities",
+                "evidence",
+                "occurred_at",
+                "confidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "material_kind": {
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "news_id": {
+            "description": "stable news identifier",
+            "type": "string"
+          },
+          "news_text": {
+            "description": "full cleaned news text",
+            "type": "string"
+          },
+          "published_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "source_id": {
+            "description": "identifier of the news source",
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "news_id",
+          "source_id",
+          "news_text",
+          "facts"
+        ],
+        "type": "object"
+      },
+      "name": "save_news_and_facts",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "inserted": {
+            "type": "integer"
+          },
+          "news_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "news_id",
+          "inserted",
+          "fact_ids"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}
