@@ -1,9 +1,10 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.24-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod ./
-COPY cmd ./cmd
+COPY predictor/esb/go.mod predictor/esb/go.sum ./
+COPY predictor/esb/cmd ./cmd
+COPY predictor/esb/internal ./internal
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
@@ -17,6 +18,9 @@ RUN apk add --no-cache wget \
     && addgroup -S esb \
     && adduser -S -G esb esb
 COPY --from=build /out/esb /usr/local/bin/esb
+COPY predictor/agents /app/agents
+WORKDIR /app
+ENV AGENTS_DIR=/app/agents
 
 USER esb
 EXPOSE 8081
