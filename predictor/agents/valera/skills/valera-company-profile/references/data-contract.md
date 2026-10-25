@@ -18,12 +18,12 @@ All metric settings are stored together in PostgreSQL in `company_metric_setting
 
 Valera writes the Markdown and settings through one ESB MCP tool. S3 uses a stable profile key and PostgreSQL uses an upsert, so the tool can be retried safely after a partial failure.
 
-## Call input
+## Inputs
 
-`POST /call?agent=valera` with a JSON body:
+The Domain request accepted by `POST /call?agent=valera` uses `companyId`, `profileRevision`, and `company`. ESB normalizes it before invoking Hermes; the agent receives:
 
-- company_id: required; letters, digits, `.`, `_`, `-`, up to 128 characters. It scopes Valera's chat history and the profile key.
-- company_data: required; the company's attributes imported from the bank's CSV, such as syntheticU, mainOkvedName, revenueCompany, and region.
-- profile_revision: required positive number that grows with every change of the source data. A new revision overwrites the profile and upserts the metrics.
+- `company_id`: required UUID of the company.
+- `company_data`: required company attributes imported from the bank's CSV, such as `syntheticU`, `mainOkvedName`, `revenueCompany`, and `region`.
+- `profile_revision`: required positive number that grows with every change of the source data.
 
-ESB also accepts Domain's camelCase body (`companyId`, `profileRevision`, `company`, optionally wrapped in `{"agent": ..., "payload": ...}`) and normalizes it to the fields above; see predictor/docs/esb-contracts.md. See examples/call-u80.json in the agent directory for a full request body.
+`call-u80.json` is a normalized Hermes input example. The HTTP payload, including the optional `{"agent": ..., "payload": ...}` wrapper, is documented in `predictor/docs/esb-contracts.md`.
