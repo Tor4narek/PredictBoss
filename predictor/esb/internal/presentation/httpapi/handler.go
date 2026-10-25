@@ -43,7 +43,6 @@ func NewHandler(apiKey string, callsService *calls.Service, analyticsService *an
 	mux.Handle("GET /readyz", handler.authorize(http.HandlerFunc(handler.readiness)))
 	mux.Handle("POST /call", handler.authorize(http.HandlerFunc(handler.postCall)))
 	mux.Handle("GET /call", handler.authorize(http.HandlerFunc(handler.getCall)))
-	mux.Handle("POST /news", handler.authorize(http.HandlerFunc(handler.postNews)))
 	mux.Handle("GET /stream", handler.authorize(http.HandlerFunc(handler.stream)))
 	return mux
 }
@@ -92,6 +91,30 @@ func (h *Handler) postCall(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "/call?agent=konstantin")
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "call_id": call.ID, "agent": call.Agent,
 			"scope_id": call.ScopeID, "call_status": call.Status, "reused": reused})
+		return
+	}
+	if agent == string(domain.AgentSerezha) {
+		if h.news == nil {
+			writeError(w, http.StatusServiceUnavailable, "news_ingestion_unavailable")
+			return
+		}
+		call, reused, err := h.news.Submit(r.Context(), input)
+		if errors.Is(err, news.ErrInvalidInput) || errors.Is(err, calls.ErrInvalidCall) {
+			writeError(w, http.StatusBadRequest, "invalid_news_request")
+			return
+		}
+		if errors.Is(err, domain.ErrConflict) {
+			writeError(w, http.StatusConflict, "source_id_conflict")
+			return
+		}
+		if err != nil {
+			log.Printf("enqueue Serezha news call: %v", err)
+			writeError(w, http.StatusInternalServerError, "news_ingestion_failed")
+			return
+		}
+		w.Header().Set("Location", "/call?agent=serezha")
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "call_id": call.ID,
+			"agent": call.Agent, "scope_id": call.ScopeID, "call_status": call.Status, "reused": reused})
 		return
 	}
 	if agent == string(domain.AgentValera) {
@@ -166,7 +189,36 @@ type getCallRequest struct {
 	BeforeMessage  string `json:"beforeMessageId,omitempty"`
 }
 
+type getFactsRequest struct {
+	CompanyID       string `json:"companyId,omitempty"`
+	CompanyIDSnake  string `json:"company_id,omitempty"`
+	NewsID          string `json:"newsId,omitempty"`
+	NewsIDSnake     string `json:"news_id,omitempty"`
+	SourceID        string `json:"sourceId,omitempty"`
+	SourceIDSnake   string `json:"source_id,omitempty"`
+	MaterialKind    string `json:"materialKind,omitempty"`
+	MaterialKindAlt string `json:"material_kind,omitempty"`
+	Category        string `json:"category,omitempty"`
+	Entity          string `json:"entity,omitempty"`
+	PeriodFrom      string `json:"periodFrom,omitempty"`
+	PeriodFromSnake string `json:"period_from,omitempty"`
+	PeriodTo        string `json:"periodTo,omitempty"`
+	PeriodToSnake   string `json:"period_to,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	BeforeFactID    string `json:"beforeFactId,omitempty"`
+	BeforeFactSnake string `json:"before_fact_id,omitempty"`
+}
+
 func (h *Handler) getCall(w http.ResponseWriter, r *http.Request) {
+	data := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("data")))
+	if data != "" {
+		if data != "facts" || r.URL.Query().Get("agent") != "" {
+			writeError(w, http.StatusBadRequest, "invalid_data_query")
+			return
+		}
+		h.getFacts(w, r)
+		return
+	}
 	agent := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("agent")))
 	if agent == "" {
 		writeError(w, http.StatusBadRequest, "query parameter agent is required")
@@ -292,40 +344,53 @@ func (h *Handler) getCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
-type postNewsRequest struct {
-	SourceID string `json:"sourceId"`
-	Text     string `json:"text"`
-}
-
-func (h *Handler) postNews(w http.ResponseWriter, r *http.Request) {
-	if h.news == nil {
-		writeError(w, http.StatusServiceUnavailable, "domain_metadata_lookup_not_configured")
-		return
-	}
-	var input postNewsRequest
-	if err := decodeJSONInto(w, r, &input); err != nil {
+func (h *Handler) getFacts(w http.ResponseWriter, r *http.Request) {
+	var request getFactsRequest
+	if err := decodeJSONInto(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json_body")
 		return
 	}
-	call, reused, err := h.news.Ingest(r.Context(), input.SourceID, input.Text)
-	if errors.Is(err, domain.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "news_source_not_found")
-		return
+	if request.CompanyID == "" {
+		request.CompanyID = request.CompanyIDSnake
 	}
-	if errors.Is(err, domain.ErrConflict) {
-		writeError(w, http.StatusConflict, "source_id_conflict")
-		return
+	if request.NewsID == "" {
+		request.NewsID = request.NewsIDSnake
 	}
-	if errors.Is(err, news.ErrInvalidInput) || errors.Is(err, calls.ErrInvalidCall) {
-		writeError(w, http.StatusBadRequest, "invalid_news_request")
+	if request.SourceID == "" {
+		request.SourceID = request.SourceIDSnake
+	}
+	if request.MaterialKind == "" {
+		request.MaterialKind = request.MaterialKindAlt
+	}
+	if request.PeriodFrom == "" {
+		request.PeriodFrom = request.PeriodFromSnake
+	}
+	if request.PeriodTo == "" {
+		request.PeriodTo = request.PeriodToSnake
+	}
+	if request.BeforeFactID == "" {
+		request.BeforeFactID = request.BeforeFactSnake
+	}
+	page, err := h.analytics.QueryFacts(r.Context(), analytics.FactsRequest{
+		CompanyID: request.CompanyID, NewsID: request.NewsID, SourceID: request.SourceID,
+		MaterialKind: request.MaterialKind, Category: request.Category, Entity: request.Entity,
+		PeriodFrom: request.PeriodFrom, PeriodTo: request.PeriodTo,
+		BeforeFactID: request.BeforeFactID, Limit: request.Limit,
+	})
+	if errors.Is(err, analytics.ErrInvalidAnalyticsInput) {
+		writeError(w, http.StatusBadRequest, "invalid_facts_query")
 		return
 	}
 	if err != nil {
-		log.Printf("enqueue news source: %v", err)
-		writeError(w, http.StatusInternalServerError, "news_ingestion_failed")
+		log.Printf("read facts from ClickHouse: %v", err)
+		writeError(w, http.StatusInternalServerError, "facts_lookup_failed")
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "sourceId": input.SourceID, "callId": call.ID, "reused": reused})
+	response := map[string]any{"data": "facts", "facts": page.Facts, "hasMore": page.HasMore}
+	if page.NextBeforeID != "" {
+		response["nextBeforeFactId"] = page.NextBeforeID
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {

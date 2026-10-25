@@ -17,9 +17,28 @@ var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[
 
 var ErrInvalidAnalyticsInput = errors.New("invalid analytics input")
 
+const (
+	defaultFactsLimit = 100
+	maxFactsLimit     = 100
+	maxFactsPeriod    = 90 * 24 * time.Hour
+)
+
 type Service struct {
 	repository domain.AnalyticsRepository
 	metrics    domain.CompanyMetricSettingsRepository
+}
+
+type FactsRequest struct {
+	CompanyID    string
+	NewsID       string
+	SourceID     string
+	MaterialKind string
+	Category     string
+	Entity       string
+	PeriodFrom   string
+	PeriodTo     string
+	BeforeFactID string
+	Limit        int
 }
 
 func NewService(repository domain.AnalyticsRepository, metrics domain.CompanyMetricSettingsRepository) *Service {
@@ -73,6 +92,61 @@ func (s *Service) FactsByNews(ctx context.Context, newsID string, limit int) ([]
 		return nil, ErrInvalidAnalyticsInput
 	}
 	return s.repository.FactsByNews(ctx, newsID, clampLimit(limit))
+}
+
+func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.FactPage, error) {
+	filter := domain.FactQuery{
+		CompanyID: strings.ToLower(strings.TrimSpace(request.CompanyID)), NewsID: strings.TrimSpace(request.NewsID),
+		SourceID: strings.TrimSpace(request.SourceID), MaterialKind: strings.TrimSpace(request.MaterialKind),
+		Category: strings.TrimSpace(request.Category), Entity: strings.TrimSpace(request.Entity),
+		BeforeFactID: strings.ToLower(strings.TrimSpace(request.BeforeFactID)), Limit: request.Limit,
+	}
+	if filter.Limit < 0 || filter.Limit > maxFactsLimit ||
+		(filter.CompanyID != "" && !uuidPattern.MatchString(filter.CompanyID)) ||
+		(filter.NewsID != "" && !idPattern.MatchString(filter.NewsID)) ||
+		(filter.SourceID != "" && !idPattern.MatchString(filter.SourceID)) ||
+		(filter.BeforeFactID != "" && !uuidPattern.MatchString(filter.BeforeFactID)) ||
+		len(filter.Category) > 128 || len(filter.Entity) > 128 ||
+		(filter.MaterialKind != "" && filter.MaterialKind != "external_news" && filter.MaterialKind != "alpha_analysis") {
+		return domain.FactPage{}, ErrInvalidAnalyticsInput
+	}
+	if filter.Limit == 0 {
+		filter.Limit = defaultFactsLimit
+	}
+	periodFrom, periodTo := strings.TrimSpace(request.PeriodFrom), strings.TrimSpace(request.PeriodTo)
+	if (periodFrom == "") != (periodTo == "") {
+		return domain.FactPage{}, ErrInvalidAnalyticsInput
+	}
+	if periodFrom != "" {
+		from, err := time.Parse(time.RFC3339Nano, periodFrom)
+		if err != nil {
+			return domain.FactPage{}, ErrInvalidAnalyticsInput
+		}
+		to, err := time.Parse(time.RFC3339Nano, periodTo)
+		if err != nil || !from.Before(to) || to.Sub(from) > maxFactsPeriod {
+			return domain.FactPage{}, ErrInvalidAnalyticsInput
+		}
+		filter.PeriodFrom, filter.PeriodTo = &from, &to
+	}
+	if filter.CompanyID == "" && filter.NewsID == "" && filter.SourceID == "" && filter.PeriodFrom == nil {
+		return domain.FactPage{}, ErrInvalidAnalyticsInput
+	}
+	limit := filter.Limit
+	filter.Limit++
+	records, err := s.repository.QueryFacts(ctx, filter)
+	if err != nil {
+		return domain.FactPage{}, err
+	}
+	page := domain.FactPage{Facts: records}
+	if len(records) > limit {
+		page.HasMore = true
+		page.Facts = records[:limit]
+		page.NextBeforeID = page.Facts[len(page.Facts)-1].ID
+	}
+	if page.Facts == nil {
+		page.Facts = []domain.FactRecord{}
+	}
+	return page, nil
 }
 
 func (s *Service) SaveFactCompanyLinks(ctx context.Context, companyID string, links []domain.FactCompanyLink) error {

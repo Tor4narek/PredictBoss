@@ -78,6 +78,61 @@ WHERE f.news_id = %s ORDER BY f.inserted_at, f.fact_id LIMIT %d FORMAT JSONEachR
 	return rows, nil
 }
 
+func (r *Analytics) QueryFacts(ctx context.Context, filter domain.FactQuery) ([]domain.FactRecord, error) {
+	companyFields := `'' AS relevance, toFloat64(0) AS match_confidence`
+	if filter.CompanyID != "" {
+		companyFields = "m.relevance, m.confidence AS match_confidence"
+	}
+	query := fmt.Sprintf(`SELECT f.fact_id AS fact_id, f.news_id AS news_id, f.source_id AS source_id,
+f.source_url AS source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
+f.fact_text AS fact_text, f.category AS category, f.entities AS entities,
+f.evidence AS evidence, f.occurred_at AS occurred_at, f.confidence AS confidence, %s
+FROM (SELECT * FROM %s.facts FINAL) AS f
+LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON f.news_id = n.news_id`, companyFields, r.table("facts"), r.table("news"))
+	if filter.CompanyID != "" {
+		query += fmt.Sprintf(`
+INNER JOIN (SELECT * FROM %s.fact_company FINAL WHERE company_id = %s) AS m
+    ON m.fact_id = f.fact_id`, r.table("fact_company"), escape(filter.CompanyID))
+	}
+	conditions := []string{"1"}
+	newsConditions := make([]string, 0, 3)
+	if filter.NewsID != "" {
+		conditions = append(conditions, "f.news_id = "+escape(filter.NewsID))
+	}
+	if filter.SourceID != "" {
+		newsConditions = append(newsConditions, "source_id = "+escape(filter.SourceID))
+	}
+	if filter.MaterialKind != "" {
+		newsConditions = append(newsConditions, "material_kind = "+escape(filter.MaterialKind))
+	}
+	if filter.Category != "" {
+		conditions = append(conditions, "f.category = "+escape(filter.Category))
+	}
+	if filter.Entity != "" {
+		conditions = append(conditions, "arrayExists(x -> lowerUTF8(x) = lowerUTF8("+escape(filter.Entity)+"), f.entities)")
+	}
+	if filter.PeriodFrom != nil {
+		from := escape(filter.PeriodFrom.UTC().Format(time.RFC3339Nano))
+		to := escape(filter.PeriodTo.UTC().Format(time.RFC3339Nano))
+		newsConditions = append(newsConditions,
+			"ifNull(published_at, inserted_at) >= parseDateTime64BestEffort("+from+", 3, 'UTC')",
+			"ifNull(published_at, inserted_at) < parseDateTime64BestEffort("+to+", 3, 'UTC')")
+	}
+	if len(newsConditions) > 0 {
+		conditions = append(conditions, fmt.Sprintf("f.news_id IN (SELECT news_id FROM %s.news FINAL WHERE %s)", r.table("news"), strings.Join(newsConditions, " AND ")))
+	}
+	if filter.BeforeFactID != "" {
+		conditions = append(conditions, "f.fact_id < toUUID("+escape(filter.BeforeFactID)+")")
+	}
+	query += "\nWHERE " + strings.Join(conditions, " AND ")
+	query += fmt.Sprintf("\nORDER BY f.fact_id DESC LIMIT %d FORMAT JSONEachRow", filter.Limit)
+	var rows []domain.FactRecord
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 func (r *Analytics) SaveFactCompanyLinks(ctx context.Context, companyID string, links []domain.FactCompanyLink) error {
 	rows := make([]factCompanyRow, 0, len(links))
 	for _, link := range links {

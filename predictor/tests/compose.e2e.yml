@@ -85,8 +85,6 @@ services:
       S3_SECRET_ACCESS_KEY: test-minio-password
       S3_FORCE_PATH_STYLE: "true"
       S3_CREATE_BUCKET: "true"
-      DOMAIN_API_BASE_URL: http://mock-runtime:8090
-      DOMAIN_API_TOKEN: test-domain-api-token
     ports:
       - "18081:8081"
     depends_on:

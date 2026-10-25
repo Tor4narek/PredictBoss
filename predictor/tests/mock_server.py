@@ -1,46 +1,14 @@
 #!/usr/bin/env python3
-"""Deterministic Domain API and Hermes runtime mock for the ESB E2E stack."""
+"""Deterministic Hermes runtime mock for the ESB E2E stack."""
 
 import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
-COMPANY_ID = "11111111-1111-4111-8111-111111111111"
 NEWS_SOURCE_ID = "22222222-2222-4222-8222-222222222222"
 BANK_SOURCE_ID = "33333333-3333-4333-8333-333333333333"
-NEW_SOURCE_ID = "44444444-4444-4444-8444-444444444444"
-
-SOURCES = {
-    NEWS_SOURCE_ID: {
-        "sourceId": NEWS_SOURCE_ID,
-        "companyId": COMPANY_ID,
-        "canonicalUrl": "https://example.test/news/market-change",
-        "materialKind": "external_news",
-        "mediaType": "text/html",
-        "title": "Market change",
-        "publishedAt": "2026-10-25T09:00:00Z",
-    },
-    BANK_SOURCE_ID: {
-        "sourceId": BANK_SOURCE_ID,
-        "companyId": COMPANY_ID,
-        "canonicalUrl": "https://example.test/alpha/market-analysis.pdf",
-        "materialKind": "alpha_analysis",
-        "mediaType": "application/pdf",
-        "title": "Alpha market analysis",
-        "publishedAt": "2026-10-25T10:00:00Z",
-    },
-    NEW_SOURCE_ID: {
-        "sourceId": NEW_SOURCE_ID,
-        "companyId": COMPANY_ID,
-        "canonicalUrl": "https://example.test/news/new-source",
-        "materialKind": "external_news",
-        "mediaType": "text/html",
-        "title": "New source",
-        "publishedAt": "2026-10-25T11:00:00Z",
-    },
-}
 
 RUNS = {}
 IDEMPOTENCY = {}
@@ -69,18 +37,6 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             self.send_json(200, {"status": "ok"})
-            return
-
-        if path.startswith("/internal/news-links/"):
-            if not self.authorized("test-domain-api-token"):
-                self.send_json(401, {"error": "unauthorized"})
-                return
-            source_id = unquote(path.rsplit("/", 1)[-1])
-            source = SOURCES.get(source_id)
-            if source is None:
-                self.send_json(404, {"error": "not_found"})
-            else:
-                self.send_json(200, source)
             return
 
         if path.startswith("/v1/runs/"):

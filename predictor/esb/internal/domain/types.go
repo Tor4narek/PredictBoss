@@ -90,6 +90,31 @@ type Fact struct {
 	Confidence   float64  `json:"confidence"`
 }
 
+type FactQuery struct {
+	CompanyID    string
+	NewsID       string
+	SourceID     string
+	MaterialKind string
+	Category     string
+	Entity       string
+	PeriodFrom   *time.Time
+	PeriodTo     *time.Time
+	BeforeFactID string
+	Limit        int
+}
+
+type FactRecord struct {
+	Fact
+	Relevance       string  `json:"relevance,omitempty"`
+	MatchConfidence float64 `json:"match_confidence,omitempty"`
+}
+
+type FactPage struct {
+	Facts        []FactRecord `json:"facts"`
+	HasMore      bool         `json:"hasMore"`
+	NextBeforeID string       `json:"nextBeforeFactId,omitempty"`
+}
+
 type FactCompanyLink struct {
 	FactID     string  `json:"fact_id"`
 	Relevance  string  `json:"relevance"`
@@ -279,6 +304,7 @@ type RunState struct {
 type AnalyticsRepository interface {
 	SaveNewsAndFacts(context.Context, News, []Fact) ([]string, error)
 	FactsByNews(context.Context, string, int) ([]Fact, error)
+	QueryFacts(context.Context, FactQuery) ([]FactRecord, error)
 	SaveFactCompanyLinks(context.Context, string, []FactCompanyLink) error
 	CompanyFacts(context.Context, string, int) ([]CompanyFact, error)
 	SaveMetricObservations(context.Context, string, []MetricObservation) error

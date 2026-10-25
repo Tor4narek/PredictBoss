@@ -24,6 +24,9 @@ const (
 	newsSourceID = "22222222-2222-4222-8222-222222222222"
 	bankSourceID = "33333333-3333-4333-8333-333333333333"
 	newSourceID  = "44444444-4444-4444-8444-444444444444"
+	newsID       = "55555555-5555-4555-8555-555555555555"
+	bankNewsID   = "66666666-6666-4666-8666-666666666666"
+	newNewsID    = "77777777-7777-4777-8777-777777777777"
 )
 
 type response struct {
@@ -130,41 +133,100 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	changedRevision["company"] = map[string]any{"city": "different payload"}
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", changedRevision, true, http.StatusConflict, "profile_revision_conflict")
 
-	// News intake uses Domain metadata and queues Serezha. Both source kinds are covered.
-	newsCall := postNews(t, httpClient, baseURL, newsSourceID, "Cleaned external news text.")
-	if stringField(t, newsCall.body, "sourceId") != newsSourceID {
-		t.Fatal("POST /news returned the wrong source ID")
-	}
-	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newsCall.body, "callId"))
-	bankCall := postNews(t, httpClient, baseURL, bankSourceID, "Cleaned Alpha analysis text.")
-	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, bankCall.body, "callId"))
-	duplicateNews := postNews(t, httpClient, baseURL, newsSourceID, "Cleaned external news text.")
-	if !boolField(t, duplicateNews.body, "reused") || stringField(t, duplicateNews.body, "callId") != stringField(t, newsCall.body, "callId") {
+	// News intake uses the unified asynchronous agent route; there is no /news route.
+	newsCall := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
+	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newsCall.body, "call_id"))
+	bankCall := postSerezha(t, httpClient, baseURL, bankSourceID, bankNewsID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
+	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, bankCall.body, "call_id"))
+	duplicateNews := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
+	if !boolField(t, duplicateNews.body, "reused") || stringField(t, duplicateNews.body, "call_id") != stringField(t, newsCall.body, "call_id") {
 		t.Fatal("repeated sourceId created a duplicate call")
 	}
-	assertRequest(t, httpClient, baseURL, http.MethodPost, "/news", map[string]any{"sourceId": "99999999-9999-4999-8999-999999999999", "text": "unknown"}, true, http.StatusNotFound, "news_source_not_found")
-	assertRequest(t, httpClient, baseURL, http.MethodPost, "/news", map[string]any{"sourceId": newsSourceID, "text": strings.Repeat("x", (1<<20)+1)}, true, http.StatusBadRequest, "invalid_news_request")
+	assertRequest(t, httpClient, baseURL, http.MethodPost, "/news", map[string]any{}, true, http.StatusNotFound, "")
+	largeNews := serezhaPayload(newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", strings.Repeat("x", (1<<20)+1))
+	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", largeNews, true, http.StatusBadRequest, "invalid_news_request")
 
 	// Exercise all ClickHouse-facing MCP tools against the real ClickHouse service.
-	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "A market shift affects manufacturers.")
-	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Costs are likely to change.")
+	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, newsID, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "A market shift affects manufacturers.")
+	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, bankNewsID, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Costs are likely to change.")
+	globalNewsID := "88888888-8888-4888-8888-888888888888"
+	globalNews := callTool(t, mcpCtx, mcpSession, "save_news_and_facts", map[string]any{
+		"news_id": globalNewsID, "source_id": "99999999-9999-4999-8999-999999999999",
+		"source_url": "https://example.test/news/global-market", "material_kind": "external_news",
+		"media_type": "text/html", "title": "Global market trend", "news_text": "A global trend affects manufacturing.",
+		"facts": []any{map[string]any{"fact_text": "Manufacturing output is increasing globally.", "category": "market",
+			"entities": []string{"manufacturing"}, "evidence": "source text", "occurred_at": "2026-10-25T09:00:00Z", "confidence": 0.9}},
+	})
+	if len(stringArrayField(t, globalNews, "fact_ids")) != 1 {
+		t.Fatal("saving company-independent news did not create its universal fact")
+	}
 	factIDs := append(newsFacts, bankFacts...)
 	links := make([]any, 0, len(factIDs))
 	for _, factID := range factIDs {
 		links = append(links, map[string]any{"fact_id": factID, "relevance": "high", "confidence": 0.95})
 	}
 	callTool(t, mcpCtx, mcpSession, "save_fact_company_links", map[string]any{"company_id": companyID, "links": links})
-	facts := callTool(t, mcpCtx, mcpSession, "get_facts", map[string]any{"news_id": newsSourceID, "limit": 100})
+	facts := callTool(t, mcpCtx, mcpSession, "get_facts", map[string]any{"news_id": newsID, "limit": 100})
 	if len(arrayField(t, facts, "facts")) != 1 {
 		t.Fatalf("expected one fact for news source, got %d", len(arrayField(t, facts, "facts")))
 	}
+	bySource := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"sourceId": newsSourceID, "materialKind": "external_news", "category": "market", "entity": "manufacturing", "limit": 10},
+		true, http.StatusOK, "")
+	if len(arrayField(t, bySource.body, "facts")) != 1 || stringField(t, bySource.body, "data") != "facts" {
+		t.Fatalf("GET /call?data=facts did not return facts for the source: %#v", bySource.body)
+	}
+	byNews := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"news_id": newsID, "limit": 10}, true, http.StatusOK, "")
+	if len(arrayField(t, byNews.body, "facts")) != 1 {
+		t.Fatalf("news ID filter did not return its fact: %#v", byNews.body)
+	}
+	companyFactPage := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"companyId": companyID, "limit": 1}, true, http.StatusOK, "")
+	if len(arrayField(t, companyFactPage.body, "facts")) != 1 || !boolField(t, companyFactPage.body, "hasMore") {
+		t.Fatalf("company fact query did not return a bounded first page: %#v", companyFactPage.body)
+	}
+	companyFactNext := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"companyId": companyID, "limit": 1, "beforeFactId": stringField(t, companyFactPage.body, "nextBeforeFactId")},
+		true, http.StatusOK, "")
+	if len(arrayField(t, companyFactNext.body, "facts")) != 1 || boolField(t, companyFactNext.body, "hasMore") {
+		t.Fatalf("company fact cursor did not return the next page: %#v", companyFactNext.body)
+	}
+	globalFacts := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"periodFrom": time.Now().UTC().Add(-30 * 24 * time.Hour).Format(time.RFC3339Nano),
+			"periodTo": time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano), "category": "market", "limit": 10},
+		true, http.StatusOK, "")
+	if len(arrayField(t, globalFacts.body, "facts")) != 3 {
+		t.Fatalf("global anonymized facts query returned wrong count: %#v", globalFacts.body)
+	}
+	globalHasUnlinkedFact := false
+	for _, rawFact := range arrayField(t, globalFacts.body, "facts") {
+		fact := rawFact.(map[string]any)
+		if _, exists := fact["companyId"]; exists {
+			t.Fatal("global facts response leaked a company identifier")
+		}
+		if stringField(t, fact, "news_id") == globalNewsID {
+			globalHasUnlinkedFact = true
+		}
+	}
+	if !globalHasUnlinkedFact {
+		t.Fatal("global facts query omitted the company-independent news fact")
+	}
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts", map[string]any{}, true, http.StatusBadRequest, "invalid_facts_query")
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"companyId": companyID, "periodFrom": time.Now().UTC().Add(-91 * 24 * time.Hour).Format(time.RFC3339Nano),
+			"periodTo": time.Now().UTC().Format(time.RFC3339Nano)}, true, http.StatusBadRequest, "invalid_facts_query")
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"companyId": companyID, "limit": 101}, true, http.StatusBadRequest, "invalid_facts_query")
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?data=facts",
+		map[string]any{"companyId": companyID, "beforeFactId": "not-a-uuid"}, true, http.StatusBadRequest, "invalid_facts_query")
 	companyFacts := callTool(t, mcpCtx, mcpSession, "get_company_facts", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, companyFacts, "facts")) != 2 {
 		t.Fatalf("expected two linked company facts, got %d", len(arrayField(t, companyFacts, "facts")))
 	}
 	observations := []any{
-		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": newsSourceID, "value": 2000000.0, "probability": 0.8, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[0]}},
-		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": bankSourceID, "value": 500000.0, "probability": 0.6, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[1]}},
+		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": newsID, "value": 2000000.0, "probability": 0.8, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[0]}},
+		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": bankNewsID, "value": 500000.0, "probability": 0.6, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[1]}},
 	}
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": observations})
 	totalArgs := map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "period_from": "2026-10-01", "period_to": "2026-10-31"}
@@ -296,8 +358,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	_ = duplicateWS.Close(websocket.StatusNormalClosure, "")
 
 	// New source and profile revisions independently invalidate saved analysis.
-	newSourceCall := postNews(t, httpClient, baseURL, newSourceID, "A newly published source.")
-	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newSourceCall.body, "callId"))
+	newSourceCall := postSerezha(t, httpClient, baseURL, newSourceID, newNewsID, "external_news", "text/html", "New source", "https://example.test/news/new-source", "A newly published source.")
+	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newSourceCall.body, "call_id"))
 	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(answerMessageID))
 	writeFrame(t, staleQuestionWS, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-888888888888",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Use the stale analysis"})
@@ -356,15 +418,24 @@ func metricSetting() map[string]any {
 	}
 }
 
-func postNews(t *testing.T, client *http.Client, baseURL, sourceID, text string) response {
-	t.Helper()
-	return assertRequest(t, client, baseURL, http.MethodPost, "/news", map[string]any{"sourceId": sourceID, "text": text}, true, http.StatusAccepted, "")
+func serezhaPayload(sourceID, newsID, materialKind, mediaType, title, sourceURL, text string) map[string]any {
+	return map[string]any{
+		"news_id": newsID, "source_id": sourceID, "company_id": companyID,
+		"material_kind": materialKind, "media_type": mediaType, "title": title,
+		"source_url": sourceURL, "published_at": "2026-10-25T09:00:00Z", "news_text": text,
+	}
 }
 
-func saveNewsFacts(t *testing.T, ctx context.Context, session *mcp.ClientSession, sourceID, materialKind, mediaType, title, sourceURL, text string) []string {
+func postSerezha(t *testing.T, client *http.Client, baseURL, sourceID, newsID, materialKind, mediaType, title, sourceURL, text string) response {
+	t.Helper()
+	return assertRequest(t, client, baseURL, http.MethodPost, "/call?agent=serezha",
+		serezhaPayload(sourceID, newsID, materialKind, mediaType, title, sourceURL, text), true, http.StatusAccepted, "")
+}
+
+func saveNewsFacts(t *testing.T, ctx context.Context, session *mcp.ClientSession, companyID, newsID, sourceID, materialKind, mediaType, title, sourceURL, text string) []string {
 	t.Helper()
 	result := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
-		"news_id": sourceID, "source_id": sourceID, "source_url": sourceURL, "company_id": companyID,
+		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL, "company_id": companyID,
 		"material_kind": materialKind, "media_type": mediaType, "title": title,
 		"published_at": "2026-10-25T09:00:00Z", "news_text": text,
 		"facts": []any{map[string]any{"fact_text": text, "category": "market", "entities": []string{"manufacturing"},

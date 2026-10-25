@@ -52,32 +52,50 @@
 
 ## Новость или аналитика Альфа-Банка — Серёже
 
-`POST /news` принимает очищенный текст материала (максимум 1 MiB UTF-8):
+Domain передаёт новость напрямую общим асинхронным маршрутом `POST /call?agent=serezha`; отдельного `POST /news` нет. Поля передаются в JSON-теле:
 
 ```json
 {
-  "sourceId": "22222222-2222-4222-8222-222222222222",
-  "text": "Очищенный текст новости или аналитического материала."
+  "news_id": "22222222-2222-4222-8222-222222222222",
+  "source_id": "22222222-2222-4222-8222-222222222222",
+  "company_id": "11111111-1111-4111-8111-111111111111",
+  "source_url": "https://example.org/news/market-change",
+  "material_kind": "external_news",
+  "media_type": "text/html",
+  "title": "Изменение рынка",
+  "published_at": "2026-10-25T09:00:00Z",
+  "news_text": "Очищенный текст новости или аналитического материала."
 }
 ```
 
-ESB вызывает Domain `GET {DOMAIN_API_BASE_URL}/internal/news-links/{sourceId}` с `Authorization: Bearer $DOMAIN_API_TOKEN`. Domain возвращает:
+`source_id` — UUID записи `news_links.id`; `news_id` задаёт чат Серёжи и идентификатор новости в ClickHouse. `company_id` можно опустить для общего, не связанного с компанией материала. Если он передан, ESB до постановки Серёжи в очередь регистрирует источник в PostgreSQL; нужны `source_url`, `material_kind` (`external_news` или `alpha_analysis`) и `media_type` (`text/html` или `application/pdf`). Текст ограничен 1 MiB UTF-8. Успешный ответ — `202 Accepted` с `call_id`. Повтор `source_id` идемпотентен; если запрос пытается связать этот ID с другой компанией, ESB отвечает `409 source_id_conflict`.
+
+Серёжа сохраняет исходный текст и универсальные факты в ClickHouse. Савелий может отдельно связать факты с компаниями через MCP ESB.
+
+## Чтение фактов
+
+`GET /call?data=facts` читает факты из ClickHouse. Фильтры передаются JSON-телом и могут сочетаться:
 
 ```json
 {
-  "sourceId": "22222222-2222-4222-8222-222222222222",
   "companyId": "11111111-1111-4111-8111-111111111111",
-  "canonicalUrl": "https://alfabank.ru/example/analysis.pdf",
-  "materialKind": "alpha_analysis",
-  "mediaType": "application/pdf",
-  "title": "Анализ рынка",
-  "publishedAt": "2026-10-25T09:00:00Z"
+  "sourceId": "22222222-2222-4222-8222-222222222222",
+  "category": "market",
+  "entity": "manufacturing",
+  "materialKind": "external_news",
+  "periodFrom": "2026-10-01T00:00:00Z",
+  "periodTo": "2026-10-26T00:00:00Z",
+  "limit": 100
 }
 ```
 
-`materialKind`: `external_news` или `alpha_analysis`; `mediaType`: `application/pdf` или `text/html`. Ответ `POST /news` — `202 Accepted` с `status`, `sourceId` и `callId`. Повтор `sourceId` не создаёт новую запись источника или второй вызов при идентичном запросе. Неизвестный ID даёт `404`.
+`companyId` возвращает факты, уже связанные с этой компанией, вместе с релевантностью связи. `newsId` и `sourceId` выбирают материалы; если `companyId` не передан, возвращаются общие факты без данных о компаниях. Можно дополнительно фильтровать по `category`, `entity`, `materialKind` и периоду публикации (если дата публикации неизвестна — по времени загрузки новости). Период задаётся полуинтервалом `[periodFrom, periodTo)` и ограничен 90 днями. Чтобы не запускать широкий полный просмотр таблицы, требуется `companyId`, `newsId`, `sourceId` или обе границы периода.
 
-ESB регистрирует источник и компанию в PostgreSQL до запуска Серёжи. Серёжа сохраняет текст и универсальные факты в ClickHouse с типом материала, ссылкой и `sourceId`. Настройки Domain API задаются в `DOMAIN_API_BASE_URL` и `DOMAIN_API_TOKEN`.
+Размер страницы по умолчанию — 100, максимум — 100 фактов. Ответ содержит `facts`, `hasMore` и при наличии следующей страницы `nextBeforeFactId`. Для продолжения передайте тот же набор фильтров и `beforeFactId`, равный `nextBeforeFactId`:
+
+```json
+{"data":"facts","facts":[],"hasMore":true,"nextBeforeFactId":"..."}
+```
 
 ## Получить анализ / подписаться на поток Константина
 

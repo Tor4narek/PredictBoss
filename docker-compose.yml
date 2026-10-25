@@ -163,8 +163,6 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
       S3_CREATE_BUCKET: ${S3_CREATE_BUCKET:-false}
-      DOMAIN_API_BASE_URL: ${DOMAIN_API_BASE_URL:-}
-      DOMAIN_API_TOKEN: ${DOMAIN_API_TOKEN:-}
     ports:
       - "8081:8081"
     depends_on:

@@ -3,7 +3,7 @@
 - news_id: stable ID for this news item and the PostgreSQL conversation scope.
 - source_id: ID of the source that supplied the news.
 - source_url: optional URL of the source.
-- company_id: company from Domain metadata lookup.
+- company_id: optional company UUID supplied by Domain. Omit it for a universal news item that is not assigned to a company.
 - material_kind: external_news or alpha_analysis.
 - media_type: text/html or application/pdf.
 - title: source title, when available.
@@ -14,4 +14,4 @@
 - confidence: number from 0 to 1 expressing confidence that the source supports the fact.
 - occurred_at: RFC3339 event time, or null when the text does not provide one.
 
-ClickHouse stores the news and facts in separate tables. Each fact retains its news_id and source metadata. The material kind lets the consultant cite Alpha Bank analyses as `bank_view` and external news as `fact`.
+Domain submits these fields directly to `POST /call?agent=serezha`; ESB does not call a separate Domain metadata endpoint. If `company_id` is present, ESB records the source and company in PostgreSQL before queuing the agent. ClickHouse stores the news and facts in separate tables. Each fact retains its news_id and source metadata. The material kind lets the consultant cite Alpha Bank analyses as `bank_view` and external news as `fact`.

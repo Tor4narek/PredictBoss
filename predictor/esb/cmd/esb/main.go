@@ -21,7 +21,6 @@ import (
 	"github.com/predictboss/predictor/esb/internal/application/news"
 	"github.com/predictboss/predictor/esb/internal/domain"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/clickhouse"
-	"github.com/predictboss/predictor/esb/internal/infrastructure/domainapi"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/hermes"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/postgres"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/s3"
@@ -41,25 +40,23 @@ type agentFile struct {
 }
 
 type config struct {
-	HTTPAddr         string
-	DatabaseURL      string
-	ESBAPIKey        string
-	HermesAPIKey     string
-	ClickHouseURL    string
-	CHDatabase       string
-	CHUser           string
-	CHPassword       string
-	S3Bucket         string
-	S3Region         string
-	S3Endpoint       string
-	S3AccessKey      string
-	S3SecretKey      string
-	S3PathStyle      bool
-	S3CreateBucket   bool
-	DomainAPIBaseURL string
-	DomainAPIToken   string
-	PollInterval     time.Duration
-	Agents           []domain.Agent
+	HTTPAddr       string
+	DatabaseURL    string
+	ESBAPIKey      string
+	HermesAPIKey   string
+	ClickHouseURL  string
+	CHDatabase     string
+	CHUser         string
+	CHPassword     string
+	S3Bucket       string
+	S3Region       string
+	S3Endpoint     string
+	S3AccessKey    string
+	S3SecretKey    string
+	S3PathStyle    bool
+	S3CreateBucket bool
+	PollInterval   time.Duration
+	Agents         []domain.Agent
 }
 
 func main() {
@@ -103,14 +100,7 @@ func runESB() error {
 	}
 	hermesClient := hermes.NewClient(cfg.HermesAPIKey)
 	callService := calls.NewService(callRepository, hermesClient, cfg.Agents, cfg.PollInterval)
-	var newsService *news.Service
-	if cfg.DomainAPIBaseURL != "" || cfg.DomainAPIToken != "" {
-		metadataClient, err := domainapi.NewClient(cfg.DomainAPIBaseURL, cfg.DomainAPIToken)
-		if err != nil {
-			return err
-		}
-		newsService = news.NewService(metadataClient, callRepository, callService)
-	}
+	newsService := news.NewService(callRepository, callService)
 	metricSettings := postgres.NewMetricSettings(db)
 	companyContextService := companycontext.NewService(profileStore, metricSettings)
 	analyticsService := analytics.NewService(clickhouse.NewAnalytics(ch), metricSettings)
@@ -159,9 +149,8 @@ func loadConfig() (config, error) {
 		CHDatabase: env("CLICKHOUSE_DATABASE", "default"), CHUser: env("CLICKHOUSE_USER", "default"), CHPassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		S3Bucket: os.Getenv("S3_BUCKET"), S3Region: env("S3_REGION", "us-east-1"), S3Endpoint: os.Getenv("S3_ENDPOINT"),
 		S3AccessKey: os.Getenv("S3_ACCESS_KEY_ID"), S3SecretKey: os.Getenv("S3_SECRET_ACCESS_KEY"), S3PathStyle: strings.EqualFold(os.Getenv("S3_FORCE_PATH_STYLE"), "true"),
-		S3CreateBucket:   strings.EqualFold(os.Getenv("S3_CREATE_BUCKET"), "true"),
-		DomainAPIBaseURL: strings.TrimRight(os.Getenv("DOMAIN_API_BASE_URL"), "/"), DomainAPIToken: os.Getenv("DOMAIN_API_TOKEN"),
-		PollInterval: 2 * time.Second,
+		S3CreateBucket: strings.EqualFold(os.Getenv("S3_CREATE_BUCKET"), "true"),
+		PollInterval:   2 * time.Second,
 	}
 	if cfg.DatabaseURL == "" || cfg.ESBAPIKey == "" || cfg.HermesAPIKey == "" || cfg.S3Bucket == "" {
 		return config{}, errors.New("DATABASE_URL, ESB_API_KEY, HERMES_API_KEY and S3_BUCKET are required")

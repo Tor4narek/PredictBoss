@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
@@ -14,10 +16,7 @@ const MaxNewsTextBytes = 1 << 20
 
 var ErrInvalidInput = errors.New("invalid news input")
 var sourceIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
-type MetadataLookup interface {
-	NewsLink(context.Context, string) (domain.CompanySource, error)
-}
+var newsIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 type SourceRegistry interface {
 	RecordSource(context.Context, domain.CompanySource) (bool, error)
@@ -28,51 +27,83 @@ type CallCreator interface {
 }
 
 type Service struct {
-	metadata MetadataLookup
-	sources  SourceRegistry
-	calls    CallCreator
+	sources SourceRegistry
+	calls   CallCreator
 }
 
-func NewService(metadata MetadataLookup, sources SourceRegistry, callsService CallCreator) *Service {
-	return &Service{metadata: metadata, sources: sources, calls: callsService}
+type input struct {
+	NewsID       string  `json:"news_id"`
+	SourceID     string  `json:"source_id"`
+	SourceURL    string  `json:"source_url,omitempty"`
+	CompanyID    string  `json:"company_id,omitempty"`
+	MaterialKind string  `json:"material_kind,omitempty"`
+	MediaType    string  `json:"media_type,omitempty"`
+	Title        string  `json:"title,omitempty"`
+	PublishedAt  *string `json:"published_at,omitempty"`
+	NewsText     string  `json:"news_text"`
 }
 
-func (s *Service) Ingest(ctx context.Context, sourceID, text string) (domain.Call, bool, error) {
-	sourceID = strings.TrimSpace(sourceID)
-	text = strings.TrimSpace(text)
-	if !sourceIDPattern.MatchString(sourceID) || text == "" || len(text) > MaxNewsTextBytes {
+func NewService(sources SourceRegistry, callsService CallCreator) *Service {
+	return &Service{sources: sources, calls: callsService}
+}
+
+// Submit validates a Serezha request, registers company source metadata when
+// the article belongs to a company, then queues the asynchronous extraction.
+func (s *Service) Submit(ctx context.Context, raw json.RawMessage) (domain.Call, bool, error) {
+	var request input
+	if err := json.Unmarshal(raw, &request); err != nil {
 		return domain.Call{}, false, ErrInvalidInput
 	}
-	sourceID = strings.ToLower(sourceID)
-	metadata, err := s.metadata.NewsLink(ctx, sourceID)
-	if err != nil {
-		return domain.Call{}, false, err
-	}
-	if metadata.SourceID != sourceID || !sourceIDPattern.MatchString(metadata.CompanyID) || metadata.NewsID != sourceID ||
-		(metadata.MaterialKind != "external_news" && metadata.MaterialKind != "alpha_analysis") ||
-		(metadata.MediaType != "application/pdf" && metadata.MediaType != "text/html") || strings.TrimSpace(metadata.SourceURL) == "" {
+	request.NewsID = strings.TrimSpace(request.NewsID)
+	request.SourceID = strings.ToLower(strings.TrimSpace(request.SourceID))
+	request.SourceURL = strings.TrimSpace(request.SourceURL)
+	request.CompanyID = strings.ToLower(strings.TrimSpace(request.CompanyID))
+	request.MaterialKind = strings.TrimSpace(request.MaterialKind)
+	request.MediaType = strings.TrimSpace(request.MediaType)
+	request.Title = strings.TrimSpace(request.Title)
+	request.NewsText = strings.TrimSpace(request.NewsText)
+	if !newsIDPattern.MatchString(request.NewsID) || !sourceIDPattern.MatchString(request.SourceID) || request.NewsText == "" || len(request.NewsText) > MaxNewsTextBytes {
 		return domain.Call{}, false, ErrInvalidInput
 	}
-	metadata.SourceID = sourceID
-	metadata.NewsID = sourceID
-	metadata.CompanyID = strings.ToLower(metadata.CompanyID)
-	_, err = s.sources.RecordSource(ctx, metadata)
+	if request.CompanyID != "" && !sourceIDPattern.MatchString(request.CompanyID) {
+		return domain.Call{}, false, ErrInvalidInput
+	}
+	if request.MaterialKind == "" {
+		request.MaterialKind = "external_news"
+	}
+	if request.MediaType == "" {
+		request.MediaType = "text/html"
+	}
+	if (request.MaterialKind != "external_news" && request.MaterialKind != "alpha_analysis") ||
+		(request.MediaType != "application/pdf" && request.MediaType != "text/html") {
+		return domain.Call{}, false, ErrInvalidInput
+	}
+	if request.PublishedAt != nil {
+		if _, err := time.Parse(time.RFC3339, *request.PublishedAt); err != nil {
+			return domain.Call{}, false, ErrInvalidInput
+		}
+	}
+	if request.SourceURL != "" {
+		parsed, err := url.ParseRequestURI(request.SourceURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return domain.Call{}, false, ErrInvalidInput
+		}
+	}
+	if request.CompanyID != "" {
+		if request.SourceURL == "" {
+			return domain.Call{}, false, ErrInvalidInput
+		}
+		if _, err := s.sources.RecordSource(ctx, domain.CompanySource{
+			SourceID: request.SourceID, CompanyID: request.CompanyID, NewsID: request.NewsID,
+			MaterialKind: request.MaterialKind, MediaType: request.MediaType, SourceURL: request.SourceURL,
+			Title: request.Title, PublishedAt: request.PublishedAt,
+		}); err != nil {
+			return domain.Call{}, false, err
+		}
+	}
+	normalized, err := json.Marshal(request)
 	if err != nil {
 		return domain.Call{}, false, err
 	}
-	input, err := json.Marshal(struct {
-		NewsID       string  `json:"news_id"`
-		SourceID     string  `json:"source_id"`
-		SourceURL    string  `json:"source_url"`
-		CompanyID    string  `json:"company_id"`
-		MaterialKind string  `json:"material_kind"`
-		MediaType    string  `json:"media_type"`
-		Title        string  `json:"title"`
-		PublishedAt  *string `json:"published_at,omitempty"`
-		NewsText     string  `json:"news_text"`
-	}{metadata.NewsID, metadata.SourceID, metadata.SourceURL, metadata.CompanyID, metadata.MaterialKind, metadata.MediaType, metadata.Title, metadata.PublishedAt, text})
-	if err != nil {
-		return domain.Call{}, false, err
-	}
-	return s.calls.Create(ctx, string(domain.AgentSerezha), input, "news:"+sourceID)
+	return s.calls.Create(ctx, string(domain.AgentSerezha), normalized, "news:"+request.SourceID)
 }
