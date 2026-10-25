@@ -20,13 +20,24 @@ export type TableProps<Row> = {
   rows: Row[]
   /** Уникальный ключ строки. */
   getRowKey: (row: Row) => string
+  /**
+   * plain — без фона и боковых отступов, внутри карточки с заголовком (экран «Источники»);
+   * boxed — серая шапка и отступы 16, карточка без внутренних отступов (экран «Материалы»).
+   */
+  variant?: 'plain' | 'boxed'
   className?: string
 }
 
 /** Таблица из макета: серые заголовки 12, строки 13 с разделителями. Состояния загрузки/пусто/ошибка — снаружи. */
-export function Table<Row>({ columns, rows, getRowKey, className }: TableProps<Row>) {
+export function Table<Row>({
+  columns,
+  rows,
+  getRowKey,
+  variant = 'plain',
+  className,
+}: TableProps<Row>) {
   return (
-    <table className={cx(styles.table, className)}>
+    <table className={cx(styles.table, styles[variant], className)}>
       <colgroup>
         {columns.map((column) => (
           <col key={column.key} style={column.width ? { width: column.width } : undefined} />

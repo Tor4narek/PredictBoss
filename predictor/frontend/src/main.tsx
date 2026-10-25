@@ -4,7 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App } from './App'
 import './styles/global.css'
 
-const queryClient = new QueryClient()
+const queryClient = new QueryClient({
+  defaultOptions: {
+    // Одна повторная попытка: ошибка показывается быстро, а случайный сбой сети не пугает.
+    queries: { retry: 1, refetchOnWindowFocus: false },
+  },
+})
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

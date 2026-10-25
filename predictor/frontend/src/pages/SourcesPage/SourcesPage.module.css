@@ -1,0 +1,34 @@
+.addForm {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.addField {
+  flex: 1 1 589px;
+}
+
+/* Кнопка стоит на одной линии с полем: под подписью (20 px) и отступом (8 px). */
+.addButton {
+  flex: 1 1 445px;
+  margin-top: 28px;
+}
+
+.url {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.actionError {
+  font-size: var(--text-caption-size);
+  color: var(--color-accent);
+}

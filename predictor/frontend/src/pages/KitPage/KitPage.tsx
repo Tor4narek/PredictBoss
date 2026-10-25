@@ -17,6 +17,7 @@ import {
   NavItem,
   PageHeader,
   Panel,
+  Select,
   Sidebar,
   Steps,
   Table,
@@ -75,6 +76,15 @@ export function KitPage() {
             <Field label="HTTPS URL" placeholder="https://example.org/news" hint="Пример URL" />
             <Field label="HTTPS URL" defaultValue="http://example.org" error="Нужен адрес, начинающийся с https://" />
             <Field label="Недоступно" defaultValue="Нет данных" disabled />
+            <Select
+              label="Выпадающий список"
+              defaultValue="yes"
+              options={[
+                { value: '', label: 'Не указано' },
+                { value: 'yes', label: 'Да' },
+                { value: 'no', label: 'Нет' },
+              ]}
+            />
           </div>
         </Section>
 

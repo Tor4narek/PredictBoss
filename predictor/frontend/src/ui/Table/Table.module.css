@@ -35,3 +35,23 @@
 .muted {
   color: var(--color-text-secondary);
 }
+
+/* boxed: серая шапка, отступы 16 по краям — экран «Материалы» */
+.boxed .th {
+  padding: var(--space-3) var(--space-4) var(--space-3) 0;
+  background: var(--color-field);
+}
+
+.boxed .td {
+  padding: var(--space-4) var(--space-4) var(--space-4) 0;
+}
+
+.boxed .th:first-child,
+.boxed .td:first-child {
+  padding-left: var(--space-4);
+}
+
+.boxed .th:last-child,
+.boxed .td:last-child {
+  padding-right: var(--space-4);
+}

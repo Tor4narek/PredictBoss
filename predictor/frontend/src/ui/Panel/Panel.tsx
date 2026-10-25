@@ -9,8 +9,8 @@ export type PanelProps = Omit<HTMLAttributes<HTMLElement>, 'title'> & {
   description?: ReactNode
   /** Элемент справа от заголовка: бейдж или кнопка. */
   aside?: ReactNode
-  /** Внутренний отступ: md — 16 (плашки), lg — 24 (обычные карточки), none — без отступа. */
-  padding?: 'none' | 'md' | 'lg'
+  /** Внутренний отступ: md — 16 (плашки), lg — 24 (обычные карточки), xl — 32 (формы), none — без отступа. */
+  padding?: 'none' | 'md' | 'lg' | 'xl'
   children?: ReactNode
 }
 
