@@ -12,6 +12,8 @@ Each metric has:
 - characteristic: how the metric is defined and interpreted for this company.
 - parameters: optional structured JSON settings, such as calculation rules, thresholds, or period conventions.
 
+Metrics come from one shared catalog of eight words: rate (ставка), deposit (депозит), fx_rate (курс), logistics (логистика), price (цена), demand (спрос), inventory (запас), and wage (зарплата). A company gets a row only when its company_data has the trigger for that word; the conditions are listed in SKILL.md. For every row, name is the catalog word, description states what growth means, metric_type is score, unit is empty, characteristic is a short phrase for this company such as "кредита и лизинга", and parameters.source_fields lists the triggering fields. The catalog word контрагент is not used because payment data is not part of the input.
+
 `profile_revision` is a positive, monotonically increasing revision supplied by Domain. Repeating the same revision is safe; an older revision cannot replace the profile or metric settings.
 
 All metric settings are stored together in PostgreSQL in `company_metric_settings`, keyed by `(company_id, metric_id)`. `metric_type` is a PostgreSQL enum. PostgreSQL is the source of truth; ClickHouse contains no metric catalog or company metric characteristics.
