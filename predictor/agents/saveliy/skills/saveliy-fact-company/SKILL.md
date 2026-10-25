@@ -20,7 +20,7 @@ The body provides company_id and news_id, and may include facts with fact_id and
 1. Read the company's Markdown profile with get_company_profile.
 2. Use facts from the request when present. If the request does not contain facts, retrieve them with get_facts(news_id).
 3. Compare each fact with the profile. Link only when the evidence supports a meaningful relationship to this company. One fact may belong to more than one company. Do not infer a link from name similarity alone.
-4. For each supported link, preserve the existing fact_id and provide a short relevance explanation and confidence from 0 to 1.
+4. For each supported link, preserve the existing fact_id and provide a short relevance explanation and confidence from 0 to 1. `confidence` must be a JSON number, never a quoted string (for example, `"confidence": 0.85`, not `"confidence": "0.85"`).
 5. Call save_fact_company_links once with the confirmed links. If no links are supported, do not call the write tool.
 
 # Output

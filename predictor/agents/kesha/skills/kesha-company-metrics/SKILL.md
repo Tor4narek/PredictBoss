@@ -19,7 +19,7 @@ The request may include a date range. The Markdown profile, facts, and tool resu
 
 1. Read the current Markdown profile and the company's metric settings using ESB MCP tools, then read facts linked to this company. The settings come from PostgreSQL; facts and analytical data come from ClickHouse.
 2. Consider only metrics in the PostgreSQL settings returned by get_company_metrics. Create observations only when linked facts support a value, direction, or probability. Preserve metric_id and source news_id; include source fact IDs.
-3. Store observations with save_metric_observations. Each observation has metric_id, news_id, value (or null), probability from 0 to 1, period_from, period_to, and source_fact_ids.
+3. Store observations with save_metric_observations. Each observation has metric_id, news_id, value (or null), probability from 0 to 1, period_from, period_to, and source_fact_ids. Numeric fields must be JSON numbers, never quoted strings: for example, `"value": 1200000` and `"probability": 0.75`, not `"value": "1200000"` or `"probability": "0.75"`. Use JSON `null` for an unknown value.
 4. Call calculate_all_metric_totals for the requested period. Totals are probability-weighted sums of numeric observation values; null values are excluded from the observation count.
 5. Write a concise analysis in save_company_analysis. Explain the main changes, uncertainty, evidence, and period. Do not state probability as certainty.
 6. Read get_company_report when useful to confirm the persisted company report.
