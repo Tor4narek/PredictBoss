@@ -111,7 +111,7 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 		return "", err
 	}
 	digest := sha256.Sum256(payload)
-	if err := s.metrics.UpsertCompanyMetricsAtRevision(ctx, companyID, profileRevision, hex.EncodeToString(digest[:]), metrics); err != nil {
+	if err := s.metrics.ReplaceCompanyMetricsAtRevision(ctx, companyID, profileRevision, hex.EncodeToString(digest[:]), metrics); err != nil {
 		return "", err
 	}
 	key, err := s.profiles.Save(ctx, companyID, markdown)

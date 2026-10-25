@@ -55,8 +55,14 @@ type Call struct {
 	HermesRunID    *string         `json:"hermes_run_id,omitempty"`
 	Output         *string         `json:"output,omitempty"`
 	Error          *string         `json:"error,omitempty"`
+	RetryCount     int             `json:"-"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+}
+
+type CompanyProfileSyncState struct {
+	Revision int64
+	Synced   bool
 }
 
 type Message struct {
@@ -276,6 +282,8 @@ type CallRepository interface {
 	ListActive(context.Context) ([]Call, error)
 	SetStatus(context.Context, string, CallStatus, string) error
 	Complete(context.Context, string, string) error
+	CompleteValera(context.Context, string, string, string, int64) (CompanyProfileSyncState, bool, error)
+	RetryProfileSave(context.Context, string, string, int64) (bool, error)
 	Fail(context.Context, string, string) error
 	Recover(context.Context) error
 	ConversationID(context.Context, AgentType, string) (string, error)
@@ -317,7 +325,7 @@ type AnalyticsRepository interface {
 type CompanyMetricSettingsRepository interface {
 	ReserveCompanyProfileRevision(context.Context, string, int64, string) error
 	UpsertCompanyMetrics(context.Context, string, []CompanyMetric) error
-	UpsertCompanyMetricsAtRevision(context.Context, string, int64, string, []CompanyMetric) error
+	ReplaceCompanyMetricsAtRevision(context.Context, string, int64, string, []CompanyMetric) error
 	MarkCompanyProfileSynced(context.Context, string, int64, string) error
 	CompanyMetrics(context.Context, string, int) ([]CompanyMetric, error)
 }

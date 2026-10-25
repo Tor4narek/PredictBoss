@@ -21,6 +21,9 @@ trap cleanup EXIT
 for migration in predictor/storage/migrations/*.sql; do
   "${compose[@]}" exec --no-TTY clickhouse clickhouse-client --multiquery < "$migration"
 done
+for migration in predictor/storage/postgres/migrations/*.sql; do
+  "${compose[@]}" exec --no-TTY postgres psql -U predictor -d predictor -v ON_ERROR_STOP=1 < "$migration"
+done
 "${compose[@]}" up --detach --build --wait esb
 
 cd predictor/tests

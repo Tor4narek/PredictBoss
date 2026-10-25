@@ -18,6 +18,8 @@ Metrics come from one shared catalog of eight words: rate (ставка), deposi
 
 All metric settings are stored together in PostgreSQL in `company_metric_settings`, keyed by `(company_id, metric_id)`. `metric_type` is a PostgreSQL enum. PostgreSQL is the source of truth; ClickHouse contains no metric catalog or company metric characteristics.
 
+`save_company_profile_and_metrics` treats `metrics` as the complete authoritative snapshot for the supplied profile revision. It atomically removes settings omitted from the snapshot and upserts the supplied settings. An empty array removes all metric settings for that company. Repeating the same revision and payload is idempotent.
+
 Valera writes the Markdown and settings through one ESB MCP tool. S3 uses a stable profile key and PostgreSQL uses an upsert, so the tool can be retried safely after a partial failure.
 
 ## Inputs

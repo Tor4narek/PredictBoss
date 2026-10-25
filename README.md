@@ -38,7 +38,7 @@ ClickHouse хранит аналитические данные:
 - `metric_totals` — итоги по метрике, компании и периоду;
 - `company_analyses` — текст анализа и вероятность по периоду.
 
-Наблюдения ссылаются на `company_id` и `metric_id` из настроек PostgreSQL; каталог метрик и характеристики в ClickHouse не дублируются. Итог метрики считается как сумма `value × probability`; записи с `value: null` не входят в количество наблюдений. ClickHouse доступен агентам только через фиксированные MCP-инструменты ESB; произвольный SQL от модели не принимается. Миграции находятся в `predictor/storage/migrations/`, а схема настроек PostgreSQL — в `predictor/storage/postgres/init/`.
+Наблюдения ссылаются на `company_id` и `metric_id` из настроек PostgreSQL; каталог метрик и характеристики в ClickHouse не дублируются. Итог метрики считается как сумма `value × probability`; записи с `value: null` не входят в количество наблюдений. ClickHouse доступен агентам только через фиксированные MCP-инструменты ESB; произвольный SQL от модели не принимается. ClickHouse-миграции находятся в `predictor/storage/migrations/`, PostgreSQL-миграции — в `predictor/storage/postgres/migrations/`, а PostgreSQL bootstrap-схема — в `predictor/storage/postgres/init/`.
 
 ## Профили компаний
 
@@ -59,7 +59,9 @@ docker compose up --build
 ATLAS_TOKEN=... docker compose --profile migrations run --rm atlas
 ```
 
-На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. На существующем volume примените последовательно миграции `20261025130000_konstantin_websocket.sql` и `20261025150000_konstantin_chat_history.sql` из `predictor/storage/postgres/migrations/` перед обновлением ESB. Первая миграция переводит `company_id` настроек метрик в UUID; существующие значения должны быть UUID. Вторая добавляет индексы для ограниченных по периоду чтений истории Константина.
+На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. На существующем volume примените последовательно миграции `20261025110000_company_metric_settings.sql`, `20261025130000_konstantin_websocket.sql`, `20261025150000_konstantin_chat_history.sql` и `20261025170000_valera_profile_sync_retry.sql` из `predictor/storage/postgres/migrations/` перед обновлением ESB. Они создают каталог настроек метрик, переводят `company_id` в UUID, добавляют индексы для ограниченных по периоду чтений истории Константина и затем добавляют ограниченный счётчик повтора для вызовов Валеры. Существующие `company_id` должны быть UUID-строками.
+
+У Валеры `max_history_messages: 0` означает, что Hermes получает пустую историю; если параметр отсутствует в конфиге, ESB использует значение по умолчанию 40. При `completed` ESB завершает вызов Валеры только если `company_profile_state` содержит запрошенный `profile_revision` и `profile_synced = true`. Иначе ESB ставит вызов в очередь на один повтор с новым Hermes idempotency key; если повтор тоже не синхронизировал профиль, статус становится `failed`. Успешная запись профиля трактует `metrics` как полный снимок: настройки, которых нет в новом массиве, удаляются в той же транзакции PostgreSQL, что и upsert новых строк.
 
 Снаружи доступен только ESB на `localhost:8081`. PostgreSQL и ClickHouse находятся во внутренней storage-сети Docker; для администрирования используйте `docker compose exec`. `/mcp` — единый endpoint ESB для агентов; отдельного S3 MCP-сервиса нет.
 

@@ -73,9 +73,9 @@ func (r *Calls) byIdempotency(ctx context.Context, key string, input json.RawMes
 	var call domain.Call
 	var sameRequest bool
 	err := r.pool.QueryRow(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
-c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at, c.request_json = $2::jsonb
+c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, c.request_json = $2::jsonb
 FROM agent_calls c JOIN agent_conversations v USING (conversation_id) WHERE c.idempotency_key = $1`, key, input).
-		Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt, &sameRequest)
+		Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt, &sameRequest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Call{}, false, domain.ErrNotFound
 	}
@@ -92,7 +92,7 @@ func (r *Calls) GetForAgent(ctx context.Context, id string, agent domain.AgentTy
 
 func (r *Calls) get(ctx context.Context, id string, agent domain.AgentType, constrain bool) (domain.Call, error) {
 	query := `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status, c.hermes_run_id,
-c.output, c.error, c.created_at, c.updated_at FROM agent_calls c JOIN agent_conversations v USING (conversation_id)
+c.output, c.error, c.retry_count, c.created_at, c.updated_at FROM agent_calls c JOIN agent_conversations v USING (conversation_id)
 WHERE c.call_id = $1`
 	if constrain {
 		query += ` AND c.agent_type = $2`
@@ -100,9 +100,9 @@ WHERE c.call_id = $1`
 	var call domain.Call
 	var err error
 	if constrain {
-		err = r.pool.QueryRow(ctx, query, id, string(agent)).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
+		err = r.pool.QueryRow(ctx, query, id, string(agent)).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt)
 	} else {
-		err = r.pool.QueryRow(ctx, query, id).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
+		err = r.pool.QueryRow(ctx, query, id).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Call{}, domain.ErrNotFound
@@ -111,6 +111,12 @@ WHERE c.call_id = $1`
 }
 
 func (r *Calls) LoadHistory(ctx context.Context, callID string, limit int) ([]domain.Message, error) {
+	if limit == 0 {
+		return []domain.Message{}, nil
+	}
+	if limit < 0 {
+		return nil, domain.ErrConflict
+	}
 	rows, err := r.pool.Query(ctx, `SELECT role, content FROM (
 SELECT m.message_id, m.role, m.content FROM agent_messages m JOIN agent_calls c USING (conversation_id)
 WHERE c.call_id = $1 AND m.call_id <> c.call_id ORDER BY m.message_id DESC LIMIT $2
@@ -142,10 +148,10 @@ func (r *Calls) ClaimQueued(ctx context.Context, limit int) ([]domain.Call, erro
 ), claimed AS (
  UPDATE agent_calls c SET status = 'submitting', updated_at = now()
  FROM candidates x WHERE c.call_id = x.call_id
- RETURNING c.call_id, c.agent_type, c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at, c.conversation_id
+ RETURNING c.call_id, c.agent_type, c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, c.conversation_id
 )
 SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status, c.hermes_run_id,
- c.output, c.error, c.created_at, c.updated_at
+ c.output, c.error, c.retry_count, c.created_at, c.updated_at
 FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.created_at`, limit)
 	if err != nil {
 		return nil, err
@@ -154,7 +160,7 @@ FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.cre
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -173,7 +179,7 @@ WHERE call_id = $1 AND status = 'submitting'`, callID, runID)
 
 func (r *Calls) ListActive(ctx context.Context) ([]domain.Call, error) {
 	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
-c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at FROM agent_calls c
+c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at FROM agent_calls c
 JOIN agent_conversations v USING (conversation_id) WHERE c.status IN ('started','running') AND c.hermes_run_id IS NOT NULL
 ORDER BY c.created_at`)
 	if err != nil {
@@ -183,7 +189,7 @@ ORDER BY c.created_at`)
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -202,37 +208,91 @@ WHERE call_id = $1 AND status IN ('submitting','started','running')`, callID, st
 }
 
 func (r *Calls) Complete(ctx context.Context, callID, output string) error {
+	_, _, err := r.complete(ctx, callID, output, nil)
+	return err
+}
+
+func (r *Calls) CompleteValera(ctx context.Context, callID, output, companyID string, expectedRevision int64) (domain.CompanyProfileSyncState, bool, error) {
+	if expectedRevision < 1 {
+		return domain.CompanyProfileSyncState{}, false, domain.ErrConflict
+	}
+	return r.complete(ctx, callID, output, &valeraProfileCheck{companyID: companyID, revision: expectedRevision})
+}
+
+type valeraProfileCheck struct {
+	companyID string
+	revision  int64
+}
+
+func (r *Calls) complete(ctx context.Context, callID, output string, profileCheck *valeraProfileCheck) (domain.CompanyProfileSyncState, bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return domain.CompanyProfileSyncState{}, false, err
 	}
 	defer tx.Rollback(ctx)
+	var profileState domain.CompanyProfileSyncState
+	if profileCheck != nil {
+		err = tx.QueryRow(ctx, `SELECT profile_revision, profile_synced FROM company_profile_state
+WHERE company_id = $1::uuid FOR UPDATE`, profileCheck.companyID).Scan(&profileState.Revision, &profileState.Synced)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return profileState, false, nil
+		}
+		if err != nil {
+			return profileState, false, err
+		}
+		if !profileState.Synced || profileState.Revision != profileCheck.revision {
+			return profileState, false, nil
+		}
+	}
 	var conversationID, agentType string
 	var inputJSON []byte
-	err = tx.QueryRow(ctx, `UPDATE agent_calls SET status = 'processing', updated_at = now()
-WHERE call_id = $1 AND status IN ('started','running') RETURNING conversation_id::text, agent_type, request_json`, callID).Scan(&conversationID, &agentType, &inputJSON)
+	query := `UPDATE agent_calls SET status = 'processing', updated_at = now()
+WHERE call_id = $1 AND status IN ('started','running')`
+	if profileCheck != nil {
+		query += ` AND agent_type = 'valera'`
+	}
+	query += ` RETURNING conversation_id::text, agent_type, request_json`
+	err = tx.QueryRow(ctx, query, callID).Scan(&conversationID, &agentType, &inputJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return profileState, false, nil
 	}
 	if err != nil {
-		return err
+		return profileState, false, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content) VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
-		return err
+		return profileState, false, err
 	}
 	if agentType == string(domain.AgentKonstantin) {
 		if err := insertKonstantinEvent(ctx, tx, callID, conversationID, inputJSON, output); err != nil {
-			return err
+			return profileState, false, err
 		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE agent_calls SET status = 'completed', output = $2, error = NULL, updated_at = now() WHERE call_id = $1`, callID, output); err != nil {
-		return err
+		return profileState, false, err
 	}
 	_, err = tx.Exec(ctx, `UPDATE agent_conversations SET updated_at = now() WHERE conversation_id = $1`, conversationID)
 	if err != nil {
-		return err
+		return profileState, false, err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return profileState, false, err
+	}
+	return profileState, true, nil
+}
+
+func (r *Calls) RetryProfileSave(ctx context.Context, callID, companyID string, expectedRevision int64) (bool, error) {
+	result, err := r.pool.Exec(ctx, `UPDATE agent_calls c
+SET status = 'queued', retry_count = 1, hermes_run_id = NULL, output = NULL,
+    error = 'profile_sync_retry', updated_at = now()
+WHERE c.call_id = $1 AND c.agent_type = 'valera' AND c.status IN ('started','running') AND c.retry_count = 0
+  AND EXISTS (SELECT 1 FROM agent_conversations v WHERE v.conversation_id = c.conversation_id AND v.scope_id = $2)
+  AND NOT EXISTS (SELECT 1 FROM company_profile_state s WHERE s.company_id = $2::uuid
+    AND (s.profile_revision > $3 OR (s.profile_revision = $3 AND s.profile_synced)))`,
+		callID, companyID, expectedRevision)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
 }
 
 var evidenceSourcePattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

@@ -114,7 +114,11 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 		_ = s.repository.Fail(ctx, call.ID, "could_not_load_conversation_history")
 		return
 	}
-	runID, err := s.runtime.Start(ctx, agent, string(call.Input), history, call.ID)
+	idempotencyKey := call.ID
+	if call.RetryCount > 0 {
+		idempotencyKey = fmt.Sprintf("%s:profile-sync-retry:%d", call.ID, call.RetryCount)
+	}
+	runID, err := s.runtime.Start(ctx, agent, string(call.Input), history, idempotencyKey)
 	if err != nil {
 		_ = s.repository.Fail(ctx, call.ID, "hermes_submission_failed")
 		return
@@ -145,7 +149,28 @@ func (s *Service) pollActive(ctx context.Context) {
 			case "started", "running", "stopping":
 				_ = s.repository.SetStatus(ctx, call.ID, domain.CallRunning, "")
 			case "completed":
-				_ = s.repository.Complete(ctx, call.ID, state.Output)
+				if call.Agent != domain.AgentValera {
+					_ = s.repository.Complete(ctx, call.ID, state.Output)
+					return
+				}
+				expectedRevision, ok := profileRevision(call.Input)
+				if !ok {
+					_ = s.repository.SetStatus(ctx, call.ID, domain.CallFailed, "invalid_profile_revision")
+					return
+				}
+				profileState, completed, err := s.repository.CompleteValera(ctx, call.ID, state.Output, call.ScopeID, expectedRevision)
+				if err != nil || completed {
+					return
+				}
+				if profileState.Revision > expectedRevision {
+					_ = s.repository.SetStatus(ctx, call.ID, domain.CallFailed, "profile_revision_superseded")
+					return
+				}
+				if call.RetryCount > 0 {
+					_ = s.repository.SetStatus(ctx, call.ID, domain.CallFailed, "company_profile_not_synced")
+					return
+				}
+				_, _ = s.repository.RetryProfileSave(ctx, call.ID, call.ScopeID, expectedRevision)
 			case "failed", "cancelled", "interrupted", "unknown":
 				status := domain.CallFailed
 				if state.Status == "cancelled" {
@@ -162,4 +187,18 @@ func (s *Service) pollActive(ctx context.Context) {
 		}()
 	}
 	wait.Wait()
+}
+
+func profileRevision(input json.RawMessage) (int64, bool) {
+	var payload struct {
+		ProfileRevision json.RawMessage `json:"profile_revision"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil || len(payload.ProfileRevision) == 0 {
+		return 0, false
+	}
+	var revision int64
+	if err := json.Unmarshal(payload.ProfileRevision, &revision); err != nil || revision < 1 {
+		return 0, false
+	}
+	return revision, true
 }

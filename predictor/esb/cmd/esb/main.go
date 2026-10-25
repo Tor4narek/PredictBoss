@@ -36,7 +36,7 @@ type agentFile struct {
 	SkillFile      string   `json:"skill_file"`
 	RuntimeURLEnv  string   `json:"runtime_url_env"`
 	RequiredFields []string `json:"required_fields"`
-	MaxHistory     int      `json:"max_history_messages"`
+	MaxHistory     *int     `json:"max_history_messages"`
 }
 
 type config struct {
@@ -186,12 +186,23 @@ func loadConfig() (config, error) {
 		if runtimeURL == "" {
 			return config{}, fmt.Errorf("%s is required", definition.RuntimeURLEnv)
 		}
-		if definition.MaxHistory <= 0 {
-			definition.MaxHistory = defaultHistoryLimit
+		historyLimit, err := maxHistoryLimit(definition)
+		if err != nil {
+			return config{}, fmt.Errorf("agent definition %s: %w", definitionPath, err)
 		}
-		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField, RequiredFields: definition.RequiredFields, MaxHistory: definition.MaxHistory, RuntimeURL: runtimeURL, Instructions: instructions})
+		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField, RequiredFields: definition.RequiredFields, MaxHistory: historyLimit, RuntimeURL: runtimeURL, Instructions: instructions})
 	}
 	return cfg, nil
+}
+
+func maxHistoryLimit(definition agentFile) (int, error) {
+	if definition.MaxHistory == nil {
+		return defaultHistoryLimit, nil
+	}
+	if *definition.MaxHistory < 0 {
+		return 0, errors.New("max_history_messages cannot be negative")
+	}
+	return *definition.MaxHistory, nil
 }
 
 func skillInstructions(markdown string) string {

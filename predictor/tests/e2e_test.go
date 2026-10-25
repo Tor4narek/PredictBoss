@@ -89,24 +89,29 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	profilePayload := valeraPayload(1)
 	valera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
 	valeraCallID := stringField(t, valera.body, "callId")
-	waitForCall(t, httpClient, baseURL, "valera", valeraCallID)
+	valeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", valeraCallID)
+	if stringField(t, valeraFailure.body, "error") != "company_profile_not_synced" {
+		t.Fatalf("Valera completed without saving its profile but returned a different error: %#v", valeraFailure.body)
+	}
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusConflict, "profile_update_pending")
 	metric := metricSetting()
+	staleMetric := metricSetting()
+	staleMetric["metric_id"] = "stale_metric"
 	profileMarkdown := "# Example company\n\nA manufacturer with a growing domestic market.\n"
 	savedProfile := callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1, "markdown": profileMarkdown,
-		"metrics": []any{metric},
+		"metrics": []any{metric, staleMetric},
 	})
 	if got := stringField(t, savedProfile, "profile_key"); got != "companies/"+companyID+"/profile.md" {
 		t.Fatalf("unexpected S3 profile key %q", got)
 	}
-	if got := intField(t, savedProfile, "metrics_saved"); got != 1 {
-		t.Fatalf("expected one saved metric, got %d", got)
+	if got := intField(t, savedProfile, "metrics_saved"); got != 2 {
+		t.Fatalf("expected two saved metrics, got %d", got)
 	}
 	// Exact retries are safe; a changed payload at the same revision is rejected.
 	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1, "markdown": profileMarkdown,
-		"metrics": []any{metric},
+		"metrics": []any{metric, staleMetric},
 	})
 	changedProfile := callToolRaw(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1, "markdown": "# Changed at same revision\n",
@@ -122,7 +127,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	waitForKonstantinReady(t, httpClient, baseURL, companyID)
 	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyID, "metrics": []any{metric}})
 	metrics := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
-	if len(arrayField(t, metrics, "metrics")) != 1 {
+	if len(arrayField(t, metrics, "metrics")) != 2 {
 		t.Fatal("PostgreSQL metric settings were not returned through MCP")
 	}
 	profileRetry := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
@@ -248,15 +253,15 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("probability-weighted total = %v, want 1900000", got)
 	}
 	totals := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31"})
-	if len(arrayField(t, totals, "totals")) != 1 {
-		t.Fatal("calculate_all_metric_totals did not return the configured metric")
+	if len(arrayField(t, totals, "totals")) != 2 {
+		t.Fatal("calculate_all_metric_totals did not return all configured metrics")
 	}
 	callTool(t, mcpCtx, mcpSession, "save_company_analysis", map[string]any{
 		"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31",
 		"probability": "0.9", "metric_ids": []string{"revenue_impact"}, "text": "The evidence suggests a moderate revenue impact.",
 	})
 	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31"})
-	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 1 || len(arrayField(t, companyReport, "totals")) == 0 || len(arrayField(t, companyReport, "analyses")) != 1 {
+	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 2 || len(arrayField(t, companyReport, "totals")) == 0 || len(arrayField(t, companyReport, "analyses")) != 1 {
 		t.Fatalf("company report is missing ClickHouse or PostgreSQL data: %#v", companyReport)
 	}
 	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
@@ -404,12 +409,20 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 
 	updatedProfilePayload := valeraPayload(2)
 	updatedValera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", updatedProfilePayload, true, http.StatusAccepted, "")
-	waitForCall(t, httpClient, baseURL, "valera", stringField(t, updatedValera.body, "callId"))
+	updatedValeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", stringField(t, updatedValera.body, "callId"))
+	if stringField(t, updatedValeraFailure.body, "error") != "company_profile_not_synced" {
+		t.Fatalf("second Valera call completed without saving its profile but returned a different error: %#v", updatedValeraFailure.body)
+	}
 	updatedProfileMarkdown := "# Example company\n\nUpdated company context at revision two.\n"
 	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 2, "markdown": updatedProfileMarkdown,
 		"metrics": []any{metric},
 	})
+	metricsAfterReplacement := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
+	updatedMetrics := arrayField(t, metricsAfterReplacement, "metrics")
+	if len(updatedMetrics) != 1 || stringField(t, updatedMetrics[0].(map[string]any), "metric_id") != "revenue_impact" {
+		t.Fatalf("Valera snapshot left a stale metric in PostgreSQL: %#v", updatedMetrics)
+	}
 	profileStaleStatus := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusAccepted, "")
 	profileRevisionURL := baseURL + stringField(t, profileStaleStatus.body, "streamUrl")
 	profileRevisionWS := dialWebSocket(t, profileRevisionURL)
@@ -426,6 +439,15 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("invalid replay cursor was not rejected: %#v", badCursor)
 	}
 	_ = badCursorWS.Close(websocket.StatusNormalClosure, "")
+
+	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
+		"company_id": companyID, "profile_revision": 3, "markdown": updatedProfileMarkdown,
+		"metrics": []any{},
+	})
+	emptySnapshot := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
+	if len(arrayField(t, emptySnapshot, "metrics")) != 0 {
+		t.Fatalf("empty Valera snapshot did not remove all metric settings: %#v", emptySnapshot)
+	}
 }
 
 func valeraPayload(revision int) map[string]any {
@@ -593,6 +615,24 @@ func waitForCall(t *testing.T, client *http.Client, baseURL, agent, callID strin
 	}
 	t.Fatalf("agent %s call %s did not complete", agent, callID)
 	return nil
+}
+
+func waitForFailedCall(t *testing.T, client *http.Client, baseURL, agent, callID string) response {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := assertRequest(t, client, baseURL, http.MethodGet, "/call?agent="+url.QueryEscape(agent), map[string]any{"call_id": callID}, true, http.StatusOK, "")
+		status := stringField(t, resp.body, "status")
+		if status == "failed" {
+			return resp
+		}
+		if status == "completed" || status == "cancelled" || status == "interrupted" {
+			t.Fatalf("agent %s call %s ended with status %s, want failed: %#v", agent, callID, status, resp.body)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("agent %s call %s did not fail", agent, callID)
+	return response{}
 }
 
 func callTool(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) map[string]any {

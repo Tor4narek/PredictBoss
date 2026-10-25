@@ -43,7 +43,7 @@ func (r *MetricSettings) UpsertCompanyMetrics(ctx context.Context, companyID str
 	return r.upsertCompanyMetrics(ctx, companyID, nil, "", metrics)
 }
 
-func (r *MetricSettings) UpsertCompanyMetricsAtRevision(ctx context.Context, companyID string, revision int64, profileHash string, metrics []domain.CompanyMetric) error {
+func (r *MetricSettings) ReplaceCompanyMetricsAtRevision(ctx context.Context, companyID string, revision int64, profileHash string, metrics []domain.CompanyMetric) error {
 	if revision < 1 || len(profileHash) != 64 {
 		return domain.ErrConflict
 	}
@@ -73,6 +73,14 @@ RETURNING company_id::text`, companyID, *revision, profileHash).Scan(&accepted)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ErrConflict
 			}
+			return err
+		}
+		metricIDs := make([]string, 0, len(metrics))
+		for _, metric := range metrics {
+			metricIDs = append(metricIDs, metric.ID)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM company_metric_settings
+WHERE company_id = $1::uuid AND NOT (metric_id = ANY($2::text[]))`, companyID, metricIDs); err != nil {
 			return err
 		}
 	}
@@ -111,6 +119,7 @@ WHERE company_id = $1::uuid AND profile_revision = $2 AND profile_hash = $3`, co
 func (r *MetricSettings) CompanyMetrics(ctx context.Context, companyID string, limit int) ([]domain.CompanyMetric, error) {
 	rows, err := r.pool.Query(ctx, `SELECT metric_id, name, description, unit, metric_type::text,
 characteristic, parameters FROM company_metric_settings WHERE company_id = $1::uuid
+AND COALESCE((SELECT profile_synced FROM company_profile_state WHERE company_id = $1::uuid), TRUE)
 ORDER BY metric_id LIMIT $2`, companyID, limit)
 	if err != nil {
 		return nil, err
