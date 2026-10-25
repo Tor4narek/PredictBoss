@@ -47,8 +47,9 @@ CREATE INDEX agent_messages_conversation_idx
     ON agent_messages (conversation_id, message_id);
 
 CREATE TABLE company_metric_settings (
-    company_id UUID NOT NULL,
-    metric_id TEXT NOT NULL,
+	metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	company_id UUID NOT NULL,
+	type_code TEXT NOT NULL,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     metric_type company_metric_type NOT NULL,
@@ -56,8 +57,8 @@ CREATE TABLE company_metric_settings (
     unit TEXT NOT NULL DEFAULT '',
     parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (company_id, metric_id)
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	UNIQUE (company_id, type_code)
 );
 
 CREATE TABLE company_profile_state (

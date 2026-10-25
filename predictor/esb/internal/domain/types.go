@@ -146,7 +146,8 @@ const (
 )
 
 type CompanyMetric struct {
-	ID             string         `json:"metric_id"`
+	ID             string         `json:"metric_id,omitempty"`
+	TypeCode       string         `json:"type_code"`
 	Name           string         `json:"name"`
 	Description    string         `json:"description"`
 	Unit           string         `json:"unit"`
@@ -173,20 +174,44 @@ type MetricObservation struct {
 	SourceURL     string   `json:"source_url,omitempty"`
 	MaterialKind  string   `json:"material_kind,omitempty"`
 	Value         *float64 `json:"value"`
-	Probability   float64  `json:"probability"`
-	PeriodFrom    string   `json:"period_from"`
-	PeriodTo      string   `json:"period_to"`
+	Probability   *float64 `json:"probability"`
 	SourceFactIDs []string `json:"source_fact_ids"`
 }
 
 type MetricTotal struct {
-	CompanyID        string  `json:"company_id"`
-	MetricID         string  `json:"metric_id"`
-	PeriodFrom       string  `json:"period_from"`
-	PeriodTo         string  `json:"period_to"`
-	Total            float64 `json:"total"`
-	ObservationCount uint32  `json:"observation_count"`
-	CalculatedAt     string  `json:"calculated_at,omitempty"`
+	MetricID         string       `json:"metric_id"`
+	PeriodFrom       string       `json:"period_from"`
+	PeriodTo         string       `json:"period_to"`
+	TotalValue       *float64     `json:"total_value"`
+	TotalProbability *float64     `json:"total_probability"`
+	FactCount        uint32       `json:"fact_count"`
+	ProbabilityCount uint32       `json:"probability_count"`
+	Links            []MetricLink `json:"links"`
+}
+
+type MetricLink struct {
+	NewsID     string `json:"news_id"`
+	NewsURL    string `json:"news_url"`
+	NewsTime   string `json:"news_time"`
+	SourceKind string `json:"source_kind"`
+}
+
+type CompanyMetricTotal struct {
+	MetricID         string       `json:"metric_id"`
+	TypeCode         string       `json:"type_code"`
+	Characteristic   string       `json:"characteristic"`
+	TotalValue       *float64     `json:"total_value"`
+	TotalProbability *float64     `json:"total_probability"`
+	FactCount        uint32       `json:"fact_count"`
+	ProbabilityCount uint32       `json:"probability_count"`
+	Links            []MetricLink `json:"links"`
+}
+
+type CompanyMetricTotals struct {
+	CompanyID  string               `json:"company_id"`
+	PeriodFrom string               `json:"period_from"`
+	PeriodTo   string               `json:"period_to"`
+	Items      []CompanyMetricTotal `json:"items"`
 }
 
 type CompanyAnalysis struct {
@@ -199,11 +224,11 @@ type CompanyAnalysis struct {
 }
 
 type CompanyReport struct {
-	CompanyID string            `json:"company_id"`
-	Facts     []CompanyFact     `json:"facts"`
-	Metrics   []CompanyMetric   `json:"metrics"`
-	Totals    []MetricTotal     `json:"totals"`
-	Analyses  []CompanyAnalysis `json:"analyses"`
+	CompanyID string               `json:"company_id"`
+	Facts     []CompanyFact        `json:"facts"`
+	Metrics   []CompanyMetric      `json:"metrics"`
+	Totals    []CompanyMetricTotal `json:"totals"`
+	Analyses  []CompanyAnalysis    `json:"analyses"`
 }
 
 type ConsultantEvidence struct {
@@ -266,10 +291,10 @@ type CompanySource struct {
 }
 
 type ConsultantContext struct {
-	CompanyID    string              `json:"company_id"`
-	Facts        []CompanyFact       `json:"facts"`
-	Observations []MetricObservation `json:"observations"`
-	Totals       []MetricTotal       `json:"totals"`
+	CompanyID    string               `json:"company_id"`
+	Facts        []CompanyFact        `json:"facts"`
+	Observations []MetricObservation  `json:"observations"`
+	Totals       []CompanyMetricTotal `json:"totals"`
 }
 
 type CallRepository interface {
@@ -317,7 +342,7 @@ type AnalyticsRepository interface {
 	CompanyFacts(context.Context, string, int) ([]CompanyFact, error)
 	SaveMetricObservations(context.Context, string, []MetricObservation) error
 	SaveCompanyAnalysis(context.Context, CompanyAnalysis) error
-	CalculateMetricTotal(context.Context, string, string, string, string) (MetricTotal, error)
+	CalculateMetricTotal(context.Context, string, string, string) (MetricTotal, error)
 	CompanyReport(context.Context, string, string, string) (CompanyReport, error)
 	ConsultantContext(context.Context, string, int) (ConsultantContext, error)
 }

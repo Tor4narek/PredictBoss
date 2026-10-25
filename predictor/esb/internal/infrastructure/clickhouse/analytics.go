@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -170,20 +171,23 @@ type metricObservationRow struct {
 	MetricID      string   `json:"metric_id"`
 	NewsID        string   `json:"news_id"`
 	Value         *float64 `json:"value"`
-	Probability   float64  `json:"probability"`
-	PeriodFrom    string   `json:"period_from"`
-	PeriodTo      string   `json:"period_to"`
+	Probability   *float64 `json:"probability"`
 	SourceFactIDs []string `json:"source_fact_ids"`
 }
 
 func (r *Analytics) SaveMetricObservations(ctx context.Context, companyID string, observations []domain.MetricObservation) error {
 	rows := make([]metricObservationRow, 0, len(observations))
 	for _, observation := range observations {
-		id := stableUUID(strings.Join([]string{companyID, observation.MetricID, observation.NewsID, observation.PeriodFrom, observation.PeriodTo}, "\x00"))
+		id := observation.ID
+		if id == "" {
+			factIDs := append([]string(nil), observation.SourceFactIDs...)
+			sort.Strings(factIDs)
+			id = stableUUID(strings.Join([]string{companyID, observation.MetricID, observation.NewsID, strings.Join(factIDs, ",")}, "\x00"))
+		}
 		if observation.SourceFactIDs == nil {
 			observation.SourceFactIDs = []string{}
 		}
-		rows = append(rows, metricObservationRow{ID: id, CompanyID: companyID, MetricID: observation.MetricID, NewsID: observation.NewsID, Value: observation.Value, Probability: observation.Probability, PeriodFrom: observation.PeriodFrom, PeriodTo: observation.PeriodTo, SourceFactIDs: observation.SourceFactIDs})
+		rows = append(rows, metricObservationRow{ID: id, CompanyID: companyID, MetricID: observation.MetricID, NewsID: observation.NewsID, Value: observation.Value, Probability: observation.Probability, SourceFactIDs: observation.SourceFactIDs})
 	}
 	return r.client.Insert(ctx, "metric_observations", rows)
 }
@@ -204,36 +208,51 @@ func (r *Analytics) SaveCompanyAnalysis(ctx context.Context, analysis domain.Com
 }
 
 type totalRow struct {
-	CompanyID        string  `json:"company_id"`
-	MetricID         string  `json:"metric_id"`
-	PeriodFrom       string  `json:"period_from"`
-	PeriodTo         string  `json:"period_to"`
-	Total            float64 `json:"total"`
-	ObservationCount uint32  `json:"observation_count"`
+	TotalValue       *float64 `json:"total_value"`
+	TotalProbability *float64 `json:"total_probability"`
+	FactCount        uint32   `json:"fact_count"`
+	ProbabilityCount uint32   `json:"probability_count"`
 }
 
-func (r *Analytics) CalculateMetricTotal(ctx context.Context, companyID, metricID, from, to string) (domain.MetricTotal, error) {
-	query := fmt.Sprintf(`SELECT %s AS company_id, %s AS metric_id, toString(toDate(%s)) AS period_from,
-toString(toDate(%s)) AS period_to, sum(ifNull(value, 0) * probability) AS total,
-toUInt32(countIf(isNotNull(value))) AS observation_count FROM %s.metric_observations
-WHERE company_id = %s AND metric_id = %s AND period_to >= toDate(%s) AND period_from <= toDate(%s)
-GROUP BY company_id, metric_id FORMAT JSONEachRow`, escape(companyID), escape(metricID), escape(from), escape(to), r.table("metric_observations"), escape(companyID), escape(metricID), escape(from), escape(to))
-	var rows []totalRow
-	if err := r.client.queryRows(ctx, query, &rows); err != nil {
-		return domain.MetricTotal{}, err
-	}
-	total := totalRow{CompanyID: companyID, MetricID: metricID, PeriodFrom: from, PeriodTo: to}
-	if len(rows) != 0 {
-		total = rows[0]
-	}
-	return r.saveTotal(ctx, total)
+type metricLinkRow struct {
+	NewsID     string `json:"news_id"`
+	NewsURL    string `json:"news_url"`
+	NewsTime   string `json:"news_time"`
+	SourceKind string `json:"source_kind"`
 }
 
-func (r *Analytics) saveTotal(ctx context.Context, row totalRow) (domain.MetricTotal, error) {
-	if err := r.client.Insert(ctx, "metric_totals", []totalRow{row}); err != nil {
+func (r *Analytics) CalculateMetricTotal(ctx context.Context, metricID, from, to string) (domain.MetricTotal, error) {
+	observations := fmt.Sprintf("%s.metric_observations", r.table("metric_observations"))
+	news := fmt.Sprintf("%s.news", r.table("news"))
+	base := fmt.Sprintf(`FROM (SELECT * FROM %s FINAL) AS mo
+INNER JOIN (SELECT * FROM %s FINAL) AS n ON n.news_id = mo.news_id
+WHERE mo.metric_id = %s AND mo.value IS NOT NULL AND n.published_at IS NOT NULL
+AND n.published_at >= parseDateTime64BestEffort(%s, 3, 'UTC')
+AND n.published_at <= parseDateTime64BestEffort(%s, 3, 'UTC')`, observations, news, escape(metricID), escape(from), escape(to))
+	var aggregate []totalRow
+	if err := r.client.queryRows(ctx, "SELECT avgOrNull(mo.value) AS total_value, avgOrNull(mo.probability) AS total_probability, "+
+		"toUInt32(count()) AS fact_count, toUInt32(count(mo.probability)) AS probability_count "+base+" FORMAT JSONEachRow", &aggregate); err != nil {
 		return domain.MetricTotal{}, err
 	}
-	return domain.MetricTotal{CompanyID: row.CompanyID, MetricID: row.MetricID, PeriodFrom: row.PeriodFrom, PeriodTo: row.PeriodTo, Total: row.Total, ObservationCount: row.ObservationCount, CalculatedAt: time.Now().UTC().Format(time.RFC3339Nano)}, nil
+	result := domain.MetricTotal{MetricID: metricID, PeriodFrom: from, PeriodTo: to, Links: []domain.MetricLink{}}
+	if len(aggregate) > 0 {
+		result.TotalValue = aggregate[0].TotalValue
+		result.TotalProbability = aggregate[0].TotalProbability
+		result.FactCount = aggregate[0].FactCount
+		result.ProbabilityCount = aggregate[0].ProbabilityCount
+	}
+	var linkRows []metricLinkRow
+	linkQuery := fmt.Sprintf(`SELECT n.news_id AS news_id, ifNull(any(n.source_url), '') AS news_url,
+toString(min(n.published_at)) AS news_time,
+multiIf(any(n.material_kind) = 'alpha_analysis', 'bank', any(n.material_kind) = 'external_news', 'external', '') AS source_kind %s
+GROUP BY n.news_id ORDER BY min(n.published_at), n.news_id FORMAT JSONEachRow`, base)
+	if err := r.client.queryRows(ctx, linkQuery, &linkRows); err != nil {
+		return domain.MetricTotal{}, err
+	}
+	for _, link := range linkRows {
+		result.Links = append(result.Links, domain.MetricLink{NewsID: link.NewsID, NewsURL: link.NewsURL, NewsTime: link.NewsTime, SourceKind: link.SourceKind})
+	}
+	return result, nil
 }
 
 type analysisResult struct {
@@ -250,13 +269,6 @@ func (r *Analytics) CompanyReport(ctx context.Context, companyID, from, to strin
 	if err != nil {
 		return domain.CompanyReport{}, err
 	}
-	totalsQuery := fmt.Sprintf(`SELECT company_id, metric_id, period_from, period_to, total, observation_count,
-calculated_at FROM %s.metric_totals FINAL WHERE company_id = %s AND period_from >= toDate(%s) AND period_to <= toDate(%s)
-ORDER BY calculated_at DESC LIMIT 500 FORMAT JSONEachRow`, r.table("metric_totals"), escape(companyID), escape(from), escape(to))
-	var totals []domain.MetricTotal
-	if err := r.client.queryRows(ctx, totalsQuery, &totals); err != nil {
-		return domain.CompanyReport{}, err
-	}
 	analysisQuery := fmt.Sprintf(`SELECT company_id, period_from, period_to, probability, metric_ids, analysis_text
 FROM %s.company_analyses FINAL WHERE company_id = %s AND period_from >= toDate(%s) AND period_to <= toDate(%s)
 ORDER BY generated_at DESC LIMIT 100 FORMAT JSONEachRow`, r.table("company_analyses"), escape(companyID), escape(from), escape(to))
@@ -268,7 +280,7 @@ ORDER BY generated_at DESC LIMIT 100 FORMAT JSONEachRow`, r.table("company_analy
 	for _, item := range analysisRows {
 		analyses = append(analyses, domain.CompanyAnalysis{CompanyID: item.CompanyID, PeriodFrom: item.PeriodFrom, PeriodTo: item.PeriodTo, Probability: item.Probability, MetricIDs: item.MetricIDs, Text: item.Text})
 	}
-	return domain.CompanyReport{CompanyID: companyID, Facts: companyFacts, Totals: totals, Analyses: analyses}, nil
+	return domain.CompanyReport{CompanyID: companyID, Facts: companyFacts, Analyses: analyses}, nil
 }
 
 func (r *Analytics) ConsultantContext(ctx context.Context, companyID string, limit int) (domain.ConsultantContext, error) {
@@ -278,9 +290,9 @@ func (r *Analytics) ConsultantContext(ctx context.Context, companyID string, lim
 	}
 	query := fmt.Sprintf(`SELECT mo.observation_id AS observation_id, mo.company_id AS company_id,
 mo.metric_id AS metric_id, mo.news_id AS news_id,
-ifNull(n.source_id, mo.news_id) AS source_id, ifNull(n.source_url, '') AS source_url,
-ifNull(n.material_kind, 'external_news') AS material_kind,
-mo.value AS value, mo.probability AS probability, toString(mo.period_from) AS period_from, toString(mo.period_to) AS period_to,
+if(empty(ifNull(n.source_id, '')), mo.news_id, ifNull(n.source_id, '')) AS source_id, ifNull(n.source_url, '') AS source_url,
+if(empty(ifNull(n.material_kind, '')), 'external_news', ifNull(n.material_kind, '')) AS material_kind,
+mo.value AS value, mo.probability AS probability,
 mo.source_fact_ids AS source_fact_ids FROM (SELECT * FROM %s.metric_observations FINAL) AS mo
 LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON mo.news_id = n.news_id
 WHERE mo.company_id = %s ORDER BY mo.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("metric_observations"), r.table("news"), escape(companyID), limit)
@@ -288,14 +300,7 @@ WHERE mo.company_id = %s ORDER BY mo.inserted_at DESC LIMIT %d FORMAT JSONEachRo
 	if err := r.client.queryRows(ctx, query, &observations); err != nil {
 		return domain.ConsultantContext{}, err
 	}
-	totalsQuery := fmt.Sprintf(`SELECT company_id, metric_id, period_from, period_to, total, observation_count, calculated_at
-FROM %s.metric_totals FINAL WHERE company_id = %s
-ORDER BY calculated_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("metric_totals"), escape(companyID), limit)
-	var totals []domain.MetricTotal
-	if err := r.client.queryRows(ctx, totalsQuery, &totals); err != nil {
-		return domain.ConsultantContext{}, err
-	}
-	return domain.ConsultantContext{CompanyID: companyID, Facts: facts, Observations: observations, Totals: totals}, nil
+	return domain.ConsultantContext{CompanyID: companyID, Facts: facts, Observations: observations, Totals: []domain.CompanyMetricTotal{}}, nil
 }
 
 func (r *Analytics) table(_ string) string { return "`" + r.client.database + "`" }

@@ -49,27 +49,12 @@ CREATE TABLE metric_observations
     metric_id String,
     news_id String,
     value Nullable(Float64),
-    probability Float64,
-    period_from Date,
-    period_to Date,
+    probability Nullable(Float64),
     source_fact_ids Array(UUID),
     inserted_at DateTime64(3, 'UTC') DEFAULT now64(3)
 )
 ENGINE = ReplacingMergeTree(inserted_at)
-ORDER BY (company_id, metric_id, period_from, period_to, observation_id);
-
-CREATE TABLE metric_totals
-(
-    company_id String,
-    metric_id String,
-    period_from Date,
-    period_to Date,
-    total Float64,
-    observation_count UInt32,
-    calculated_at DateTime64(3, 'UTC') DEFAULT now64(3)
-)
-ENGINE = ReplacingMergeTree(calculated_at)
-ORDER BY (company_id, metric_id, period_from, period_to);
+ORDER BY (metric_id, observation_id);
 
 CREATE TABLE company_analyses
 (

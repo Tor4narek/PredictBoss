@@ -75,12 +75,12 @@ RETURNING company_id::text`, companyID, *revision, profileHash).Scan(&accepted)
 			}
 			return err
 		}
-		metricIDs := make([]string, 0, len(metrics))
+		typeCodes := make([]string, 0, len(metrics))
 		for _, metric := range metrics {
-			metricIDs = append(metricIDs, metric.ID)
+			typeCodes = append(typeCodes, metric.TypeCode)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM company_metric_settings
-WHERE company_id = $1::uuid AND NOT (metric_id = ANY($2::text[]))`, companyID, metricIDs); err != nil {
+WHERE company_id = $1::uuid AND NOT (type_code = ANY($2::text[]))`, companyID, typeCodes); err != nil {
 			return err
 		}
 	}
@@ -94,12 +94,12 @@ WHERE company_id = $1::uuid AND NOT (metric_id = ANY($2::text[]))`, companyID, m
 			return err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO company_metric_settings
-(company_id, metric_id, name, description, metric_type, characteristic, unit, parameters)
+(company_id, type_code, name, description, metric_type, characteristic, unit, parameters)
 VALUES ($1::uuid, $2, $3, $4, $5::company_metric_type, $6, $7, $8::jsonb)
-ON CONFLICT (company_id, metric_id) DO UPDATE SET
+ON CONFLICT (company_id, type_code) DO UPDATE SET
 name = EXCLUDED.name, description = EXCLUDED.description, metric_type = EXCLUDED.metric_type,
 characteristic = EXCLUDED.characteristic, unit = EXCLUDED.unit, parameters = EXCLUDED.parameters,
-updated_at = now()`, companyID, metric.ID, metric.Name, metric.Description, string(metric.Type), metric.Characteristic, metric.Unit, string(encoded))
+updated_at = now()`, companyID, metric.TypeCode, metric.Name, metric.Description, string(metric.Type), metric.Characteristic, metric.Unit, string(encoded))
 		if err != nil {
 			return err
 		}
@@ -117,10 +117,15 @@ WHERE company_id = $1::uuid AND profile_revision = $2 AND profile_hash = $3`, co
 }
 
 func (r *MetricSettings) CompanyMetrics(ctx context.Context, companyID string, limit int) ([]domain.CompanyMetric, error) {
-	rows, err := r.pool.Query(ctx, `SELECT metric_id, name, description, unit, metric_type::text,
+	rows, err := r.pool.Query(ctx, `SELECT metric_id::text, type_code, name, description, unit, metric_type::text,
 characteristic, parameters FROM company_metric_settings WHERE company_id = $1::uuid
 AND COALESCE((SELECT profile_synced FROM company_profile_state WHERE company_id = $1::uuid), TRUE)
-ORDER BY metric_id LIMIT $2`, companyID, limit)
+ORDER BY CASE type_code
+    WHEN 'ставка' THEN 1 WHEN 'депозит' THEN 2 WHEN 'курс' THEN 3
+    WHEN 'логистика' THEN 4 WHEN 'цена' THEN 5 WHEN 'спрос' THEN 6
+    WHEN 'запас' THEN 7 WHEN 'контрагент' THEN 8 WHEN 'зарплата' THEN 9
+    ELSE 10 END, type_code, metric_id
+LIMIT $2`, companyID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +135,7 @@ ORDER BY metric_id LIMIT $2`, companyID, limit)
 		var metric domain.CompanyMetric
 		var metricType string
 		var parameters []byte
-		if err := rows.Scan(&metric.ID, &metric.Name, &metric.Description, &metric.Unit, &metricType, &metric.Characteristic, &parameters); err != nil {
+		if err := rows.Scan(&metric.ID, &metric.TypeCode, &metric.Name, &metric.Description, &metric.Unit, &metricType, &metric.Characteristic, &parameters); err != nil {
 			return nil, err
 		}
 		metric.Type = domain.MetricType(metricType)

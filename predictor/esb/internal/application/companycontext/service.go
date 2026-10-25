@@ -15,7 +15,6 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
-var idPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 var companyIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var ErrInvalidInput = errors.New("invalid company context input")
@@ -102,7 +101,20 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 		return "", err
 	}
 	orderedMetrics := append([]domain.CompanyMetric(nil), metrics...)
-	sort.Slice(orderedMetrics, func(i, j int) bool { return orderedMetrics[i].ID < orderedMetrics[j].ID })
+	sort.Slice(orderedMetrics, func(i, j int) bool {
+		leftOrder, leftKnown := domain.MetricCatalogOrder(orderedMetrics[i].TypeCode)
+		rightOrder, rightKnown := domain.MetricCatalogOrder(orderedMetrics[j].TypeCode)
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if leftKnown && leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		if orderedMetrics[i].TypeCode != orderedMetrics[j].TypeCode {
+			return orderedMetrics[i].TypeCode < orderedMetrics[j].TypeCode
+		}
+		return orderedMetrics[i].ID < orderedMetrics[j].ID
+	})
 	payload, err := json.Marshal(struct {
 		Markdown string                 `json:"markdown"`
 		Metrics  []domain.CompanyMetric `json:"metrics"`
@@ -125,24 +137,26 @@ func (s *Service) SaveCompanyProfileAndMetrics(ctx context.Context, companyID st
 }
 
 func normalizeMetrics(companyID string, metrics []domain.CompanyMetric) ([]domain.CompanyMetric, error) {
-	if !idPattern.MatchString(companyID) || len(metrics) > 500 {
+	if !companyIDPattern.MatchString(companyID) || len(metrics) > 500 {
 		return nil, ErrInvalidInput
 	}
 	seen := make(map[string]struct{}, len(metrics))
 	for i := range metrics {
 		metric := &metrics[i]
-		metric.ID = strings.TrimSpace(metric.ID)
+		metric.TypeCode = strings.TrimSpace(metric.TypeCode)
+		metric.ID = "" // PostgreSQL owns metric row IDs; callers supply the catalog code.
 		metric.Name = strings.TrimSpace(metric.Name)
 		metric.Description = strings.TrimSpace(metric.Description)
 		metric.Unit = strings.TrimSpace(metric.Unit)
 		metric.Characteristic = strings.TrimSpace(metric.Characteristic)
-		if !idPattern.MatchString(metric.ID) || metric.Name == "" || metric.Characteristic == "" || !metric.Type.Valid() {
+		if metric.TypeCode == "" || len(metric.TypeCode) > 128 || metric.Characteristic == "" || !metric.Type.Valid() {
 			return nil, fmt.Errorf("%w: metric at index %d", ErrInvalidInput, i)
 		}
-		if _, duplicate := seen[metric.ID]; duplicate {
-			return nil, fmt.Errorf("%w: duplicate metric_id %q", ErrInvalidInput, metric.ID)
+		metric.Name = metric.TypeCode
+		if _, duplicate := seen[metric.TypeCode]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate type_code %q", ErrInvalidInput, metric.TypeCode)
 		}
-		seen[metric.ID] = struct{}{}
+		seen[metric.TypeCode] = struct{}{}
 	}
 	return metrics, nil
 }

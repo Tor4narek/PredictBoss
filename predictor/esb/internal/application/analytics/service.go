@@ -182,14 +182,17 @@ func (s *Service) SaveMetricObservations(ctx context.Context, companyID string, 
 		observation.CompanyID = companyID
 		observation.MetricID = strings.TrimSpace(observation.MetricID)
 		observation.NewsID = strings.TrimSpace(observation.NewsID)
-		if !idPattern.MatchString(observation.MetricID) || !idPattern.MatchString(observation.NewsID) || !probability(observation.Probability) {
+		if !uuidPattern.MatchString(observation.MetricID) || !idPattern.MatchString(observation.NewsID) {
 			return fmt.Errorf("%w: metric observation at index %d", ErrInvalidAnalyticsInput, i)
+		}
+		if observation.Probability != nil && !probability(*observation.Probability) {
+			return fmt.Errorf("%w: metric probability at index %d", ErrInvalidAnalyticsInput, i)
 		}
 		if observation.Value != nil && (math.IsNaN(*observation.Value) || math.IsInf(*observation.Value, 0)) {
 			return fmt.Errorf("%w: metric value at index %d", ErrInvalidAnalyticsInput, i)
 		}
-		if _, err := dateRange(observation.PeriodFrom, observation.PeriodTo); err != nil {
-			return fmt.Errorf("%w: metric period at index %d", ErrInvalidAnalyticsInput, i)
+		if observation.ID != "" && !uuidPattern.MatchString(observation.ID) {
+			return fmt.Errorf("%w: observation id at index %d", ErrInvalidAnalyticsInput, i)
 		}
 		for _, factID := range observation.SourceFactIDs {
 			if !uuidPattern.MatchString(factID) {
@@ -235,50 +238,55 @@ func (s *Service) SaveCompanyAnalysis(ctx context.Context, analysis domain.Compa
 	return s.repository.SaveCompanyAnalysis(ctx, analysis)
 }
 
-func (s *Service) CalculateMetricTotal(ctx context.Context, companyID, metricID, from, to string) (domain.MetricTotal, error) {
-	if !idPattern.MatchString(strings.TrimSpace(companyID)) || !idPattern.MatchString(strings.TrimSpace(metricID)) {
+func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to string) (domain.MetricTotal, error) {
+	metricID = strings.TrimSpace(metricID)
+	if !uuidPattern.MatchString(metricID) {
 		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
-	if _, err := dateRange(from, to); err != nil {
-		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
-	}
-	metrics, err := s.metrics.CompanyMetrics(ctx, companyID, 500)
+	fromTime, toTime, err := metricPeriod(from, to)
 	if err != nil {
-		return domain.MetricTotal{}, err
-	}
-	known := false
-	for _, metric := range metrics {
-		if metric.ID == metricID {
-			known = true
-			break
-		}
-	}
-	if !known {
 		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
-	return s.repository.CalculateMetricTotal(ctx, companyID, metricID, from, to)
+	fromText, toText := fromTime.Format("2006-01-02 15:04:05"), toTime.Format("2006-01-02 15:04:05")
+	if toTime.Before(fromTime) {
+		return emptyMetricTotal(metricID, fromText, toText), nil
+	}
+	return s.repository.CalculateMetricTotal(ctx, metricID, fromText, toText)
 }
 
-func (s *Service) CalculateAllMetricTotals(ctx context.Context, companyID, from, to string) ([]domain.MetricTotal, error) {
-	if !idPattern.MatchString(strings.TrimSpace(companyID)) {
-		return nil, ErrInvalidAnalyticsInput
+func (s *Service) CalculateAllMetricTotals(ctx context.Context, companyID, from, to string) (domain.CompanyMetricTotals, error) {
+	companyID = strings.TrimSpace(companyID)
+	if !uuidPattern.MatchString(companyID) {
+		return domain.CompanyMetricTotals{}, ErrInvalidAnalyticsInput
 	}
-	if _, err := dateRange(from, to); err != nil {
-		return nil, ErrInvalidAnalyticsInput
+	fromTime, toTime, err := metricPeriod(from, to)
+	if err != nil {
+		return domain.CompanyMetricTotals{}, ErrInvalidAnalyticsInput
 	}
 	metrics, err := s.metrics.CompanyMetrics(ctx, companyID, 500)
 	if err != nil {
-		return nil, err
+		return domain.CompanyMetricTotals{}, err
 	}
-	totals := make([]domain.MetricTotal, 0, len(metrics))
+	result := domain.CompanyMetricTotals{CompanyID: companyID, PeriodFrom: fromTime.Format("2006-01-02 15:04:05"), PeriodTo: toTime.Format("2006-01-02 15:04:05"), Items: make([]domain.CompanyMetricTotal, 0, len(metrics))}
 	for _, metric := range metrics {
-		total, err := s.repository.CalculateMetricTotal(ctx, companyID, metric.ID, from, to)
-		if err != nil {
-			return nil, err
+		var total domain.MetricTotal
+		if toTime.Before(fromTime) {
+			total = emptyMetricTotal(metric.ID, result.PeriodFrom, result.PeriodTo)
+		} else {
+			total, err = s.repository.CalculateMetricTotal(ctx, metric.ID, result.PeriodFrom, result.PeriodTo)
+			if err != nil {
+				return domain.CompanyMetricTotals{}, err
+			}
 		}
-		totals = append(totals, total)
+		result.Items = append(result.Items, domain.CompanyMetricTotal{MetricID: metric.ID, TypeCode: metric.TypeCode,
+			Characteristic: metric.Characteristic, TotalValue: total.TotalValue, TotalProbability: total.TotalProbability,
+			FactCount: total.FactCount, ProbabilityCount: total.ProbabilityCount, Links: total.Links})
 	}
-	return totals, nil
+	return result, nil
+}
+
+func emptyMetricTotal(metricID, from, to string) domain.MetricTotal {
+	return domain.MetricTotal{MetricID: metricID, PeriodFrom: from, PeriodTo: to, Links: []domain.MetricLink{}}
 }
 
 func (s *Service) CompanyReport(ctx context.Context, companyID, from, to string) (domain.CompanyReport, error) {
@@ -301,6 +309,11 @@ func (s *Service) CompanyReport(ctx context.Context, companyID, from, to string)
 	if err != nil {
 		return domain.CompanyReport{}, err
 	}
+	calculated, err := s.CalculateAllMetricTotals(ctx, companyID, from, to)
+	if err != nil {
+		return domain.CompanyReport{}, err
+	}
+	report.Totals = calculated.Items
 	return report, nil
 }
 
@@ -316,7 +329,47 @@ func (s *Service) ConsultantContext(ctx context.Context, companyID string, limit
 	if limit > 500 {
 		limit = 500
 	}
-	return s.repository.ConsultantContext(ctx, companyID, limit)
+	result, err := s.repository.ConsultantContext(ctx, companyID, limit)
+	if err != nil {
+		return domain.ConsultantContext{}, err
+	}
+	metrics, err := s.CalculateAllMetricTotals(ctx, companyID, "1970-01-01", time.Now().UTC().Format("2006-01-02"))
+	if err != nil {
+		return domain.ConsultantContext{}, err
+	}
+	result.Totals = metrics.Items
+	return result, nil
+}
+
+// metricPeriod accepts inclusive second-precision timestamps and date-only bounds.
+// Date-only start bounds mean midnight; date-only end bounds mean the final second.
+// Reversed intervals are valid and deliberately produce an empty aggregate.
+func metricPeriod(from, to string) (time.Time, time.Time, error) {
+	start, err := parseMetricBound(from, false)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	end, err := parseMetricBound(to, true)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	return start, end, nil
+}
+
+func parseMetricBound(value string, endOfDate bool) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		if endOfDate {
+			return parsed.Add(24*time.Hour - time.Second), nil
+		}
+		return parsed, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, errors.New("invalid metric timestamp")
 }
 
 func dateRange(from, to string) (time.Time, error) {

@@ -31,16 +31,18 @@ type Service struct {
 	calls   CallCreator
 }
 
-type input struct {
-	NewsID       string  `json:"news_id"`
-	SourceID     string  `json:"source_id"`
-	SourceURL    string  `json:"source_url,omitempty"`
-	CompanyID    string  `json:"company_id,omitempty"`
-	MaterialKind string  `json:"material_kind,omitempty"`
-	MediaType    string  `json:"media_type,omitempty"`
-	Title        string  `json:"title,omitempty"`
-	PublishedAt  *string `json:"published_at,omitempty"`
-	NewsText     string  `json:"news_text"`
+// CallInput is the JSON contract accepted by POST /call?agent=serezha.
+// The same type is used to generate the OpenAPI request schema.
+type CallInput struct {
+	NewsID       string  `json:"news_id" jsonschema:"Stable news identifier."`
+	SourceID     string  `json:"source_id" jsonschema:"Source UUID."`
+	SourceURL    string  `json:"source_url,omitempty" jsonschema:"Canonical URL of the news source."`
+	CompanyID    string  `json:"company_id,omitempty" jsonschema:"Optional company UUID."`
+	MaterialKind string  `json:"material_kind,omitempty" jsonschema:"Material kind: external_news or alpha_analysis."`
+	MediaType    string  `json:"media_type,omitempty" jsonschema:"Source media type: text/html or application/pdf."`
+	Title        string  `json:"title,omitempty" jsonschema:"News title."`
+	PublishedAt  *string `json:"published_at,omitempty" jsonschema:"Publication timestamp in RFC 3339 format."`
+	NewsText     string  `json:"news_text" jsonschema:"Cleaned text of the news article, up to 1 MiB."`
 }
 
 func NewService(sources SourceRegistry, callsService CallCreator) *Service {
@@ -50,7 +52,7 @@ func NewService(sources SourceRegistry, callsService CallCreator) *Service {
 // Submit validates a Serezha request, registers company source metadata when
 // the article belongs to a company, then queues the asynchronous extraction.
 func (s *Service) Submit(ctx context.Context, raw json.RawMessage) (domain.Call, bool, error) {
-	var request input
+	var request CallInput
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return domain.Call{}, false, ErrInvalidInput
 	}

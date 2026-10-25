@@ -81,7 +81,7 @@ func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
 func (c *Client) Insert(ctx context.Context, table string, rows any) error {
 	allowed := map[string]bool{
 		"news": true, "facts": true, "fact_company": true, "metric_observations": true,
-		"metric_totals": true, "company_analyses": true,
+		"company_analyses": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("unknown ClickHouse table %q", table)
