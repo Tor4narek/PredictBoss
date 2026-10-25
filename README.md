@@ -1,6 +1,6 @@
 # PredictBoss
 
-Каркас асинхронной новостной аналитики на Hermes, ESB, PostgreSQL, ClickHouse и S3. ESB — единственный сервис, подключённый к хранилищам: он принимает `/call`, хранит очередь и чаты в PostgreSQL, передаёт задачи Hermes и предоставляет один MCP endpoint для ClickHouse и S3. Hermes обращается к данным только через MCP ESB.
+Каркас асинхронной новостной аналитики на Hermes, ESB, PostgreSQL, ClickHouse и S3. ESB — единственный сервис, подключённый к хранилищам: он принимает `/call` и `/news`, хранит очередь и чаты в PostgreSQL, передаёт задачи Hermes и предоставляет единый MCP endpoint для ClickHouse, S3 и настроек метрик PostgreSQL. Hermes не имеет подключений или учётных данных хранилищ.
 
 ## Архитектура ESB: четыре слоя DDD
 
@@ -11,7 +11,7 @@
 - `internal/infrastructure` — адаптеры PostgreSQL, Hermes API, ClickHouse HTTP и S3 API.
 - `internal/presentation` — HTTP `/call` и единый MCP endpoint `/mcp` для аналитики ClickHouse, профилей S3 и настроек метрик PostgreSQL.
 
-PostgreSQL хранит очередь вызовов, сообщения истории и отдельные чаты по паре `agent_type + scope_id`. Один чат выполняется последовательно; разные чаты могут обрабатываться параллельно. Ограничение параллельных запусков Hermes равно `0` (без лимита на уровне runtime).
+PostgreSQL хранит очередь вызовов, сообщения истории и отдельные чаты по паре `agent_type + scope_id`. Один чат выполняется последовательно; разные чаты могут обрабатываться параллельно. `company_profile_state` хранит принятые ревизии профиля, `company_news_sources` — идемпотентный реестр новых источников, `konstantin_messages` — готовые ответы с доказательствами и курсором для replay. Ограничение параллельных запусков Hermes равно `0` (без лимита на уровне runtime).
 
 PostgreSQL также является источником истины для настроек метрик компании: `company_metric_settings` хранит `company_id`, `metric_id`, имя, описание, enum `metric_type`, характеристику, единицу измерения и дополнительные JSON-параметры. ESB атомарно upsert-ит настройки в PostgreSQL. Валера сохраняет профиль и настройки одним MCP-вызовом; при частичном сбое тот же вызов безопасно повторить.
 
@@ -23,14 +23,15 @@ PostgreSQL также является источником истины для 
 - **Савелий (`saveliy`)** — читает Markdown-профиль компании через ESB и связывает существующие факты с компанией.
 - **Валера (`valera`)** — принимает JSON компании, формирует `profile.md` в S3 и сохраняет определения метрик и характеристики компании в PostgreSQL через ESB.
 - **Кеша (`kesha`)** — читает профиль, факты и настройки метрик через ESB; сохраняет наблюдения, вероятностный анализ и итоги метрик в ClickHouse.
+- **Константин (`konstantin`)** — консультирует в реальном времени по профилю и предварительно агрегированным данным ClickHouse; отвечает на вопросы по WebSocket и указывает `sourceId` каждого источника.
 
-Исходные материалы ролей находятся в `predictor/agents/{serezha,saveliy,valera,kesha}/`: `agent.json`, `hermes.yaml`, `skills/<slug>/SKILL.md` и `references/data-contract.md`. `agent.json` задаёт область независимого чата, обязательные поля и skill, `hermes.yaml` — модель, runtime и список доступных MCP-инструментов.
+Исходные материалы ролей находятся в `predictor/agents/{serezha,saveliy,valera,kesha,konstantin}/`: `agent.json`, `hermes.yaml`, `skills/<slug>/SKILL.md` и `references/data-contract.md`. `agent.json` задаёт область независимого чата, обязательные поля и skill, `hermes.yaml` — модель, runtime и список доступных MCP-инструментов.
 
 ## ClickHouse
 
 ClickHouse хранит аналитические данные:
 
-- `news` — исходные очищенные новости и идентификатор источника;
+- `news` — очищенный текст новости, `sourceId`, компания, URL, тип материала, заголовок и время публикации;
 - `facts` — универсальные факты со ссылкой на новость, доказательством и уверенностью;
 - `fact_company` — связь факт–компания;
 - `metric_observations` — значение, вероятность, период, `news_id` и подтверждающие fact ids;
@@ -58,53 +59,20 @@ docker compose up --build
 ATLAS_TOKEN=... docker compose --profile migrations run --rm atlas
 ```
 
-На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. Для уже существующего PostgreSQL volume примените `predictor/storage/postgres/migrations/20261025110000_company_metric_settings.sql` вручную перед обновлением ESB.
+На новом PostgreSQL volume bootstrap-схема и настройки метрик применяются из `predictor/storage/postgres/init/`. На существующем volume примените `predictor/storage/postgres/migrations/20261025130000_konstantin_websocket.sql` вручную перед обновлением ESB. Миграция переводит `company_id` настроек метрик в UUID; существующие значения должны быть UUID.
 
 Снаружи доступен только ESB на `localhost:8081`. PostgreSQL и ClickHouse находятся во внутренней storage-сети Docker; для администрирования используйте `docker compose exec`. `/mcp` — единый endpoint ESB для агентов; отдельного S3 MCP-сервиса нет.
 
-## Единый endpoint `/call`
+## Контракт Domain ↔ ESB
 
-`POST /call?agent=<тип>` создаёт асинхронный вызов. Тип агента передаётся только в query-параметре; данные задачи идут JSON-объектом в теле. ESB отвечает `202 Accepted` с `call_id` и текущим статусом. `Idempotency-Key` необязателен.
+Все защищённые HTTP-вызовы и WebSocket handshake используют `Authorization: Bearer $ESB_API_KEY`. Полные примеры и схемы: [predictor/docs/esb-contracts.md](predictor/docs/esb-contracts.md).
 
-Пример входа Серёжи:
+- `POST /call?agent=<тип>` ставит задачу в очередь и отвечает `202 Accepted` с `call_id`. `GET /call?agent=<тип>` с JSON-телом читает статус/отчёт; для Константина тело `{"companyId":"<uuid>"}` возвращает готовый актуальный анализ либо `202 processing`, `conversationId`, `requestId` и `streamUrl`.
+- `POST /news` принимает `{"sourceId":"<uuid>","text":"..."}` (не более 1 MiB). ESB с bearer-токеном из `DOMAIN_API_TOKEN` читает `/internal/news-links/{sourceId}`, фиксирует компанию и источник в PostgreSQL и идемпотентно запускает Серёжу.
+- `GET /stream?companyId=...&conversationId=...` — WebSocket только Константина. `GET /call?agent=konstantin` возвращает адрес подписки. Клиент отправляет `question` кадры; ESB отвечает `accepted`, затем `assistant_answer` или готовым `analysis_result`. Сообщения и доказательства сначала сохраняются в PostgreSQL. Параметр `afterMessageId` восстанавливает пропущенные кадры при переподключении.
+- `POST /call?agent=konstantin` запускает анализ асинхронно по `{companyId}` и возвращает `202` с `call_id`. Для получения состояния и адреса подписки вызовите `GET /call?agent=konstantin` с тем же `companyId`; вопросы отправляются только кадрами WebSocket `/stream`.
+- Повтор профиля с тем же `(companyId, profileRevision)` безопасен; более старая ревизия отвергается. Новый `sourceId` либо ревизия профиля делает прежний анализ неактуальным.
 
-```bash
-curl -X POST 'http://localhost:8081/call?agent=serezha' \
-  -H "Authorization: Bearer $ESB_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: wire-9-news-123-v1' \
-  -d '{"news_id":"news-123","source_id":"wire-9","source_url":"https://example.org/news/123","news_text":"Очищенный текст новости"}'
-```
+Адрес Domain API настраивается через `DOMAIN_API_BASE_URL`, сервисный bearer — через `DOMAIN_API_TOKEN`. При пустых значениях приложение запускается, но `POST /news` отвечает `503`.
 
-Для Валеры тело содержит `company_id` и `company_data` — объект исходных данных компании. Савелию передаются `company_id` и `news_id`, а при наличии можно приложить факты. Кеше передаётся `company_id` и, при необходимости, период анализа.
-
-Пример запроса Валере:
-
-```bash
-curl -X POST 'http://localhost:8081/call?agent=valera' \
-  -H "Authorization: Bearer $ESB_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"company_id":"company-42","company_data":{"name":"Пример","industry":"retail","products":["..."],"metrics":[{"metric_id":"revenue","name":"Выручка","metric_type":"currency","unit":"RUB","characteristic":"Месячная выручка компании"}]}}'
-```
-
-Савелий принимает `{"company_id":"...","news_id":"..."}` и может получить факты из ClickHouse через MCP ESB. Для передачи фактов в теле можно добавить `facts`. Кеша принимает `{"company_id":"...","period_from":"YYYY-MM-DD","period_to":"YYYY-MM-DD"}`.
-
-`GET /call?agent=<тип>` использует JSON-тело. Передайте `call_id`, чтобы получить состояние асинхронного вызова, либо `company_id`, чтобы получить отчёт Кеши. Для отчёта можно указать `period_from` и `period_to` в формате `YYYY-MM-DD`.
-
-```bash
-curl --request GET 'http://localhost:8081/call?agent=kesha' \
-  -H "Authorization: Bearer $ESB_API_KEY" \
-  -H 'Content-Type: application/json' \
-  --data '{"company_id":"company-42","period_from":"2026-01-01","period_to":"2026-10-25"}'
-```
-
-Проверка статуса запуска:
-
-```bash
-curl --request GET 'http://localhost:8081/call?agent=serezha' \
-  -H "Authorization: Bearer $ESB_API_KEY" \
-  -H 'Content-Type: application/json' \
-  --data '{"call_id":"<call_id из ответа POST>"}'
-```
-
-`GET /healthz` открыт для liveness. `/readyz`, `/call` и единый `/mcp` требуют `Authorization: Bearer $ESB_API_KEY`.
+`GET /healthz` открыт для liveness. `/readyz`, `/call`, `/news`, `/stream` и единый `/mcp` требуют `Authorization: Bearer $ESB_API_KEY`.
