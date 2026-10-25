@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -46,7 +48,7 @@ RETURNING conversation_id::text`, string(agent), scopeID).Scan(&conversationID)
 		return domain.Call{}, false, err
 	}
 	var call domain.Call
-	call.Agent, call.ScopeID, call.Input, call.Status = agent, scopeID, input, domain.CallQueued
+	call.Agent, call.ScopeID, call.ConversationID, call.Input, call.Status = agent, scopeID, conversationID, input, domain.CallQueued
 	err = tx.QueryRow(ctx, `INSERT INTO agent_calls (conversation_id, agent_type, request_json, idempotency_key, status)
 VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), 'queued')
 RETURNING call_id::text, created_at, updated_at`, conversationID, string(agent), input, idempotencyKey).
@@ -70,10 +72,10 @@ RETURNING call_id::text, created_at, updated_at`, conversationID, string(agent),
 func (r *Calls) byIdempotency(ctx context.Context, key string, input json.RawMessage) (domain.Call, bool, error) {
 	var call domain.Call
 	var sameRequest bool
-	err := r.pool.QueryRow(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, c.request_json, c.status,
+	err := r.pool.QueryRow(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
 c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at, c.request_json = $2::jsonb
 FROM agent_calls c JOIN agent_conversations v USING (conversation_id) WHERE c.idempotency_key = $1`, key, input).
-		Scan(&call.ID, &call.Agent, &call.ScopeID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt, &sameRequest)
+		Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt, &sameRequest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Call{}, false, domain.ErrNotFound
 	}
@@ -89,7 +91,7 @@ func (r *Calls) GetForAgent(ctx context.Context, id string, agent domain.AgentTy
 }
 
 func (r *Calls) get(ctx context.Context, id string, agent domain.AgentType, constrain bool) (domain.Call, error) {
-	query := `SELECT c.call_id::text, c.agent_type, v.scope_id, c.request_json, c.status, c.hermes_run_id,
+	query := `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status, c.hermes_run_id,
 c.output, c.error, c.created_at, c.updated_at FROM agent_calls c JOIN agent_conversations v USING (conversation_id)
 WHERE c.call_id = $1`
 	if constrain {
@@ -98,9 +100,9 @@ WHERE c.call_id = $1`
 	var call domain.Call
 	var err error
 	if constrain {
-		err = r.pool.QueryRow(ctx, query, id, string(agent)).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
+		err = r.pool.QueryRow(ctx, query, id, string(agent)).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
 	} else {
-		err = r.pool.QueryRow(ctx, query, id).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
+		err = r.pool.QueryRow(ctx, query, id).Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Call{}, domain.ErrNotFound
@@ -142,7 +144,7 @@ func (r *Calls) ClaimQueued(ctx context.Context, limit int) ([]domain.Call, erro
  FROM candidates x WHERE c.call_id = x.call_id
  RETURNING c.call_id, c.agent_type, c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at, c.conversation_id
 )
-SELECT c.call_id::text, c.agent_type, v.scope_id, c.request_json, c.status, c.hermes_run_id,
+SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status, c.hermes_run_id,
  c.output, c.error, c.created_at, c.updated_at
 FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.created_at`, limit)
 	if err != nil {
@@ -152,7 +154,7 @@ FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.cre
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -170,7 +172,7 @@ WHERE call_id = $1 AND status = 'submitting'`, callID, runID)
 }
 
 func (r *Calls) ListActive(ctx context.Context) ([]domain.Call, error) {
-	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, c.request_json, c.status,
+	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
 c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at FROM agent_calls c
 JOIN agent_conversations v USING (conversation_id) WHERE c.status IN ('started','running') AND c.hermes_run_id IS NOT NULL
 ORDER BY c.created_at`)
@@ -181,7 +183,7 @@ ORDER BY c.created_at`)
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -205,9 +207,10 @@ func (r *Calls) Complete(ctx context.Context, callID, output string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var conversationID string
+	var conversationID, agentType string
+	var inputJSON []byte
 	err = tx.QueryRow(ctx, `UPDATE agent_calls SET status = 'processing', updated_at = now()
-WHERE call_id = $1 AND status IN ('started','running') RETURNING conversation_id::text`, callID).Scan(&conversationID)
+WHERE call_id = $1 AND status IN ('started','running') RETURNING conversation_id::text, agent_type, request_json`, callID).Scan(&conversationID, &agentType, &inputJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -216,6 +219,11 @@ WHERE call_id = $1 AND status IN ('started','running') RETURNING conversation_id
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content) VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
 		return err
+	}
+	if agentType == string(domain.AgentKonstantin) {
+		if err := insertKonstantinEvent(ctx, tx, callID, conversationID, inputJSON, output); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE agent_calls SET status = 'completed', output = $2, error = NULL, updated_at = now() WHERE call_id = $1`, callID, output); err != nil {
 		return err
@@ -227,6 +235,92 @@ WHERE call_id = $1 AND status IN ('started','running') RETURNING conversation_id
 	return tx.Commit(ctx)
 }
 
+var evidenceSourcePattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+type konstantinInput struct {
+	RequestID       string `json:"request_id"`
+	CompanyID       string `json:"company_id"`
+	AnalysisID      string `json:"analysis_id"`
+	RequestKind     string `json:"request_kind"`
+	ProfileRevision int64  `json:"profile_revision"`
+	SourceRevision  int64  `json:"source_revision"`
+}
+
+type assistantOutput struct {
+	Text     string                      `json:"text"`
+	Answer   string                      `json:"answer"`
+	Evidence []domain.ConsultantEvidence `json:"evidence"`
+}
+
+func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationID string, inputJSON []byte, output string) error {
+	var input konstantinInput
+	if err := json.Unmarshal(inputJSON, &input); err != nil {
+		return err
+	}
+	var result assistantOutput
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &result) != nil {
+		result.Text = strings.TrimSpace(output)
+	}
+	if result.Text == "" {
+		result.Text = strings.TrimSpace(result.Answer)
+	}
+	if result.Text == "" {
+		result.Text = strings.TrimSpace(output)
+	}
+	if result.Evidence == nil {
+		result.Evidence = []domain.ConsultantEvidence{}
+	}
+	validatedEvidence := make([]domain.ConsultantEvidence, 0, len(result.Evidence))
+	for _, item := range result.Evidence {
+		item.SourceID = strings.ToLower(strings.TrimSpace(item.SourceID))
+		if !evidenceSourcePattern.MatchString(item.SourceID) {
+			continue
+		}
+		var materialKind string
+		err := tx.QueryRow(ctx, `SELECT material_kind FROM company_news_sources WHERE company_id = $1::uuid AND source_id = $2::uuid`, input.CompanyID, item.SourceID).Scan(&materialKind)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		switch item.OriginKind {
+		case "ai_inference":
+		case "fact":
+			if materialKind != "external_news" {
+				continue
+			}
+		case "bank_view":
+			if materialKind != "alpha_analysis" {
+				continue
+			}
+		default:
+			continue
+		}
+		validatedEvidence = append(validatedEvidence, item)
+	}
+	result.Evidence = validatedEvidence
+	kind := "analysis_result"
+	if input.RequestKind == "question" {
+		kind = "assistant_answer"
+	}
+	if input.RequestID == "" {
+		input.RequestID = callID
+	}
+	if input.AnalysisID == "" {
+		input.AnalysisID = input.RequestID
+	}
+	evidence, err := json.Marshal(result.Evidence)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO konstantin_messages
+(request_id, call_id, company_id, conversation_id, analysis_id, kind, text, evidence, profile_revision, source_revision)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::jsonb, $9, $10)
+ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, conversationID, input.AnalysisID, kind, result.Text, string(evidence), input.ProfileRevision, input.SourceRevision)
+	return err
+}
+
 func (r *Calls) Fail(ctx context.Context, callID, message string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = 'failed', error = $2, updated_at = now()
 WHERE call_id = $1 AND status IN ('queued','submitting')`, callID, message)
@@ -234,12 +328,6 @@ WHERE call_id = $1 AND status IN ('queued','submitting')`, callID, message)
 }
 
 func (r *Calls) Recover(ctx context.Context) error {
-	if _, err := r.pool.Exec(ctx, `ALTER TABLE agent_conversations DROP CONSTRAINT IF EXISTS agent_conversations_agent_type_check`); err != nil {
-		return err
-	}
-	if _, err := r.pool.Exec(ctx, `ALTER TABLE agent_calls DROP CONSTRAINT IF EXISTS agent_calls_agent_type_check`); err != nil {
-		return err
-	}
 	if _, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = 'queued', updated_at = now() WHERE status = 'submitting' AND hermes_run_id IS NULL`); err != nil {
 		return err
 	}
