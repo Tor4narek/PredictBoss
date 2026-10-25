@@ -21,6 +21,7 @@ import (
 const (
 	apiKey       = "test-esb-api-key"
 	companyID    = "11111111-1111-4111-8111-111111111111"
+	companyIDTwo = "19717000-0000-4000-8000-000000000001"
 	newsSourceID = "22222222-2222-4222-8222-222222222222"
 	bankSourceID = "33333333-3333-4333-8333-333333333333"
 	newSourceID  = "44444444-4444-4444-8444-444444444444"
@@ -88,30 +89,29 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	// Valera profile call: enqueue, read its status, atomically persist profile+metrics over MCP.
 	profilePayload := valeraPayload(1)
 	valera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
-	valeraCallID := stringField(t, valera.body, "callId")
+	valeraCallID := stringField(t, valera.body, "call_id")
 	valeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", valeraCallID)
 	if stringField(t, valeraFailure.body, "error") != "company_profile_not_synced" {
 		t.Fatalf("Valera completed without saving its profile but returned a different error: %#v", valeraFailure.body)
 	}
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusConflict, "profile_update_pending")
 	metric := metricSetting()
-	staleMetric := metricSetting()
-	staleMetric["metric_id"] = "stale_metric"
 	profileMarkdown := "# Example company\n\nA manufacturer with a growing domestic market.\n"
+	vectorMetrics := metricSettingsForVector()
 	savedProfile := callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1, "markdown": profileMarkdown,
-		"metrics": []any{metric, staleMetric},
+		"metrics": vectorMetrics,
 	})
 	if got := stringField(t, savedProfile, "profile_key"); got != "companies/"+companyID+"/profile.md" {
 		t.Fatalf("unexpected S3 profile key %q", got)
 	}
-	if got := intField(t, savedProfile, "metrics_saved"); got != 2 {
-		t.Fatalf("expected two saved metrics, got %d", got)
+	if got := intField(t, savedProfile, "metrics_saved"); got != 8 {
+		t.Fatalf("expected eight saved metrics, got %d", got)
 	}
 	// Exact retries are safe; a changed payload at the same revision is rejected.
 	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1, "markdown": profileMarkdown,
-		"metrics": []any{metric, staleMetric},
+		"metrics": vectorMetrics,
 	})
 	changedProfile := callToolRaw(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1, "markdown": "# Changed at same revision\n",
@@ -125,10 +125,16 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatal("S3-compatible profile read did not return the saved Markdown")
 	}
 	waitForKonstantinReady(t, httpClient, baseURL, companyID)
-	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyID, "metrics": []any{metric}})
+	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyID, "metrics": vectorMetrics})
 	metrics := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
-	if len(arrayField(t, metrics, "metrics")) != 2 {
-		t.Fatal("PostgreSQL metric settings were not returned through MCP")
+	metricRows := arrayField(t, metrics, "metrics")
+	if len(metricRows) != 8 {
+		t.Fatalf("PostgreSQL metric settings were not returned through MCP: got %d rows, want 8", len(metricRows))
+	}
+	metricIDs := make(map[string]string, len(metricRows))
+	for _, rawMetric := range metricRows {
+		row := rawMetric.(map[string]any)
+		metricIDs[stringField(t, row, "type_code")] = stringField(t, row, "metric_id")
 	}
 	profileRetry := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
 	if !boolField(t, profileRetry.body, "reused") {
@@ -242,30 +248,147 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 			t.Fatalf("get_company_facts lost a fact or source ID after joining links: %#v", rawFact)
 		}
 	}
+	// Reproduce the source document's September vector. News was recorded through
+	// ESB after the fact range but the aggregate must use news.published_at.
+	vectorNews := []struct {
+		id, at, url, kind string
+	}{
+		{testNewsID(1), "2026-09-11T12:00:00Z", "https://example.test/news/N1", "alpha_analysis"},
+		{testNewsID(2), "2026-09-14T09:00:00Z", "", "alpha_analysis"},
+		{testNewsID(3), "2026-09-30T23:59:59Z", "https://example.test/news/N3", "external_news"},
+		{testNewsID(4), "2026-08-31T23:59:59Z", "https://example.test/news/N0", "external_news"},
+		{testNewsID(5), "2026-10-01T00:00:00Z", "https://example.test/news/N6", "external_news"},
+		{testNewsID(6), "2026-09-15T10:00:00Z", "https://example.test/news/N7", "external_news"},
+		{testNewsID(7), "2026-09-01T00:00:00Z", "https://example.test/news/N4", "external_news"},
+		{testNewsID(8), "2026-09-05T11:00:00Z", "https://example.test/news/L1", "external_news"},
+		{testNewsID(9), "2026-09-06T11:00:00Z", "https://example.test/news/L2", "external_news"},
+		{testNewsID(10), "2026-09-07T11:00:00Z", "https://example.test/news/L3", "external_news"},
+	}
+	for i, item := range vectorNews {
+		saveNewsAt(t, mcpCtx, mcpSession, companyID, item.id, fmt.Sprintf("source-%d", i), item.at, item.url, item.kind)
+	}
+	newsWithoutTimeID := testNewsID(11)
+	saveNewsWithoutTime(t, mcpCtx, mcpSession, companyID, newsWithoutTimeID)
 	observations := []any{
-		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": newsID, "value": "2000000", "probability": "0.8", "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[0]}},
-		map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "news_id": bankNewsID, "value": 500000.0, "probability": 0.6, "period_from": "2026-10-01", "period_to": "2026-10-31", "source_fact_ids": []string{factIDs[1]}},
+		metricObservation(metricIDs["ставка"], testNewsID(1), 2.0, 0.8),
+		metricObservation(metricIDs["ставка"], testNewsID(2), 1.0, 0.6),
+		metricObservation(metricIDs["ставка"], testNewsID(3), 0.0, 0.4),
+		metricObservation(metricIDs["ставка"], testNewsID(4), 9.0, 0.9),
+		metricObservation(metricIDs["ставка"], testNewsID(5), 100.0, 0.9),
+		map[string]any{"metric_id": metricIDs["ставка"], "news_id": testNewsID(6), "value": nil, "probability": 0.99, "source_fact_ids": []string{}},
+		metricObservation(metricIDs["ставка"], newsWithoutTimeID, 1000.0, 1.0),
+		metricObservation(metricIDs["ставка"], testNewsID(12), 10000.0, 1.0),
+		metricObservation(metricIDs["курс"], testNewsID(7), 3.0, 0.5),
+		metricObservation(metricIDs["логистика"], testNewsID(8), 4.0, 0.8),
+		metricObservation(metricIDs["логистика"], testNewsID(9), 2.0, nil),
+		map[string]any{"metric_id": metricIDs["логистика"], "news_id": testNewsID(10), "value": nil, "probability": 0.99, "source_fact_ids": []string{}},
 	}
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": observations})
-	totalArgs := map[string]any{"company_id": companyID, "metric_id": "revenue_impact", "period_from": "2026-10-01", "period_to": "2026-10-31"}
+	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": observations})
+	periodFrom, periodTo := "2026-09-01 00:00:00", "2026-09-30 23:59:59"
+	totalArgs := map[string]any{"metric_id": metricIDs["ставка"], "period_from": periodFrom, "period_to": periodTo}
 	total := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", totalArgs)
-	if got := floatField(t, total, "total"); math.Abs(got-1900000) > 0.01 {
-		t.Fatalf("probability-weighted total = %v, want 1900000", got)
+	if got := floatField(t, total, "total_value"); math.Abs(got-1) > 0.000001 {
+		t.Fatalf("unweighted value mean = %v, want 1", got)
 	}
-	totals := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31"})
-	if len(arrayField(t, totals, "totals")) != 2 {
-		t.Fatal("calculate_all_metric_totals did not return all configured metrics")
+	if got := floatField(t, total, "total_probability"); math.Abs(got-0.6) > 0.000001 {
+		t.Fatalf("probability mean = %v, want 0.6", got)
+	}
+	if got := intField(t, total, "fact_count"); got != 3 {
+		t.Fatalf("fact_count = %d, want 3", got)
+	}
+	if got := intField(t, total, "probability_count"); got != 3 {
+		t.Fatalf("probability_count = %d, want 3", got)
+	}
+	dateOnlyTotal := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", map[string]any{"metric_id": metricIDs["ставка"], "period_from": "2026-09-01", "period_to": "2026-09-30"})
+	if floatField(t, dateOnlyTotal, "total_value") != 1 {
+		t.Fatalf("date-only inclusive period produced total %v, want 1", floatField(t, dateOnlyTotal, "total_value"))
+	}
+	metricLinks := arrayField(t, total, "links")
+	if len(metricLinks) != 3 {
+		t.Fatalf("links = %d, want 3 (including zero value, excluding null value and out-of-range news)", len(metricLinks))
+	}
+	if stringField(t, metricLinks[0].(map[string]any), "source_kind") != "bank" || stringField(t, metricLinks[1].(map[string]any), "news_url") != "" || stringField(t, metricLinks[2].(map[string]any), "source_kind") != "external" {
+		t.Fatalf("news metadata or sorted links are incorrect: %#v", metricLinks)
+	}
+	logistics := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", map[string]any{"metric_id": metricIDs["логистика"], "period_from": periodFrom, "period_to": periodTo})
+	if floatField(t, logistics, "total_value") != 3 || floatField(t, logistics, "total_probability") != 0.8 || intField(t, logistics, "fact_count") != 2 || intField(t, logistics, "probability_count") != 1 {
+		t.Fatalf("nullable probability handling differs from source example: %#v", logistics)
+	}
+	totals := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": companyID, "period_from": periodFrom, "period_to": periodTo})
+	totalItems := arrayField(t, totals, "items")
+	if len(totalItems) != 8 {
+		t.Fatalf("calculate_all_metric_totals returned %d rows, want all 8 configured metrics", len(totalItems))
+	}
+	wantOrder := []string{"ставка", "курс", "логистика", "цена", "спрос", "запас", "контрагент", "зарплата"}
+	for i, raw := range totalItems {
+		item := raw.(map[string]any)
+		if stringField(t, item, "type_code") != wantOrder[i] {
+			t.Fatalf("metric row %d type_code = %q, want %q", i, stringField(t, item, "type_code"), wantOrder[i])
+		}
+	}
+	if _, ok := totalItems[3].(map[string]any)["total_value"]; !ok || totalItems[3].(map[string]any)["total_value"] != nil || intField(t, totalItems[3].(map[string]any), "fact_count") != 0 {
+		t.Fatalf("empty metric must remain present with null total and zero count: %#v", totalItems[3])
+	}
+	reversed := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": companyID, "period_from": periodTo, "period_to": periodFrom})
+	if len(arrayField(t, reversed, "items")) != 8 || arrayField(t, reversed, "items")[0].(map[string]any)["total_value"] != nil {
+		t.Fatalf("reversed period should retain configured rows with empty totals: %#v", reversed)
+	}
+	noSettings := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "period_from": periodFrom, "period_to": periodTo})
+	if len(arrayField(t, noSettings, "items")) != 0 {
+		t.Fatalf("company without metric rows should return an empty list: %#v", noSettings)
+	}
+	secondCompanyMetrics := metricSettingsForCatalog()
+	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyIDTwo, "metrics": secondCompanyMetrics})
+	secondCompanyRows := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyIDTwo, "limit": 100})
+	secondMetricIDs := make(map[string]string)
+	for _, raw := range arrayField(t, secondCompanyRows, "metrics") {
+		row := raw.(map[string]any)
+		secondMetricIDs[stringField(t, row, "type_code")] = stringField(t, row, "metric_id")
+	}
+	secondObservations := []any{
+		metricObservation(secondMetricIDs["ставка"], testNewsID(1), 2.0, 0.7),
+		metricObservation(secondMetricIDs["депозит"], testNewsID(1), 5.0, 0.7),
+		metricObservation(secondMetricIDs["будущее"], testNewsID(1), 11.0, nil),
+	}
+	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyIDTwo, "observations": secondObservations})
+	secondTotals := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": companyIDTwo, "period_from": periodFrom, "period_to": periodTo})
+	secondItems := arrayField(t, secondTotals, "items")
+	fullOrder := []string{"ставка", "депозит", "курс", "логистика", "цена", "спрос", "запас", "контрагент", "зарплата", "будущее"}
+	if len(secondItems) != len(fullOrder) {
+		t.Fatalf("all-catalog company returned %d items, want %d", len(secondItems), len(fullOrder))
+	}
+	for i, raw := range secondItems {
+		item := raw.(map[string]any)
+		if stringField(t, item, "type_code") != fullOrder[i] {
+			t.Fatalf("full metric catalog order at %d = %q, want %q", i, stringField(t, item, "type_code"), fullOrder[i])
+		}
+	}
+	if floatField(t, secondItems[1].(map[string]any), "total_value") != 5 {
+		t.Fatalf("positive deposit value was changed: %#v", secondItems[1])
+	}
+	if floatField(t, secondItems[9].(map[string]any), "total_value") != 11 || secondItems[9].(map[string]any)["total_probability"] != nil || intField(t, secondItems[9].(map[string]any), "probability_count") != 0 {
+		t.Fatalf("known values with no known probability must still average, but return null probability: %#v", secondItems[9])
+	}
+	// A second prediction on one news row contributes to the arithmetic mean,
+	// while its news appears only once in the links array.
+	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": []any{
+		map[string]any{"observation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "metric_id": metricIDs["ставка"], "news_id": testNewsID(1), "value": 4.0, "probability": 0.6, "source_fact_ids": []string{}},
+	}})
+	duplicateNewsTotal := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", totalArgs)
+	if math.Abs(floatField(t, duplicateNewsTotal, "total_value")-1.75) > 0.000001 || len(arrayField(t, duplicateNewsTotal, "links")) != 3 {
+		t.Fatalf("multiple predictions for one news must contribute separately but link once: %#v", duplicateNewsTotal)
 	}
 	callTool(t, mcpCtx, mcpSession, "save_company_analysis", map[string]any{
-		"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31",
-		"probability": "0.9", "metric_ids": []string{"revenue_impact"}, "text": "The evidence suggests a moderate revenue impact.",
+		"company_id": companyID, "period_from": "2026-09-01", "period_to": "2026-09-30",
+		"probability": "0.9", "metric_ids": []string{metricIDs["ставка"]}, "text": "The evidence suggests a moderate rate change.",
 	})
-	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-10-01", "period_to": "2026-10-31"})
-	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 2 || len(arrayField(t, companyReport, "totals")) == 0 || len(arrayField(t, companyReport, "analyses")) != 1 {
+	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-09-01", "period_to": "2026-09-30"})
+	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 8 || len(arrayField(t, companyReport, "totals")) != 8 || len(arrayField(t, companyReport, "analyses")) != 1 {
 		t.Fatalf("company report is missing ClickHouse or PostgreSQL data: %#v", companyReport)
 	}
 	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
-	if len(arrayField(t, consultantContext, "facts")) != 2 || len(arrayField(t, consultantContext, "observations")) != 2 || len(arrayField(t, consultantContext, "totals")) == 0 {
+	if len(arrayField(t, consultantContext, "facts")) != 2 || len(arrayField(t, consultantContext, "observations")) != 13 || len(arrayField(t, consultantContext, "totals")) == 0 {
 		t.Fatalf("consultant context is incomplete: %#v", consultantContext)
 	}
 	for _, rawFact := range arrayField(t, consultantContext, "facts") {
@@ -409,7 +532,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 
 	updatedProfilePayload := valeraPayload(2)
 	updatedValera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", updatedProfilePayload, true, http.StatusAccepted, "")
-	updatedValeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", stringField(t, updatedValera.body, "callId"))
+	updatedValeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", stringField(t, updatedValera.body, "call_id"))
 	if stringField(t, updatedValeraFailure.body, "error") != "company_profile_not_synced" {
 		t.Fatalf("second Valera call completed without saving its profile but returned a different error: %#v", updatedValeraFailure.body)
 	}
@@ -420,7 +543,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	})
 	metricsAfterReplacement := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
 	updatedMetrics := arrayField(t, metricsAfterReplacement, "metrics")
-	if len(updatedMetrics) != 1 || stringField(t, updatedMetrics[0].(map[string]any), "metric_id") != "revenue_impact" {
+	if len(updatedMetrics) != 1 || stringField(t, updatedMetrics[0].(map[string]any), "type_code") != "ставка" || stringField(t, updatedMetrics[0].(map[string]any), "metric_id") == "" {
 		t.Fatalf("Valera snapshot left a stale metric in PostgreSQL: %#v", updatedMetrics)
 	}
 	profileStaleStatus := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusAccepted, "")
@@ -459,10 +582,66 @@ func valeraPayload(revision int) map[string]any {
 
 func metricSetting() map[string]any {
 	return map[string]any{
-		"metric_id": "revenue_impact", "name": "Revenue impact", "description": "Expected revenue change",
-		"metric_type": "currency", "characteristic": "Probability-weighted change in revenue", "unit": "RUB",
-		"parameters": map[string]any{"currency": "RUB"},
+		"type_code": "ставка", "name": "ставка", "description": "Рост: заёмные деньги дороже.",
+		"metric_type": "score", "characteristic": "кредита и лизинга", "unit": "",
+		"parameters": map[string]any{"source_fields": []string{"hasLoans", "hasLeasing"}},
 	}
+}
+
+func metricSettingsForVector() []any {
+	types := []struct{ code, characteristic string }{
+		{"ставка", "кредита и лизинга"}, {"курс", "закупок в Китае и ОАЭ"},
+		{"логистика", "поставок запчастей"}, {"цена", "запчастей"},
+		{"спрос", "на автозапчасти"}, {"запас", "запчастей"},
+		{"контрагент", "поставщиков запчастей"}, {"зарплата", "склада и продаж"},
+	}
+	result := make([]any, 0, len(types))
+	for i, item := range types {
+		result = append(result, map[string]any{
+			"type_code": item.code, "name": item.code, "description": "Показатель компании: " + item.code,
+			"metric_type": "score", "characteristic": item.characteristic, "unit": "",
+			"parameters": map[string]any{"source_fields": []string{fmt.Sprintf("source_%d", i+1)}},
+		})
+	}
+	return result
+}
+
+func metricSettingsForCatalog() []any {
+	metrics := metricSettingsForVector()
+	metrics = append(metrics, map[string]any{
+		"type_code": "депозит", "name": "депозит", "description": "Рост: свободные деньги доходнее.",
+		"metric_type": "score", "characteristic": "свободных средств", "unit": "",
+		"parameters": map[string]any{"source_fields": []string{"hasDeposits"}},
+	})
+	return append(metrics, map[string]any{
+		"type_code": "будущее", "name": "будущее", "description": "Unknown code retained by the catalog.",
+		"metric_type": "score", "characteristic": "неизвестная настройка", "unit": "",
+		"parameters": map[string]any{},
+	})
+}
+
+func testNewsID(index int) string { return fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012x", index) }
+
+func saveNewsAt(t *testing.T, ctx context.Context, session *mcp.ClientSession, companyID, newsID, sourceID, publishedAt, sourceURL, materialKind string) {
+	t.Helper()
+	callTool(t, ctx, session, "save_news_and_facts", map[string]any{
+		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL, "company_id": companyID,
+		"material_kind": materialKind, "media_type": "text/html", "title": newsID,
+		"published_at": publishedAt, "news_text": "Metric vector news.", "facts": []any{},
+	})
+}
+
+func saveNewsWithoutTime(t *testing.T, ctx context.Context, session *mcp.ClientSession, companyID, newsID string) {
+	t.Helper()
+	callTool(t, ctx, session, "save_news_and_facts", map[string]any{
+		"news_id": newsID, "source_id": "source-without-time", "company_id": companyID,
+		"material_kind": "external_news", "media_type": "text/html", "title": newsID,
+		"news_text": "News without a publication time.", "facts": []any{},
+	})
+}
+
+func metricObservation(metricID, newsID string, value, probability any) map[string]any {
+	return map[string]any{"metric_id": metricID, "news_id": newsID, "value": value, "probability": probability, "source_fact_ids": []string{}}
 }
 
 func serezhaPayload(sourceID, newsID, materialKind, mediaType, title, sourceURL, text string) map[string]any {
