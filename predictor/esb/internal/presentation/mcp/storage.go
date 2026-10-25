@@ -24,11 +24,11 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 	})
 
 	mcp.AddTool(server, &mcp.Tool{Name: "save_company_profile_and_metrics", Description: "Idempotently save the company Markdown profile to S3 and upsert its structured metric settings in PostgreSQL through the ESB."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveCompanyContextInput) (*mcp.CallToolResult, companyContextOutput, error) {
-		key, err := companyContext.SaveCompanyProfileAndMetrics(ctx, input.CompanyID, input.Markdown, input.Metrics)
+		key, err := companyContext.SaveCompanyProfileAndMetrics(ctx, input.CompanyID, input.ProfileRevision, input.Markdown, input.Metrics)
 		if err != nil {
 			return nil, companyContextOutput{}, err
 		}
-		return nil, companyContextOutput{CompanyID: strings.TrimSpace(input.CompanyID), ProfileKey: key, MetricsSaved: len(input.Metrics)}, nil
+		return nil, companyContextOutput{CompanyID: strings.TrimSpace(input.CompanyID), ProfileRevision: input.ProfileRevision, ProfileKey: key, MetricsSaved: len(input.Metrics)}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{Name: "save_news_and_facts", Description: "Store the submitted news and the company-independent facts extracted from it in ClickHouse."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveNewsFactsInput) (*mcp.CallToolResult, saveNewsFactsOutput, error) {
@@ -39,7 +39,9 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		for _, fact := range input.Facts {
 			facts = append(facts, domain.Fact{Text: fact.FactText, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: fact.OccurredAt, Confidence: fact.Confidence})
 		}
-		ids, err := service.SaveNewsAndFacts(ctx, domain.News{ID: input.NewsID, SourceID: input.SourceID, SourceURL: input.SourceURL, Text: input.NewsText}, facts)
+		ids, err := service.SaveNewsAndFacts(ctx, domain.News{ID: input.NewsID, SourceID: input.SourceID, SourceURL: input.SourceURL,
+			CompanyID: input.CompanyID, MaterialKind: input.MaterialKind, MediaType: input.MediaType, Title: input.Title,
+			PublishedAt: input.PublishedAt, Text: input.NewsText}, facts)
 		if err != nil {
 			return nil, saveNewsFactsOutput{}, err
 		}
@@ -122,6 +124,14 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		return nil, report, nil
 	})
 
+	mcp.AddTool(server, &mcp.Tool{Name: "get_consultant_context", Description: "Read the company's pre-aggregated linked facts, metric observations and calculated totals from ClickHouse without requiring a fixed date period. Results include source IDs for citations."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, domain.ConsultantContext, error) {
+		result, err := service.ConsultantContext(ctx, input.CompanyID, input.Limit)
+		if err != nil {
+			return nil, domain.ConsultantContext{}, err
+		}
+		return nil, result, nil
+	})
+
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+apiKey {
@@ -133,11 +143,16 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 }
 
 type saveNewsFactsInput struct {
-	NewsID    string      `json:"news_id" jsonschema:"stable news identifier"`
-	SourceID  string      `json:"source_id" jsonschema:"identifier of the news source"`
-	SourceURL string      `json:"source_url,omitempty"`
-	NewsText  string      `json:"news_text" jsonschema:"full cleaned news text"`
-	Facts     []factInput `json:"facts"`
+	NewsID       string      `json:"news_id" jsonschema:"stable news identifier"`
+	SourceID     string      `json:"source_id" jsonschema:"identifier of the news source"`
+	SourceURL    string      `json:"source_url,omitempty"`
+	CompanyID    string      `json:"company_id,omitempty"`
+	MaterialKind string      `json:"material_kind,omitempty"`
+	MediaType    string      `json:"media_type,omitempty"`
+	Title        string      `json:"title,omitempty"`
+	PublishedAt  *string     `json:"published_at,omitempty"`
+	NewsText     string      `json:"news_text" jsonschema:"full cleaned news text"`
+	Facts        []factInput `json:"facts"`
 }
 type factInput struct {
 	FactText   string   `json:"fact_text"`
@@ -178,9 +193,10 @@ type companyProfileInput struct {
 	CompanyID string `json:"company_id"`
 }
 type saveCompanyContextInput struct {
-	CompanyID string                 `json:"company_id"`
-	Markdown  string                 `json:"markdown"`
-	Metrics   []domain.CompanyMetric `json:"metrics"`
+	CompanyID       string                 `json:"company_id"`
+	ProfileRevision int64                  `json:"profile_revision"`
+	Markdown        string                 `json:"markdown"`
+	Metrics         []domain.CompanyMetric `json:"metrics"`
 }
 type companyProfileOutput struct {
 	CompanyID string `json:"company_id"`
@@ -188,9 +204,10 @@ type companyProfileOutput struct {
 	Markdown  string `json:"markdown"`
 }
 type companyContextOutput struct {
-	CompanyID    string `json:"company_id"`
-	ProfileKey   string `json:"profile_key"`
-	MetricsSaved int    `json:"metrics_saved"`
+	CompanyID       string `json:"company_id"`
+	ProfileRevision int64  `json:"profile_revision"`
+	ProfileKey      string `json:"profile_key"`
+	MetricsSaved    int    `json:"metrics_saved"`
 }
 type companyMetricsOutput struct {
 	Metrics []domain.CompanyMetric `json:"metrics"`

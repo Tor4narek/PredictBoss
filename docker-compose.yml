@@ -99,6 +99,14 @@ services:
       - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/kesha/skills:/opt/skills:ro
 
+  hermes-konstantin:
+    <<: *hermes-common
+    container_name: predictor-hermes-konstantin
+    volumes:
+      - hermes-konstantin-data:/opt/data
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+
   esb:
     image: predictor-esb:local
     build:
@@ -115,6 +123,7 @@ services:
       HERMES_SAVELIY_URL: http://hermes-saveliy:8642
       HERMES_VALERA_URL: http://hermes-valera:8642
       HERMES_KESHA_URL: http://hermes-kesha:8642
+      HERMES_KONSTANTIN_URL: http://hermes-konstantin:8642
       HERMES_POLL_INTERVAL: 2s
       AGENTS_DIR: /app/agents
       CLICKHOUSE_URL: http://clickhouse:8123
@@ -127,6 +136,8 @@ services:
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      DOMAIN_API_BASE_URL: ${DOMAIN_API_BASE_URL:-}
+      DOMAIN_API_TOKEN: ${DOMAIN_API_TOKEN:-}
     ports:
       - "8081:8081"
     depends_on:
@@ -141,6 +152,8 @@ services:
       hermes-valera:
         condition: service_started
       hermes-kesha:
+        condition: service_started
+      hermes-konstantin:
         condition: service_started
     networks:
       - predictor-storage
@@ -161,3 +174,4 @@ volumes:
   hermes-saveliy-data:
   hermes-valera-data:
   hermes-kesha-data:
+  hermes-konstantin-data:

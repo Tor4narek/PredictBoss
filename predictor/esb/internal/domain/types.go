@@ -15,10 +15,11 @@ var (
 type AgentType string
 
 const (
-	AgentSerezha AgentType = "serezha"
-	AgentSaveliy AgentType = "saveliy"
-	AgentValera  AgentType = "valera"
-	AgentKesha   AgentType = "kesha"
+	AgentSerezha    AgentType = "serezha"
+	AgentSaveliy    AgentType = "saveliy"
+	AgentValera     AgentType = "valera"
+	AgentKesha      AgentType = "kesha"
+	AgentKonstantin AgentType = "konstantin"
 )
 
 type Agent struct {
@@ -45,16 +46,17 @@ const (
 )
 
 type Call struct {
-	ID          string          `json:"call_id"`
-	Agent       AgentType       `json:"agent"`
-	ScopeID     string          `json:"scope_id"`
-	Input       json.RawMessage `json:"-"`
-	Status      CallStatus      `json:"status"`
-	HermesRunID *string         `json:"hermes_run_id,omitempty"`
-	Output      *string         `json:"output,omitempty"`
-	Error       *string         `json:"error,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID             string          `json:"call_id"`
+	Agent          AgentType       `json:"agent"`
+	ScopeID        string          `json:"scope_id"`
+	ConversationID string          `json:"conversation_id"`
+	Input          json.RawMessage `json:"-"`
+	Status         CallStatus      `json:"status"`
+	HermesRunID    *string         `json:"hermes_run_id,omitempty"`
+	Output         *string         `json:"output,omitempty"`
+	Error          *string         `json:"error,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 type Message struct {
@@ -63,23 +65,29 @@ type Message struct {
 }
 
 type News struct {
-	ID        string
-	SourceID  string
-	SourceURL string
-	Text      string
+	ID           string
+	SourceID     string
+	SourceURL    string
+	CompanyID    string
+	MaterialKind string
+	MediaType    string
+	Title        string
+	PublishedAt  *string
+	Text         string
 }
 
 type Fact struct {
-	ID         string   `json:"fact_id"`
-	NewsID     string   `json:"news_id"`
-	SourceID   string   `json:"source_id"`
-	SourceURL  string   `json:"source_url"`
-	Text       string   `json:"fact_text"`
-	Category   string   `json:"category"`
-	Entities   []string `json:"entities"`
-	Evidence   string   `json:"evidence"`
-	OccurredAt *string  `json:"occurred_at"`
-	Confidence float64  `json:"confidence"`
+	ID           string   `json:"fact_id"`
+	NewsID       string   `json:"news_id"`
+	SourceID     string   `json:"source_id"`
+	SourceURL    string   `json:"source_url"`
+	MaterialKind string   `json:"material_kind,omitempty"`
+	Text         string   `json:"fact_text"`
+	Category     string   `json:"category"`
+	Entities     []string `json:"entities"`
+	Evidence     string   `json:"evidence"`
+	OccurredAt   *string  `json:"occurred_at"`
+	Confidence   float64  `json:"confidence"`
 }
 
 type FactCompanyLink struct {
@@ -130,6 +138,9 @@ type MetricObservation struct {
 	CompanyID     string   `json:"company_id"`
 	MetricID      string   `json:"metric_id"`
 	NewsID        string   `json:"news_id"`
+	SourceID      string   `json:"source_id,omitempty"`
+	SourceURL     string   `json:"source_url,omitempty"`
+	MaterialKind  string   `json:"material_kind,omitempty"`
 	Value         *float64 `json:"value"`
 	Probability   float64  `json:"probability"`
 	PeriodFrom    string   `json:"period_from"`
@@ -164,6 +175,51 @@ type CompanyReport struct {
 	Analyses  []CompanyAnalysis `json:"analyses"`
 }
 
+type ConsultantEvidence struct {
+	SourceID   string `json:"sourceId"`
+	OriginKind string `json:"originKind"`
+}
+
+type ConsultantEvent struct {
+	SchemaVersion  int                  `json:"schemaVersion"`
+	Kind           string               `json:"kind"`
+	RequestID      string               `json:"requestId"`
+	CompanyID      string               `json:"companyId"`
+	ConversationID string               `json:"conversationId"`
+	AnalysisID     string               `json:"analysisId"`
+	MessageID      string               `json:"messageId"`
+	Text           string               `json:"text"`
+	Evidence       []ConsultantEvidence `json:"evidence"`
+	CreatedAt      time.Time            `json:"createdAt"`
+}
+
+type ConsultantRequest struct {
+	Kind           string `json:"kind"`
+	RequestID      string `json:"requestId"`
+	CompanyID      string `json:"companyId"`
+	ConversationID string `json:"conversationId,omitempty"`
+	AnalysisID     string `json:"analysisId,omitempty"`
+	Text           string `json:"text,omitempty"`
+}
+
+type CompanySource struct {
+	SourceID     string
+	CompanyID    string
+	NewsID       string
+	MaterialKind string
+	MediaType    string
+	SourceURL    string
+	Title        string
+	PublishedAt  *string
+}
+
+type ConsultantContext struct {
+	CompanyID    string              `json:"company_id"`
+	Facts        []CompanyFact       `json:"facts"`
+	Observations []MetricObservation `json:"observations"`
+	Totals       []MetricTotal       `json:"totals"`
+}
+
 type CallRepository interface {
 	Enqueue(context.Context, AgentType, string, json.RawMessage, string) (Call, bool, error)
 	Get(context.Context, string) (Call, error)
@@ -176,6 +232,15 @@ type CallRepository interface {
 	Complete(context.Context, string, string) error
 	Fail(context.Context, string, string) error
 	Recover(context.Context) error
+	ConversationID(context.Context, AgentType, string) (string, error)
+	FreshAnalysis(context.Context, string) (ConsultantEvent, bool, error)
+	Event(context.Context, string) (ConsultantEvent, error)
+	RequestStatus(context.Context, string) (Call, error)
+	EventsAfter(context.Context, string, string, string, int) ([]ConsultantEvent, error)
+	AnalysisReady(context.Context, string, string) (bool, error)
+	RecordSource(context.Context, CompanySource) (bool, error)
+	SourceRevision(context.Context, string) (int64, error)
+	ProfileRevision(context.Context, string) (int64, error)
 }
 
 type AgentRuntime interface {
@@ -198,10 +263,14 @@ type AnalyticsRepository interface {
 	SaveCompanyAnalysis(context.Context, CompanyAnalysis) error
 	CalculateMetricTotal(context.Context, string, string, string, string) (MetricTotal, error)
 	CompanyReport(context.Context, string, string, string) (CompanyReport, error)
+	ConsultantContext(context.Context, string, int) (ConsultantContext, error)
 }
 
 type CompanyMetricSettingsRepository interface {
+	ReserveCompanyProfileRevision(context.Context, string, int64, string) error
 	UpsertCompanyMetrics(context.Context, string, []CompanyMetric) error
+	UpsertCompanyMetricsAtRevision(context.Context, string, int64, string, []CompanyMetric) error
+	MarkCompanyProfileSynced(context.Context, string, int64, string) error
 	CompanyMetrics(context.Context, string, int) ([]CompanyMetric, error)
 }
 
