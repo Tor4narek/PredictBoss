@@ -23,14 +23,32 @@ const (
 )
 
 type Agent struct {
-	Type                 AgentType
-	ScopeField           string
-	RequiredFields       []string
-	MaxHistory           int
-	HistoryRetentionDays int
-	ContextPolicy        ContextPolicy
-	RuntimeURL           string
-	Instructions         string
+	Type           AgentType
+	ScopeField     string
+	RequiredFields []string
+	MaxHistory     int
+	ContextPolicy  ContextPolicy
+	RuntimeURL     string
+	Instructions   string
+}
+
+// RetentionPolicy is either a positive age or an explicit never policy.
+// A zero age is invalid so it cannot mean immediate deletion.
+type RetentionPolicy struct {
+	Never bool
+	Age   time.Duration
+}
+
+type AnalyticsRetention struct {
+	ProcessedNewsText   RetentionPolicy
+	UnprocessedNewsText RetentionPolicy
+	NewsMetadata        RetentionPolicy
+	NewsMarker          RetentionPolicy
+	Facts               RetentionPolicy
+	FactCompany         RetentionPolicy
+	MetricObservations  RetentionPolicy
+	MetricTotals        RetentionPolicy
+	CompanyAnalyses     RetentionPolicy
 }
 
 // ContextPolicy controls model context compaction. MaxHistory remains the
@@ -358,7 +376,6 @@ type CallRepository interface {
 type ContextRepository interface {
 	LoadContextWindow(context.Context, string, int, int, int) (ContextWindow, error)
 	SaveContextSummary(context.Context, string, string, time.Time, string, time.Time, string) (bool, error)
-	PruneHistory(context.Context, AgentType, int) error
 }
 
 type NewsFinalizer interface {
@@ -378,6 +395,28 @@ type RunState struct {
 	Status string
 	Output string
 	Error  string
+}
+
+// CleanupRepository exposes bounded, idempotent maintenance operations.
+// WithCleanupLock serializes each pass across ESB replicas using PostgreSQL.
+type CleanupRepository interface {
+	WithCleanupLock(context.Context, func(context.Context) error) (bool, error)
+	RecoverStaleSubmissions(context.Context, time.Time, int) (int, error)
+	ListStaleActive(context.Context, time.Time, int) ([]Call, error)
+	RetryStaleActive(context.Context, Call, int) (bool, error)
+	PruneCallPayloads(context.Context, time.Time, int) (int, error)
+	PruneCallRecords(context.Context, time.Time, int) (int, error)
+	PruneMessages(context.Context, AgentType, time.Time, int) (int, error)
+	PruneContextSummaries(context.Context, time.Time, int) (int, error)
+	TerminalNewsIDs(context.Context, time.Time, int) ([]string, error)
+}
+
+type AnalyticsCleanupRepository interface {
+	Prune(context.Context, AnalyticsRetention, time.Time, []string, int) (map[string]int, error)
+}
+
+type StaleCallReconciler interface {
+	ReconcileStale(context.Context, time.Time, time.Time, int, int) (int, error)
 }
 
 type AnalyticsRepository interface {

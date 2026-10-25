@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/predictboss/predictor/esb/internal/application/analytics"
 	"github.com/predictboss/predictor/esb/internal/application/calls"
+	"github.com/predictboss/predictor/esb/internal/application/cleanup"
 	"github.com/predictboss/predictor/esb/internal/application/companycontext"
 	"github.com/predictboss/predictor/esb/internal/application/news"
 	"github.com/predictboss/predictor/esb/internal/config"
@@ -68,7 +69,8 @@ func runESB() error {
 		return fmt.Errorf("recover PostgreSQL calls: %w", err)
 	}
 	metricSettings := postgres.NewMetricSettings(db)
-	analyticsService := analytics.NewService(clickhouse.NewAnalytics(ch, cfg.Pagination.CompanyReportFactsLimit, cfg.Pagination.CompanyReportAnalysisLimit), metricSettings, analytics.Limits{
+	analyticsRepository := clickhouse.NewAnalytics(ch, cfg.Pagination.CompanyReportFactsLimit, cfg.Pagination.CompanyReportAnalysisLimit)
+	analyticsService := analytics.NewService(analyticsRepository, metricSettings, analytics.Limits{
 		FactsDefaultPageSize: cfg.Pagination.FactsDefaultPageSize, FactsMaxPageSize: cfg.Pagination.FactsMaxPageSize,
 		FactsMaxPeriod:              time.Duration(cfg.Pagination.FactsMaxPeriodDays) * 24 * time.Hour,
 		CompanyItemsDefaultPageSize: cfg.Pagination.CompanyItemsDefaultPageSize,
@@ -83,16 +85,32 @@ func runESB() error {
 		RequestTimeout: cfg.Hermes.RequestTimeout, MaxAttempts: cfg.Hermes.MaxAttempts,
 		RetryBaseDelay: cfg.Hermes.RetryBaseDelay, MaxResponseBytes: cfg.Hermes.MaxResponse,
 	})
+	var runningStaleAfter time.Duration
+	var activeMaxRetries int
+	if cfg.Cleanup.Enabled {
+		runningStaleAfter = cfg.Cleanup.RunningStaleAfter
+		activeMaxRetries = cfg.Cleanup.ActiveMaxRetries
+	}
 	callService := calls.NewService(callRepository, hermesClient, cfg.Agents, calls.Config{
 		PollInterval: cfg.Queue.HermesPollInterval, DispatchBatchSize: cfg.Queue.DispatchBatchSize,
-		HistoryCleanupInterval: cfg.Queue.HistoryCleanupInterval, ContextCompactionTimeout: cfg.Queue.ContextCompactionTimeout,
+		ContextCompactionTimeout:         cfg.Queue.ContextCompactionTimeout,
 		ValeraProfileSyncMaxRetries:      cfg.Queue.ValeraProfileSyncRetries,
+		RunningStaleAfter:                runningStaleAfter,
+		ActiveMaxRetries:                 activeMaxRetries,
 		KonstantinHistoryDefaultPageSize: cfg.Pagination.KonstantinHistoryDefaultPageSize,
 		KonstantinHistoryMaxPageSize:     cfg.Pagination.KonstantinHistoryMaxPageSize,
 		KonstantinDefaultWindow:          time.Duration(cfg.Pagination.KonstantinDefaultWindowDays) * 24 * time.Hour,
 		KonstantinMaxWindow:              time.Duration(cfg.Pagination.KonstantinMaxWindowDays) * 24 * time.Hour,
 		KonstantinEventPollInterval:      cfg.WebSocket.EventPollInterval, MaxQuestionBytes: cfg.Payload.MaxQuestionBytes,
 	}, analyticsService)
+	cleanupService := cleanup.NewService(callService, callRepository, analyticsRepository, cleanup.Config{
+		Enabled: cfg.Cleanup.Enabled, StatusCheckInterval: cfg.Cleanup.StatusCheckInterval,
+		RetentionCheckInterval: cfg.Cleanup.RetentionCheckInterval, BatchSize: cfg.Cleanup.BatchSize,
+		QueuedStaleAfter: cfg.Cleanup.QueuedStaleAfter, RunningStaleAfter: cfg.Cleanup.RunningStaleAfter,
+		ActiveMaxRetries: cfg.Cleanup.ActiveMaxRetries, CallPayloadRetention: cfg.Cleanup.CallPayloadRetention,
+		CallRecordRetention: cfg.Cleanup.CallRecordRetention, ContextSummaryRetention: cfg.Cleanup.ContextSummaryRetention,
+		MessagesRetention: cfg.Cleanup.MessagesRetention, Analytics: cfg.Cleanup.Analytics,
+	})
 	newsService := news.NewService(callRepository, callService, cfg.Payload.MaxNewsTextBytes)
 	companyContextService := companycontext.NewService(profileStore, metricSettings, companycontext.Limits{
 		DefaultPageSize:      cfg.Pagination.CompanyItemsDefaultPageSize,
@@ -129,6 +147,7 @@ func runESB() error {
 	server := &http.Server{Addr: cfg.Connections.HTTPAddr, Handler: http.MaxBytesHandler(mux, cfg.HTTP.MaxJSONBodyBytes),
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout, IdleTimeout: cfg.HTTP.IdleTimeout}
 	go callService.Run(ctx)
+	go cleanupService.Run(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)

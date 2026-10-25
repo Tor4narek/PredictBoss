@@ -153,15 +153,16 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", changedRevision, true, http.StatusConflict, "profile_revision_conflict")
 
 	// Seed the result through ESB MCP, then verify that Hermes completion alone
-	// is insufficient and that confirmed processing removes only the raw text.
+	// is insufficient and that confirmed processing retains source text until
+	// its independent post-processing retention period expires.
 	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, newsID, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, bankNewsID, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
 	newsCall := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newsCall.body, "call_id"))
 	bankCall := postSerezha(t, httpClient, baseURL, bankSourceID, bankNewsID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
 	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, bankCall.body, "call_id"))
-	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+newsID+"'"); got != 0 {
-		t.Fatalf("confirmed news raw text rows = %d, want 0", got)
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+newsID+"'"); got != 1 {
+		t.Fatalf("confirmed news raw text rows = %d, want 1 before retention expires", got)
 	}
 	duplicateNews := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	if !boolField(t, duplicateNews.body, "reused") || stringField(t, duplicateNews.body, "call_id") != stringField(t, newsCall.body, "call_id") {
@@ -173,7 +174,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	// oversized payload is rejected by the HTTP body limit before news validation.
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", largeNews, true, http.StatusBadRequest, "invalid_json_body")
 
-	// Exercise all ClickHouse-facing MCP tools after source-text cleanup.
+	// Exercise all ClickHouse-facing MCP tools while source-text retention is active.
 	globalNewsID := "88888888-8888-4888-8888-888888888888"
 	globalNews := callTool(t, mcpCtx, mcpSession, "save_news_and_facts", map[string]any{
 		"news_id": globalNewsID, "source_id": "99999999-9999-4999-8999-999999999999",
@@ -548,8 +549,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("retry did not reuse the failed news call: %#v", partialRetry.body)
 	}
 	waitForCall(t, httpClient, baseURL, "serezha", partialCallID)
-	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 0 {
-		t.Fatalf("confirmed retry left %d raw text rows", got)
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 1 {
+		t.Fatalf("confirmed retry text rows = %d, want 1 until retention expires", got)
 	}
 	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(answerMessageID))
 	writeFrame(t, staleQuestionWS, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-888888888888",

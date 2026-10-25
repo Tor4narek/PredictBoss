@@ -115,9 +115,9 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 	return ids, nil
 }
 
-// FinalizeNews verifies the completion marker, metadata, and fact rows before
-// synchronously removing only the raw article text. It is safe to repeat after
-// a partial failure, including after the text has already been deleted.
+// FinalizeNews verifies the completion marker, metadata, fact rows, and raw
+// content hash before allowing the PostgreSQL call to complete. Retention is a
+// separate operation, so text remains available until its configured age.
 func (r *Analytics) FinalizeNews(ctx context.Context, expected domain.News, contentHash string) error {
 	processed, found, err := r.newsProcessing(ctx, expected.ID)
 	if err != nil {
@@ -158,19 +158,10 @@ func (r *Analytics) FinalizeNews(ctx context.Context, expected domain.News, cont
 		if len(remaining) > 0 && remaining[0].Count > 0 {
 			return fmt.Errorf("raw news text does not match the confirmed content hash")
 		}
-		return nil // A previous successful finalization already removed the text.
+		return nil // A previous retention pass removed text after this marker was confirmed.
 	}
-	deleteQuery := fmt.Sprintf("ALTER TABLE %s.news_content DELETE WHERE news_id = %s SETTINGS mutations_sync = 2", r.table("news_content"), escape(expected.ID))
-	if _, err := r.client.Query(ctx, deleteQuery); err != nil {
-		return err
-	}
-	var remaining []countRow
-	if err := r.client.queryRows(ctx, fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.news_content FINAL WHERE news_id = %s) FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID)), &remaining); err != nil {
-		return err
-	}
-	if len(remaining) > 0 && remaining[0].Count != 0 {
-		return fmt.Errorf("raw news text cleanup is not confirmed")
-	}
+	// The finalizer proves persistence and returns the hash to PostgreSQL. Raw
+	// text remains available until the independently configured retention pass.
 	return nil
 }
 

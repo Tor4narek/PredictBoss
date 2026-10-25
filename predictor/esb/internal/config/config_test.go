@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
 func testLookup(values map[string]string) LookupEnv {
@@ -49,6 +51,14 @@ func TestLoadDefaultsAndAgentHistoryZero(t *testing.T) {
 	if cfg.Queue.ValeraProfileSyncRetries != 1 {
 		t.Fatalf("Valera profile sync retries = %d, want 1 (the PostgreSQL schema maximum)", cfg.Queue.ValeraProfileSyncRetries)
 	}
+	if !cfg.Cleanup.Enabled || cfg.Cleanup.StatusCheckInterval != time.Hour || cfg.Cleanup.RetentionCheckInterval != 24*time.Hour || cfg.Cleanup.BatchSize != 500 {
+		t.Fatalf("cleanup defaults = %#v", cfg.Cleanup)
+	}
+	if cfg.Cleanup.CallPayloadRetention.Age != 2160*time.Hour || cfg.Cleanup.CallRecordRetention.Age != 2160*time.Hour ||
+		cfg.Cleanup.Analytics.ProcessedNewsText.Age != 168*time.Hour || !cfg.Cleanup.Analytics.UnprocessedNewsText.Never ||
+		!cfg.Cleanup.MessagesRetention[domain.AgentKonstantin].Never {
+		t.Fatalf("cleanup retention defaults = %#v", cfg.Cleanup)
+	}
 	if cfg.HTTP.MaxJSONBodyBytes != 2<<20 || cfg.ClickHouse.MaxResponse != 4<<20 || cfg.Payload.MaxProfileBytes != 2<<20 {
 		t.Fatalf("payload defaults changed: http=%d clickhouse=%d profile=%d", cfg.HTTP.MaxJSONBodyBytes, cfg.ClickHouse.MaxResponse, cfg.Payload.MaxProfileBytes)
 	}
@@ -57,6 +67,55 @@ func TestLoadDefaultsAndAgentHistoryZero(t *testing.T) {
 		if agent.MaxHistory != wantHistory[string(agent.Type)] {
 			t.Errorf("%s max history = %d, want %d", agent.Type, agent.MaxHistory, wantHistory[string(agent.Type)])
 		}
+	}
+}
+
+func TestRetentionPolicyParsesDurationsAndNever(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantAge   time.Duration
+		wantNever bool
+		wantErr   bool
+	}{
+		{name: "never", value: "never", wantNever: true},
+		{name: "case insensitive never", value: " NEVER ", wantNever: true},
+		{name: "valid duration", value: "168h", wantAge: 168 * time.Hour},
+		{name: "zero", value: "0", wantErr: true},
+		{name: "zero duration", value: "0s", wantErr: true},
+		{name: "negative", value: "-1h", wantErr: true},
+		{name: "invalid", value: "tomorrow", wantErr: true},
+		{name: "overflow", value: "999999999999999999999999h", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := retentionValue(testLookup(map[string]string{"CLEANUP_FACTS_RETENTION": test.value}), "CLEANUP_FACTS_RETENTION")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("retentionValue() error = %v, wantErr %t", err, test.wantErr)
+			}
+			if err == nil && (got.Never != test.wantNever || got.Age != test.wantAge) {
+				t.Fatalf("retentionValue() = %#v, want never=%t age=%s", got, test.wantNever, test.wantAge)
+			}
+		})
+	}
+}
+
+func TestCleanupConfigurationRejectsZeroAndInvalidValues(t *testing.T) {
+	for _, test := range []struct{ key, value string }{
+		{"CLEANUP_CALL_RECORD_RETENTION", "0"},
+		{"CLEANUP_CONTEXT_SUMMARY_RETENTION", "0s"},
+		{"CLEANUP_STATUS_CHECK_INTERVAL", "0s"},
+		{"CLEANUP_BATCH_SIZE", "0"},
+		{"CLEANUP_ACTIVE_MAX_RETRIES", "-1"},
+		{"CLEANUP_ENABLED", "yes"},
+	} {
+		t.Run(test.key, func(t *testing.T) {
+			values := testEnvironment(t)
+			values[test.key] = test.value
+			if _, err := LoadFrom(testLookup(values)); err == nil {
+				t.Fatalf("LoadFrom accepted %s=%q", test.key, test.value)
+			}
+		})
 	}
 }
 

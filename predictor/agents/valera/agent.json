@@ -7,7 +7,6 @@
     "profile_revision",
     "company_data"
   ],
-  "history_retention_days": 0,
   "context_policy": {
     "compress_after_messages": 0,
     "batch_messages": 0,

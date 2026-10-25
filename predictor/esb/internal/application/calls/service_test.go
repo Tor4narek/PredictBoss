@@ -32,7 +32,7 @@ func testCallConfig(pollInterval time.Duration) Config {
 		pollInterval = time.Millisecond
 	}
 	return Config{
-		PollInterval: pollInterval, DispatchBatchSize: 100, HistoryCleanupInterval: 24 * time.Hour,
+		PollInterval: pollInterval, DispatchBatchSize: 100,
 		ContextCompactionTimeout:         30 * time.Second,
 		ValeraProfileSyncMaxRetries:      1,
 		KonstantinHistoryDefaultPageSize: 100, KonstantinHistoryMaxPageSize: 100,
@@ -266,10 +266,6 @@ func (r *contextRepositoryFake) LoadContextWindow(context.Context, string, int, 
 	return r.window, nil
 }
 
-func (r *contextRepositoryFake) PruneHistory(context.Context, domain.AgentType, int) error {
-	return nil
-}
-
 func (r *contextRepositoryFake) SaveContextSummary(_ context.Context, _ string, expectedID string, _ time.Time, throughID string, throughAt time.Time, summary string) (bool, error) {
 	r.saveCount++
 	if r.saveErr != nil {
@@ -457,3 +453,127 @@ func activeValeraCall(retryCount int) domain.Call {
 }
 
 func stringPointer(value string) *string { return &value }
+
+type staleCleanupRepository struct {
+	completionRepository
+	staleCalls  []domain.Call
+	recovered   int
+	retryCount  int
+	retryMax    int
+	retryResult bool
+}
+
+func (r *staleCleanupRepository) RecoverStaleSubmissions(context.Context, time.Time, int) (int, error) {
+	return r.recovered, nil
+}
+func (r *staleCleanupRepository) ListStaleActive(context.Context, time.Time, int) ([]domain.Call, error) {
+	return r.staleCalls, nil
+}
+func (r *staleCleanupRepository) RetryStaleActive(_ context.Context, _ domain.Call, maxRetries int) (bool, error) {
+	r.retryCount++
+	r.retryMax = maxRetries
+	return r.retryResult, nil
+}
+func (*staleCleanupRepository) WithCleanupLock(context.Context, func(context.Context) error) (bool, error) {
+	return false, nil
+}
+func (*staleCleanupRepository) PruneCallPayloads(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}
+func (*staleCleanupRepository) PruneCallRecords(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}
+func (*staleCleanupRepository) PruneMessages(context.Context, domain.AgentType, time.Time, int) (int, error) {
+	return 0, nil
+}
+func (*staleCleanupRepository) PruneContextSummaries(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}
+func (*staleCleanupRepository) TerminalNewsIDs(context.Context, time.Time, int) ([]string, error) {
+	return nil, nil
+}
+
+type fixedStateRuntime struct {
+	state domain.RunState
+	err   error
+}
+
+func (r fixedStateRuntime) Start(context.Context, domain.Agent, string, []domain.Message, string) (string, error) {
+	return "", nil
+}
+func (r fixedStateRuntime) Status(context.Context, domain.Agent, string) (domain.RunState, error) {
+	return r.state, r.err
+}
+
+func TestReconcileStaleRetriesOnlyConfirmedRetryableRuns(t *testing.T) {
+	old := time.Now().Add(-time.Hour)
+	runID := "hermes-run"
+	repo := &staleCleanupRepository{
+		staleCalls: []domain.Call{{ID: "call-stale", Agent: domain.AgentKesha, Status: domain.CallRunning,
+			HermesRunID: &runID, RetryCount: 0, UpdatedAt: old}},
+		recovered: 2, retryResult: true,
+	}
+	service := NewService(repo, fixedStateRuntime{state: domain.RunState{Status: "failed", Error: "temporary"}},
+		[]domain.Agent{{Type: domain.AgentKesha}}, testCallConfig(time.Second))
+	settings := testCallConfig(time.Second)
+	settings.ActiveMaxRetries = 1
+	service.settings = settings
+
+	count, err := service.ReconcileStale(context.Background(), old, old, 10, 1)
+	if err != nil || count != 3 || repo.retryCount != 1 || repo.retryMax != 1 {
+		t.Fatalf("reconcile = count %d, err %v, retry count/max %d/%d", count, err, repo.retryCount, repo.retryMax)
+	}
+	if repo.status != "" {
+		t.Fatalf("confirmed failed run was marked terminal after successful retry: %s", repo.status)
+	}
+}
+
+func TestReconcileStalePreservesUnknownAndUnreachableRuns(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		state domain.RunState
+		err   error
+	}{
+		{name: "status endpoint unavailable", err: errors.New("network unavailable")},
+		{name: "unknown run", state: domain.RunState{Status: "unknown"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runID := "unresolved-run"
+			repo := &staleCleanupRepository{staleCalls: []domain.Call{{ID: "call-active", Agent: domain.AgentKesha,
+				Status: domain.CallRunning, HermesRunID: &runID, UpdatedAt: time.Now().Add(-time.Hour)}}}
+			service := NewService(repo, fixedStateRuntime{state: test.state, err: test.err}, []domain.Agent{{Type: domain.AgentKesha}}, testCallConfig(time.Second))
+			if _, err := service.ReconcileStale(context.Background(), time.Now(), time.Now(), 10, 1); err != nil {
+				t.Fatal(err)
+			}
+			if repo.retryCount != 0 || repo.status != "" {
+				t.Fatalf("unresolved run changed state: retries=%d status=%s", repo.retryCount, repo.status)
+			}
+		})
+	}
+}
+
+func TestReconcileStaleDoesNotRetryAfterRetryBudgetOrCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    string
+		retries   int
+		wantRetry int
+		wantState domain.CallStatus
+	}{
+		{name: "retry budget exhausted", status: "interrupted", retries: 1, wantState: domain.CallInterrupted},
+		{name: "cancelled", status: "cancelled", retries: 0, wantState: domain.CallCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runID := "terminal-run"
+			repo := &staleCleanupRepository{staleCalls: []domain.Call{{ID: "call-terminal", Agent: domain.AgentKesha,
+				Status: domain.CallRunning, HermesRunID: &runID, RetryCount: test.retries, UpdatedAt: time.Now().Add(-time.Hour)}}}
+			service := NewService(repo, fixedStateRuntime{state: domain.RunState{Status: test.status}}, []domain.Agent{{Type: domain.AgentKesha}}, testCallConfig(time.Second))
+			if _, err := service.ReconcileStale(context.Background(), time.Now(), time.Now(), 10, 1); err != nil {
+				t.Fatal(err)
+			}
+			if repo.retryCount != test.wantRetry || repo.status != test.wantState {
+				t.Fatalf("retries/status = %d/%s, want %d/%s", repo.retryCount, repo.status, test.wantRetry, test.wantState)
+			}
+		})
+	}
+}

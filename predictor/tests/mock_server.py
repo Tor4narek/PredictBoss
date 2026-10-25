@@ -55,13 +55,36 @@ class Handler(BaseHTTPRequestHandler):
             if run is None:
                 self.send_json(404, {"error": "run_not_found"})
             else:
-                self.send_json(200, {"status": "completed", "output": run["output"]})
+                self.send_json(200, {
+                    "status": run.get("status", "completed"),
+                    "output": run["output"],
+                    "error": run.get("error", ""),
+                })
             return
 
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):
         global RUN_SEQUENCE
+        if urlparse(self.path).path == "/test/runs":
+            try:
+                fixture = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                run_id = fixture["run_id"]
+                status = fixture["status"]
+            except (ValueError, TypeError, KeyError):
+                self.send_json(400, {"error": "invalid_fixture"})
+                return
+            with LOCK:
+                RUNS[run_id] = {
+                    "output": fixture.get("output", "{}"),
+                    "status": status,
+                    "error": fixture.get("error", ""),
+                    "input": {},
+                    "instructions": "test fixture",
+                    "conversation_history": [],
+                }
+            self.send_json(201, {"run_id": run_id})
+            return
         if urlparse(self.path).path != "/v1/runs":
             self.send_json(404, {"error": "not_found"})
             return

@@ -425,48 +425,6 @@ RETURNING conversation_id::text`, conversationID, expectedAt, expectedID, throug
 	return true, nil
 }
 
-func (r *Calls) PruneHistory(ctx context.Context, agent domain.AgentType, days int) error {
-	if days <= 0 {
-		return nil
-	}
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	// A compacted summary may contain expired messages no longer present in
-	// agent_messages. Drop only summaries whose consumed cursor includes an
-	// expiring call; newer compacted history is retained.
-	if _, err := tx.Exec(ctx, `DELETE FROM agent_context_summaries s USING agent_conversations v
-WHERE s.conversation_id = v.conversation_id AND s.agent_type = $1
-  AND EXISTS (SELECT 1 FROM agent_calls c WHERE c.conversation_id = s.conversation_id
-    AND c.status IN ('completed','failed','cancelled','interrupted')
-    AND c.created_at < now() - ($2::int * interval '1 day')
-    AND (c.created_at, c.call_id) <= (s.through_call_created_at, s.through_call_id))`, string(agent), days); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM agent_messages m USING agent_calls c, agent_conversations v
-WHERE m.call_id = c.call_id AND c.conversation_id = v.conversation_id AND v.agent_type = $1
-  AND c.status IN ('completed','failed','cancelled','interrupted')
-  AND m.created_at < now() - ($2::int * interval '1 day')`, string(agent), days); err != nil {
-		return err
-	}
-	if agent == domain.AgentKonstantin {
-		if _, err := tx.Exec(ctx, `DELETE FROM konstantin_messages m USING agent_conversations v
-WHERE m.conversation_id = v.conversation_id AND v.agent_type = 'konstantin'
-  AND m.created_at < now() - ($1::int * interval '1 day')`, days); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE agent_calls c SET request_json = '{}'::jsonb, output = NULL, error = NULL
-FROM agent_conversations v WHERE c.conversation_id = v.conversation_id AND v.agent_type = $1
-  AND c.status IN ('completed','failed','cancelled','interrupted')
-  AND c.created_at < now() - ($2::int * interval '1 day')`, string(agent), days); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
 func (r *Calls) ClaimQueued(ctx context.Context, limit int) ([]domain.Call, error) {
 	rows, err := r.pool.Query(ctx, `WITH candidates AS (
  SELECT c.call_id FROM agent_calls c

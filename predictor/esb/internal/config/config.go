@@ -32,6 +32,7 @@ type Definition struct {
 	minDuration time.Duration
 	maxDuration time.Duration
 	required    bool
+	allowNever  bool
 }
 
 type Connections struct {
@@ -63,9 +64,23 @@ type HTTP struct {
 type Queue struct {
 	HermesPollInterval       time.Duration
 	DispatchBatchSize        int
-	HistoryCleanupInterval   time.Duration
 	ContextCompactionTimeout time.Duration
 	ValeraProfileSyncRetries int
+}
+
+type Cleanup struct {
+	Enabled                 bool
+	StatusCheckInterval     time.Duration
+	RetentionCheckInterval  time.Duration
+	BatchSize               int
+	QueuedStaleAfter        time.Duration
+	RunningStaleAfter       time.Duration
+	ActiveMaxRetries        int
+	CallPayloadRetention    domain.RetentionPolicy
+	CallRecordRetention     domain.RetentionPolicy
+	ContextSummaryRetention domain.RetentionPolicy
+	MessagesRetention       map[domain.AgentType]domain.RetentionPolicy
+	Analytics               domain.AnalyticsRetention
 }
 
 type Hermes struct {
@@ -126,6 +141,7 @@ type Config struct {
 	WebSocket   WebSocket
 	Pagination  Pagination
 	Payload     PayloadLimits
+	Cleanup     Cleanup
 	Agents      []domain.Agent
 }
 
@@ -158,9 +174,32 @@ func buildDefinitions() []Definition {
 		stringDef("HERMES_KONSTANTIN_URL", "", "Konstantin Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
 		durationDef("HERMES_POLL_INTERVAL", 2*time.Second, time.Millisecond, 10*time.Minute, "interval", "Queue dispatch and Hermes status polling interval.", "runtime"),
 		intDef("QUEUE_DISPATCH_BATCH_SIZE", 100, 1, 10000, "calls", "Maximum queued calls claimed in one dispatch cycle; each claim can start one worker.", "runtime"),
-		durationDef("HISTORY_RETENTION_CLEANUP_INTERVAL", 24*time.Hour, time.Second, 365*24*time.Hour, "duration", "Interval between PostgreSQL history-retention cleanup passes.", "runtime"),
 		durationDef("CONTEXT_COMPACTION_TIMEOUT", 30*time.Second, time.Millisecond, time.Hour, "duration", "Maximum time spent requesting a compressed agent-context summary from Hermes.", "runtime"),
 		intDef("VALERA_PROFILE_SYNC_MAX_RETRIES", 1, 0, 1, "retries", "Maximum automatic retries after Valera output is completed but its profile revision is not confirmed; PostgreSQL retry_count allows 0..1.", "runtime"),
+		boolDef("CLEANUP_ENABLED", true, "Enable ESB stale-call recovery and retention cleanup loops.", "cleanup"),
+		durationDef("CLEANUP_STATUS_CHECK_INTERVAL", time.Hour, time.Millisecond, 365*24*time.Hour, "interval", "Interval between stale-call reconciliation passes; kept separate from data-retention cleanup.", "cleanup"),
+		durationDef("CLEANUP_RETENTION_CHECK_INTERVAL", 24*time.Hour, time.Millisecond, 365*24*time.Hour, "interval", "Interval between bounded PostgreSQL and ClickHouse retention passes.", "cleanup"),
+		intDef("CLEANUP_BATCH_SIZE", 500, 1, 10000, "rows", "Maximum candidate rows handled per cleanup category in one pass.", "cleanup"),
+		durationDef("CLEANUP_QUEUED_STALE_AFTER", 10*time.Minute, time.Millisecond, 365*24*time.Hour, "duration", "Age after which a submitting call without a saved Hermes run ID can be safely returned to the queue.", "cleanup"),
+		durationDef("CLEANUP_RUNNING_STALE_AFTER", 30*time.Minute, time.Millisecond, 365*24*time.Hour, "duration", "Minimum age before cleanup independently checks the Hermes status of an active call.", "cleanup"),
+		intDef("CLEANUP_ACTIVE_MAX_RETRIES", 1, 0, 32767, "retries", "Maximum cleanup retries for calls Hermes confirms failed or interrupted; active or uncertain runs are never retried.", "cleanup"),
+		retentionDef("CLEANUP_CALL_PAYLOAD_RETENTION", "2160h", "Age before large request and output fields of terminal calls are cleared; Serezha retry payloads stay available until processing succeeds."),
+		retentionDef("CLEANUP_CALL_RECORD_RETENTION", "2160h", "Age before terminal call rows are deleted when safe or reduced to idempotency and history tombstones."),
+		retentionDef("CLEANUP_CONTEXT_SUMMARY_RETENTION", "never", "Independent retention for compacted agent context summaries."),
+		retentionDef("CLEANUP_MESSAGES_RETENTION_SEREZHA", "never", "Retention for Serezha conversation messages."),
+		retentionDef("CLEANUP_MESSAGES_RETENTION_SAVELIY", "never", "Retention for Saveliy conversation messages."),
+		retentionDef("CLEANUP_MESSAGES_RETENTION_VALERA", "never", "Retention for Valera conversation messages."),
+		retentionDef("CLEANUP_MESSAGES_RETENTION_KESHA", "never", "Retention for Kesha conversation messages."),
+		retentionDef("CLEANUP_MESSAGES_RETENTION_KONSTANTIN", "never", "Retention for Konstantin chat history exposed to Domain."),
+		retentionDef("CLEANUP_PROCESSED_NEWS_TEXT_RETENTION", "168h", "Retention after ClickHouse confirms news processing and persisted facts; this age starts at the processing marker."),
+		retentionDef("CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION", "never", "Retention for raw text only when its news call is terminal and the text is not marked processed."),
+		retentionDef("CLEANUP_NEWS_METADATA_RETENTION", "never", "Retention for unreferenced ClickHouse news metadata; metadata required by retained facts or observations is preserved."),
+		retentionDef("CLEANUP_NEWS_MARKER_RETENTION", "never", "Retention for processing markers only when no raw text or analytic rows depend on them."),
+		retentionDef("CLEANUP_FACTS_RETENTION", "never", "Retention for ClickHouse universal facts."),
+		retentionDef("CLEANUP_FACT_COMPANY_RETENTION", "never", "Retention for ClickHouse fact-to-company links."),
+		retentionDef("CLEANUP_METRIC_OBSERVATIONS_RETENTION", "never", "Retention for metric observations."),
+		retentionDef("CLEANUP_METRIC_TOTALS_RETENTION", "never", "Retention for calculated metric totals."),
+		retentionDef("CLEANUP_COMPANY_ANALYSES_RETENTION", "never", "Retention for generated company analysis text."),
 		durationDef("HERMES_REQUEST_TIMEOUT", 45*time.Second, time.Millisecond, 10*time.Minute, "duration", "HTTP client timeout for Hermes run, status, and health requests.", "runtime"),
 		durationDef("HERMES_HEALTH_TIMEOUT", 2*time.Second, time.Millisecond, time.Minute, "duration", "Per-agent readiness probe timeout.", "runtime"),
 		intDef("HERMES_RETRY_MAX_ATTEMPTS", 5, 1, 20, "attempts", "Total attempts to submit a run to Hermes, including the first attempt.", "runtime"),
@@ -282,6 +321,11 @@ func durationDef(name string, fallback, min, max time.Duration, unit, purpose, c
 		minDuration: min, maxDuration: max}
 }
 
+func retentionDef(name, fallback, purpose string) Definition {
+	return Definition{Name: name, Type: "duration | never", Default: fallback, Range: "positive Go duration | never", Unit: "duration",
+		Purpose: purpose, Category: "cleanup", defaultRaw: fallback, allowNever: true}
+}
+
 func Definitions() []Definition {
 	result := make([]Definition, len(definitions))
 	copy(result, definitions)
@@ -376,13 +420,76 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if cfg.Queue.DispatchBatchSize, err = getInt("QUEUE_DISPATCH_BATCH_SIZE"); err != nil {
 		return Config{}, err
 	}
-	if cfg.Queue.HistoryCleanupInterval, err = getDuration("HISTORY_RETENTION_CLEANUP_INTERVAL"); err != nil {
-		return Config{}, err
-	}
 	if cfg.Queue.ContextCompactionTimeout, err = getDuration("CONTEXT_COMPACTION_TIMEOUT"); err != nil {
 		return Config{}, err
 	}
 	if cfg.Queue.ValeraProfileSyncRetries, err = getInt("VALERA_PROFILE_SYNC_MAX_RETRIES"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Enabled, err = getBool("CLEANUP_ENABLED"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.StatusCheckInterval, err = getDuration("CLEANUP_STATUS_CHECK_INTERVAL"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.RetentionCheckInterval, err = getDuration("CLEANUP_RETENTION_CHECK_INTERVAL"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.BatchSize, err = getInt("CLEANUP_BATCH_SIZE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.QueuedStaleAfter, err = getDuration("CLEANUP_QUEUED_STALE_AFTER"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.RunningStaleAfter, err = getDuration("CLEANUP_RUNNING_STALE_AFTER"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.ActiveMaxRetries, err = getInt("CLEANUP_ACTIVE_MAX_RETRIES"); err != nil {
+		return Config{}, err
+	}
+	getRetention := func(name string) (domain.RetentionPolicy, error) { return retentionValue(lookup, name) }
+	if cfg.Cleanup.CallPayloadRetention, err = getRetention("CLEANUP_CALL_PAYLOAD_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.CallRecordRetention, err = getRetention("CLEANUP_CALL_RECORD_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.ContextSummaryRetention, err = getRetention("CLEANUP_CONTEXT_SUMMARY_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	cfg.Cleanup.MessagesRetention = make(map[domain.AgentType]domain.RetentionPolicy, 5)
+	for _, agent := range []domain.AgentType{domain.AgentSerezha, domain.AgentSaveliy, domain.AgentValera, domain.AgentKesha, domain.AgentKonstantin} {
+		policy, policyErr := getRetention("CLEANUP_MESSAGES_RETENTION_" + strings.ToUpper(string(agent)))
+		if policyErr != nil {
+			return Config{}, policyErr
+		}
+		cfg.Cleanup.MessagesRetention[agent] = policy
+	}
+	if cfg.Cleanup.Analytics.ProcessedNewsText, err = getRetention("CLEANUP_PROCESSED_NEWS_TEXT_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.UnprocessedNewsText, err = getRetention("CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.NewsMetadata, err = getRetention("CLEANUP_NEWS_METADATA_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.NewsMarker, err = getRetention("CLEANUP_NEWS_MARKER_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.Facts, err = getRetention("CLEANUP_FACTS_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.FactCompany, err = getRetention("CLEANUP_FACT_COMPANY_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.MetricObservations, err = getRetention("CLEANUP_METRIC_OBSERVATIONS_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.MetricTotals, err = getRetention("CLEANUP_METRIC_TOTALS_RETENTION"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cleanup.Analytics.CompanyAnalyses, err = getRetention("CLEANUP_COMPANY_ANALYSES_RETENTION"); err != nil {
 		return Config{}, err
 	}
 	if cfg.Hermes.RequestTimeout, err = getDuration("HERMES_REQUEST_TIMEOUT"); err != nil {
@@ -536,24 +643,20 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("agent definition %s: %w", definitionPath, err)
 		}
-		if definition.HistoryRetentionDays < 0 {
-			return Config{}, fmt.Errorf("agent definition %s: history_retention_days cannot be negative", definitionPath)
-		}
 		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField,
-			RequiredFields: definition.RequiredFields, MaxHistory: historyLimit, HistoryRetentionDays: definition.HistoryRetentionDays,
+			RequiredFields: definition.RequiredFields, MaxHistory: historyLimit,
 			ContextPolicy: policy, RuntimeURL: strings.TrimRight(runtimeURL, "/"), Instructions: skillInstructions(string(skill))})
 	}
 	return cfg, nil
 }
 
 type agentFile struct {
-	Name                 string             `json:"name"`
-	ScopeField           string             `json:"scope_field"`
-	SkillFile            string             `json:"skill_file"`
-	RuntimeURLEnv        string             `json:"runtime_url_env"`
-	RequiredFields       []string           `json:"required_fields"`
-	HistoryRetentionDays int                `json:"history_retention_days"`
-	ContextPolicy        *contextPolicyFile `json:"context_policy"`
+	Name           string             `json:"name"`
+	ScopeField     string             `json:"scope_field"`
+	SkillFile      string             `json:"skill_file"`
+	RuntimeURLEnv  string             `json:"runtime_url_env"`
+	RequiredFields []string           `json:"required_fields"`
+	ContextPolicy  *contextPolicyFile `json:"context_policy"`
 }
 
 type contextPolicyFile struct {
@@ -680,6 +783,25 @@ func durationValue(lookup LookupEnv, name string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s: expected duration in %s", name, spec.Range)
 	}
 	return parsed, nil
+}
+
+func retentionValue(lookup LookupEnv, name string) (domain.RetentionPolicy, error) {
+	spec := definition(name)
+	if !spec.allowNever {
+		return domain.RetentionPolicy{}, fmt.Errorf("invalid %s: retention policy is not enabled", name)
+	}
+	value, err := stringValue(lookup, name)
+	if err != nil {
+		return domain.RetentionPolicy{}, err
+	}
+	if strings.EqualFold(strings.TrimSpace(value), "never") {
+		return domain.RetentionPolicy{Never: true}, nil
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return domain.RetentionPolicy{}, fmt.Errorf("invalid %s: expected a positive Go duration or never", name)
+	}
+	return domain.RetentionPolicy{Age: parsed}, nil
 }
 
 func definition(name string) Definition {

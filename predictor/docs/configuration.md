@@ -5,7 +5,7 @@ ESB загружает конфигурацию один раз при стар�
 
 ## Переменные окружения
 
-Диапазоны для длительностей включают обе границы. Некорректные числа, длительности и bool останавливают запуск; сообщение содержит имя переменной, но не её значение. Ноль допустим только там, где он указан в диапазоне. Пустые optional string используют default; пустые required значения вызывают ошибку запуска.
+Диапазоны для длительностей включают обе границы. Некорректные числа, длительности и bool останавливают запуск; сообщение содержит имя переменной, но не её значение. Для retention-политик используйте положительную длительность Go или `never`; ноль и отрицательные значения запрещены. Пустые optional string используют default; пустые required значения вызывают ошибку запуска.
 
 | Имя | Тип | Default | Допустимый диапазон | Единица | Назначение | Категория |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -14,6 +14,30 @@ ESB загружает конфигурацию один раз при стар�
 | `AGENT_SAVELIY_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Saveliy's Hermes run; zero disables history. | контекст агента |
 | `AGENT_SEREZHA_MAX_HISTORY_MESSAGES` | integer | 40 | 0…10000 | messages | Maximum prior messages passed to Serezha's Hermes run; zero disables history. | контекст агента |
 | `AGENT_VALERA_MAX_HISTORY_MESSAGES` | integer | 0 | 0…10000 | messages | Maximum prior messages passed to Valera's Hermes run; zero disables history. | контекст агента |
+| `CLEANUP_ACTIVE_MAX_RETRIES` | integer | 1 | 0…32767 | retries | Maximum cleanup retries for calls Hermes confirms failed or interrupted; active or uncertain runs are never retried. | очистка и хранение |
+| `CLEANUP_BATCH_SIZE` | integer | 500 | 1…10000 | rows | Maximum candidate rows handled per cleanup category in one pass. | очистка и хранение |
+| `CLEANUP_CALL_PAYLOAD_RETENTION` | duration \| never | 2160h | positive Go duration \| never | duration | Age before large request and output fields of terminal calls are cleared; Serezha retry payloads stay available until processing succeeds. | очистка и хранение |
+| `CLEANUP_CALL_RECORD_RETENTION` | duration \| never | 2160h | positive Go duration \| never | duration | Age before terminal call rows are deleted when safe or reduced to idempotency and history tombstones. | очистка и хранение |
+| `CLEANUP_COMPANY_ANALYSES_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for generated company analysis text. | очистка и хранение |
+| `CLEANUP_CONTEXT_SUMMARY_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Independent retention for compacted agent context summaries. | очистка и хранение |
+| `CLEANUP_ENABLED` | bool | true | true \| false | — | Enable ESB stale-call recovery and retention cleanup loops. | очистка и хранение |
+| `CLEANUP_FACTS_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for ClickHouse universal facts. | очистка и хранение |
+| `CLEANUP_FACT_COMPANY_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for ClickHouse fact-to-company links. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_KESHA` | duration \| never | never | positive Go duration \| never | duration | Retention for Kesha conversation messages. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_KONSTANTIN` | duration \| never | never | positive Go duration \| never | duration | Retention for Konstantin chat history exposed to Domain. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_SAVELIY` | duration \| never | never | positive Go duration \| never | duration | Retention for Saveliy conversation messages. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_SEREZHA` | duration \| never | never | positive Go duration \| never | duration | Retention for Serezha conversation messages. | очистка и хранение |
+| `CLEANUP_MESSAGES_RETENTION_VALERA` | duration \| never | never | positive Go duration \| never | duration | Retention for Valera conversation messages. | очистка и хранение |
+| `CLEANUP_METRIC_OBSERVATIONS_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for metric observations. | очистка и хранение |
+| `CLEANUP_METRIC_TOTALS_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for calculated metric totals. | очистка и хранение |
+| `CLEANUP_NEWS_MARKER_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for processing markers only when no raw text or analytic rows depend on them. | очистка и хранение |
+| `CLEANUP_NEWS_METADATA_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for unreferenced ClickHouse news metadata; metadata required by retained facts or observations is preserved. | очистка и хранение |
+| `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` | duration \| never | 168h | positive Go duration \| never | duration | Retention after ClickHouse confirms news processing and persisted facts; this age starts at the processing marker. | очистка и хранение |
+| `CLEANUP_QUEUED_STALE_AFTER` | duration | 10m0s | 1ms…8760h0m0s | duration | Age after which a submitting call without a saved Hermes run ID can be safely returned to the queue. | очистка и хранение |
+| `CLEANUP_RETENTION_CHECK_INTERVAL` | duration | 24h0m0s | 1ms…8760h0m0s | interval | Interval between bounded PostgreSQL and ClickHouse retention passes. | очистка и хранение |
+| `CLEANUP_RUNNING_STALE_AFTER` | duration | 30m0s | 1ms…8760h0m0s | duration | Minimum age before cleanup independently checks the Hermes status of an active call. | очистка и хранение |
+| `CLEANUP_STATUS_CHECK_INTERVAL` | duration | 1h0m0s | 1ms…8760h0m0s | interval | Interval between stale-call reconciliation passes; kept separate from data-retention cleanup. | очистка и хранение |
+| `CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION` | duration \| never | never | positive Go duration \| never | duration | Retention for raw text only when its news call is terminal and the text is not marked processed. | очистка и хранение |
 | `CLICKHOUSE_HEALTHCHECK_INTERVAL` | duration | 5s | 1ms…1h0m0s | duration | ClickHouse container healthcheck interval in Compose. | Docker Compose |
 | `CLICKHOUSE_HEALTHCHECK_RETRIES` | integer | 20 | 1…100 | retries | Consecutive ClickHouse healthcheck failures before the container is unhealthy. | Docker Compose |
 | `CLICKHOUSE_HEALTHCHECK_TIMEOUT` | duration | 3s | 1ms…1h0m0s | duration | ClickHouse container healthcheck command timeout in Compose. | Docker Compose |
@@ -57,7 +81,6 @@ ESB загружает конфигурацию один раз при стар�
 | `HERMES_SAVELIY_URL` | string | required | not validated | — | Saveliy Hermes runtime URL; Compose supplies its service URL. | runtime ESB |
 | `HERMES_SEREZHA_URL` | string | required | not validated | — | Serezha Hermes runtime URL; Compose supplies its service URL. | runtime ESB |
 | `HERMES_VALERA_URL` | string | required | not validated | — | Valera Hermes runtime URL; Compose supplies its service URL. | runtime ESB |
-| `HISTORY_RETENTION_CLEANUP_INTERVAL` | duration | 24h0m0s | 1s…8760h0m0s | duration | Interval between PostgreSQL history-retention cleanup passes. | runtime ESB |
 | `HTTP_ADDR` | string | :8081 | not validated | — | ESB listen address inside its network namespace. | runtime ESB |
 | `HTTP_IDLE_TIMEOUT` | duration | 1m0s | 1ms…24h0m0s | duration | HTTP server timeout for idle keep-alive connections. | runtime ESB |
 | `HTTP_MAX_JSON_BODY_BYTES` | integer (int64) | 2097152 | 1024…67108864 | bytes | Maximum JSON request body accepted by HTTP endpoints. | runtime ESB |
@@ -108,11 +131,11 @@ ESB загружает конфигурацию один раз при стар�
 
 ## Настройки агентов
 
-Роль, порядок работы, политика сжатия истории, модель, reasoning effort, MCP allowlist, инструменты и runtime-лимиты Hermes остаются в `predictor/agents/<agent>/`. `AGENT_<TYPE>_MAX_HISTORY_MESSAGES` — отдельное эксплуатационное исключение: предел сообщений для контекста Hermes задан через env, `0` означает не передавать историю. История PostgreSQL продолжает управляться `history_retention_days` из `agent.json`.
+Роль, порядок работы, политика сжатия истории, модель, reasoning effort, MCP allowlist, инструменты и runtime-лимиты Hermes остаются в `predictor/agents/<agent>/`. `AGENT_<TYPE>_MAX_HISTORY_MESSAGES` ограничивает только контекст Hermes; `0` означает не передавать историю. Отдельные `CLEANUP_MESSAGES_RETENTION_<TYPE>` и `CLEANUP_CONTEXT_SUMMARY_RETENTION` управляют хранением полной истории и резюме в PostgreSQL. По умолчанию история всех агентов хранится бессрочно.
 
 | Файл | Настройки | Кто использует |
 | --- | --- | --- |
-| `agents/<type>/agent.json` | `scope_field`, `required_fields`, `history_retention_days`, `context_policy` (порог, размер batch сжатия, размер summary и PostgreSQL как место хранения) | ESB: правила вызова и хранения контекста агента |
+| `agents/<type>/agent.json` | `scope_field`, `required_fields`, `context_policy` (порог, размер batch сжатия, размер summary и PostgreSQL как место хранения) | ESB: контракт вызова и сжатие контекста модели |
 | `agents/<type>/hermes.yaml` | `model.provider/default/base_url/key_env`, `gateway.api_server`, `max_concurrent_runs`, `agent.max_turns`, `reasoning_effort`, disabled toolsets, skill directory, ESB MCP URL, allowlist и режим параллельных вызовов | Hermes: runtime и роль агента |
 | `agents/<type>/skills/**` | Skill, порядок анализа, доменные инструкции и ссылки на data contract | Hermes: содержание задачи |
 
@@ -123,7 +146,7 @@ ESB загружает конфигурацию один раз при стар�
 | `docker-compose.yml` | эксплуатационная настройка — env | host ports, healthcheck интервалы/таймауты/повторы, адреса сервисов и deployment credentials; значения ESB перечислены выше | параметры окружения и развёртывания, меняются без перекомпиляции |
 | `predictor/storage/{postgres,clickhouse}/migrations/*_init.sql` | доменный/API-инвариант | таблицы, типы, статусы, enum, ограничения и индексы схемы | начальная схема хранит форму данных; runtime значения в неё не переносятся |
 | `predictor/tests/compose.e2e.yml`, `e2e_test.go`, `mock_server.py` | только тестовая конфигурация | тестовые credentials, фиксированные fixture ID, адреса и короткие ожидания | изолированный mock-прогон не использует production secret или LLM; `ESB_E2E_BASE_URL` и `MOCK_PORT` перечислены выше |
-| `agents/<type>/agent.json` | роль/контекст агента | область чата, обязательные поля, срок хранения полной истории и политика сжатия | политика применяется отдельно к контексту конкретного агента |
+| `agents/<type>/agent.json` | роль/контекст агента | область чата, обязательные поля и политика сжатия контекста | хранение полной истории задаётся отдельно через `CLEANUP_*_RETENTION` |
 | `agents/<type>/hermes.yaml` | runtime-настройка агента | модель, reasoning, max turns, MCP allowlist и `max_concurrent_runs` | настройки исполнения роли принадлежат Hermes; `0` в текущем runtime означает отсутствие per-agent concurrency cap |
 | очередь ESB | неизменяемая архитектурная граница | отдельного глобального concurrency cap нет; размер `QUEUE_DISPATCH_BATCH_SIZE` ограничивает число задач, извлекаемых за цикл | параллельное исполнение остаётся под контролем каждого Hermes runtime и ресурсов развёртывания |
 
@@ -143,6 +166,13 @@ ESB загружает конфигурацию один раз при стар�
 | HTTP body резервирует 4 KiB под JSON metadata сверх `MAX_NEWS_TEXT_BYTES`; диагностический ответ ClickHouse при `INSERT` ограничен 4 KiB | Небольшие фиксированные границы для структуры запроса и текста ошибки; успешные ответы ограничиваются `CLICKHOUSE_MAX_RESPONSE_BYTES` |
 | `EventsAfter` принимает 1…10 000 событий и использует fallback 100 для внутреннего неверного аргумента | Защитная валидация адаптера; публичный WS replay отдельно ограничен `STREAM_REPLAY_LIMIT` |
 | Схема PostgreSQL и ClickHouse в `storage/*/migrations/*_init.sql` | Init описывает состояние данных, а не runtime-параметры |
+| Очистка ClickHouse удаляет строки через `mutations_sync = 2` и проверяет `FINAL`-состояние | Асинхронное применение мутаций не должно приводить к ложному подтверждению удаления |
+
+## Безопасность очистки
+
+ESB запускает отдельные циклы сверки зависших вызовов и очистки по сроку хранения. PostgreSQL advisory lock не допускает параллельное выполнение одного прохода несколькими экземплярами. Все запросы ограничены `CLEANUP_BATCH_SIZE`; ошибки повтора безопасны, а ошибки Hermes/хранилищ не считаются подтверждением удаления. Активные вызовы и вызовы с неустановленным статусом остаются в PostgreSQL.
+
+Текст обработанной новости в ClickHouse хранится `CLEANUP_PROCESSED_NEWS_TEXT_RETENTION` после подтверждения маркера, метаданных и числа фактов. Политика необработанного текста ClickHouse применяется только к новости с терминальным вызовом Серёжи. Необработанный `news_text` в PostgreSQL сохраняется, пока вызов остаётся повторяемым; очистка не удаляет этот payload только из-за срока хранения вызовов. Метаданные, нужные сохранённым фактам или наблюдениям, остаются до снятия зависимостей; факты сохраняются, пока на них ссылаются связи с компаниями или наблюдения. Сообщения, резюме, payload и запись вызова используют независимые сроки хранения. История Константина и аналитические данные по умолчанию не удаляются. Профили компаний и текущие настройки метрик очистка не затрагивает.
 
 ## Прямой запуск ESB
 

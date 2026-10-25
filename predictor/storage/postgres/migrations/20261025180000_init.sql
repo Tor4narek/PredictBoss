@@ -21,7 +21,7 @@ CREATE TABLE agent_calls (
     status TEXT NOT NULL CHECK (status IN ('queued', 'submitting', 'started', 'running', 'processing', 'completed', 'failed', 'cancelled', 'interrupted')),
     output TEXT,
     error TEXT,
-    retry_count SMALLINT NOT NULL DEFAULT 0 CONSTRAINT agent_calls_retry_count_check CHECK (retry_count BETWEEN 0 AND 1),
+    retry_count SMALLINT NOT NULL DEFAULT 0 CONSTRAINT agent_calls_retry_count_check CHECK (retry_count >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

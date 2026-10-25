@@ -6,7 +6,6 @@
   "required_fields": [
     "news_id"
   ],
-  "history_retention_days": 0,
   "context_policy": {
     "compress_after_messages": 40,
     "batch_messages": 100,
