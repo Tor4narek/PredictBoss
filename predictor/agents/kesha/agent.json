@@ -1,7 +1,7 @@
 {
   "name": "kesha",
   "scope_field": "company_id",
-  "prompt_file": "prompt.md",
+  "skill_file": "skills/kesha-company-metrics/SKILL.md",
   "runtime_url_env": "HERMES_KESHA_URL",
   "required_fields": [],
   "max_history_messages": 40
