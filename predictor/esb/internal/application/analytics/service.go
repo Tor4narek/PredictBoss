@@ -34,6 +34,20 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 	if !idPattern.MatchString(news.ID) || news.SourceID == "" || news.Text == "" || len(facts) > 500 {
 		return nil, ErrInvalidAnalyticsInput
 	}
+	if news.CompanyID != "" && !uuidPattern.MatchString(news.CompanyID) {
+		return nil, ErrInvalidAnalyticsInput
+	}
+	if news.MaterialKind != "" && news.MaterialKind != "external_news" && news.MaterialKind != "alpha_analysis" {
+		return nil, ErrInvalidAnalyticsInput
+	}
+	if news.MediaType != "" && news.MediaType != "application/pdf" && news.MediaType != "text/html" {
+		return nil, ErrInvalidAnalyticsInput
+	}
+	if news.PublishedAt != nil {
+		if _, err := time.Parse(time.RFC3339, *news.PublishedAt); err != nil {
+			return nil, fmt.Errorf("%w: published_at", ErrInvalidAnalyticsInput)
+		}
+	}
 	for i := range facts {
 		facts[i].Text = strings.TrimSpace(facts[i].Text)
 		if facts[i].Text == "" || !probability(facts[i].Confidence) {
@@ -63,6 +77,7 @@ func (s *Service) FactsByNews(ctx context.Context, newsID string, limit int) ([]
 
 func (s *Service) SaveFactCompanyLinks(ctx context.Context, companyID string, links []domain.FactCompanyLink) error {
 	companyID = strings.TrimSpace(companyID)
+	companyID = strings.ToLower(companyID)
 	if !idPattern.MatchString(companyID) || len(links) > 1000 {
 		return ErrInvalidAnalyticsInput
 	}
@@ -213,6 +228,21 @@ func (s *Service) CompanyReport(ctx context.Context, companyID, from, to string)
 		return domain.CompanyReport{}, err
 	}
 	return report, nil
+}
+
+func (s *Service) ConsultantContext(ctx context.Context, companyID string, limit int) (domain.ConsultantContext, error) {
+	companyID = strings.TrimSpace(companyID)
+	companyID = strings.ToLower(companyID)
+	if !uuidPattern.MatchString(companyID) {
+		return domain.ConsultantContext{}, ErrInvalidAnalyticsInput
+	}
+	if limit < 1 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	return s.repository.ConsultantContext(ctx, companyID, limit)
 }
 
 func dateRange(from, to string) (time.Time, error) {
