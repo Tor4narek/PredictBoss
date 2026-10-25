@@ -46,7 +46,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-predictor-password}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./predictor/storage/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-predictor} -d ${POSTGRES_DB:-predictor}"]
       interval: 5s
@@ -76,9 +75,26 @@ services:
     networks:
       - predictor-storage
 
-  atlas:
+  atlas-postgres:
     image: arigaio/atlas:latest
-    container_name: predictor-atlas
+    container_name: predictor-atlas-postgres
+    profiles: ["migrations"]
+    working_dir: /migrations
+    command: ["migrate", "apply", "--env", "local"]
+    environment:
+      ATLAS_DATABASE_URL: postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable
+      ATLAS_TOKEN: ${ATLAS_TOKEN:-}
+    volumes:
+      - ./predictor/storage/postgres:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - predictor-storage
+
+  atlas-clickhouse:
+    image: arigaio/atlas:latest
+    container_name: predictor-atlas-clickhouse
     profiles: ["migrations"]
     working_dir: /migrations
     command: ["migrate", "apply", "--env", "local"]
@@ -86,7 +102,7 @@ services:
       ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
-      - ./predictor/storage:/migrations:ro
+      - ./predictor/storage/clickhouse:/migrations:ro
     depends_on:
       clickhouse:
         condition: service_healthy

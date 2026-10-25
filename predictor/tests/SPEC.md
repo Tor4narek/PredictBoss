@@ -6,7 +6,7 @@ The Domain/ESB payload and event contract is documented in [`../docs/esb-contrac
 
 Run the built ESB service and exercise its public HTTP, WebSocket, and MCP interfaces. PostgreSQL, ClickHouse, and MinIO are real disposable containers. Hermes is a deterministic mock. This verifies routing, authentication, asynchronous call handling, database migrations and repositories, MCP tool schemas, real S3 profile persistence, source metadata, and WebSocket replay without calling an LLM.
 
-The test project uses a dedicated Compose project name and disposable volumes. It never uses the normal `predictor` Compose project or its volumes. ESB creates the test bucket on startup, then the MCP profile write/read verifies path-style S3 `PutObject` and `GetObject` against MinIO.
+The test project uses a dedicated Compose project name and disposable volumes. It never uses the normal `predictor` Compose project or its volumes. Atlas applies the PostgreSQL baseline before ESB starts; the ClickHouse baseline SQL is applied with `clickhouse-client` so E2E does not require an Atlas Pro token. ESB creates the test bucket on startup, then the MCP profile write/read verifies path-style S3 `PutObject` and `GetObject` against MinIO.
 
 ## Contract matrix
 
@@ -29,7 +29,7 @@ From the repository root:
 ./predictor/tests/run-e2e.sh
 ```
 
-The script starts the isolated dependencies, applies the ClickHouse migration chain, starts the production ESB image, runs the Go API client tests, and removes only the test project's containers and volumes on exit. Go tests can also be run directly with `cd predictor/tests && ESB_E2E_BASE_URL=http://127.0.0.1:18081 go test -v -count=1 ./...` while that stack is running.
+The script starts isolated dependencies, applies the PostgreSQL Atlas migration and ClickHouse baseline, starts the production ESB image, runs the Go API client tests, and removes only the test project's containers and volumes on exit. Go tests can also be run directly with `cd predictor/tests && ESB_E2E_BASE_URL=http://127.0.0.1:18081 go test -v -count=1 ./...` while that stack is running.
 
 ## Expected behavior
 

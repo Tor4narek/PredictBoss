@@ -1,16 +1,15 @@
--- Replace the initial draft analytics model with the domain model used by the ESB.
-DROP TABLE IF EXISTS company_metric_predictions;
-DROP TABLE IF EXISTS company_fact_matches;
-DROP TABLE IF EXISTS facts;
-DROP TABLE IF EXISTS events;
-
 CREATE TABLE news
 (
     news_id String,
     source_id String,
     source_url String,
     news_text String,
-    inserted_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    inserted_at DateTime64(3, 'UTC') DEFAULT now64(3),
+    company_id String DEFAULT '',
+    material_kind LowCardinality(String) DEFAULT 'external_news',
+    media_type LowCardinality(String) DEFAULT 'text/html',
+    title String DEFAULT '',
+    published_at Nullable(DateTime64(3, 'UTC'))
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 ORDER BY (news_id);
@@ -50,7 +49,7 @@ CREATE TABLE metric_observations
     metric_id String,
     news_id String,
     value Nullable(Float64),
-    probability Float32,
+    probability Float64,
     period_from Date,
     period_to Date,
     source_fact_ids Array(UUID),
@@ -78,7 +77,7 @@ CREATE TABLE company_analyses
     company_id String,
     period_from Date,
     period_to Date,
-    probability Float32,
+    probability Float64,
     metric_ids Array(String),
     analysis_text String,
     generated_at DateTime64(3, 'UTC') DEFAULT now64(3)

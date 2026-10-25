@@ -8,7 +8,6 @@ services:
       POSTGRES_USER: predictor
       POSTGRES_PASSWORD: test-only-password
     volumes:
-      - ../storage/postgres/init:/docker-entrypoint-initdb.d:ro
       - pg-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U predictor -d predictor"]
@@ -101,6 +100,19 @@ services:
       interval: 2s
       timeout: 3s
       retries: 40
+
+  atlas-postgres:
+    image: arigaio/atlas:latest
+    profiles: ["migrations"]
+    working_dir: /migrations
+    command: ["migrate", "apply", "--env", "local"]
+    environment:
+      ATLAS_DATABASE_URL: postgres://predictor:test-only-password@postgres:5432/predictor?sslmode=disable
+    volumes:
+      - ../storage/postgres:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pg-data:
