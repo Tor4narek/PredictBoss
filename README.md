@@ -46,7 +46,7 @@ ClickHouse хранит аналитические данные:
 
 ## Запуск
 
-Скопируйте `.env.example` в `.env`, задайте API key провайдера в `LLM_API_KEY`, а также отдельные случайные значения `HERMES_API_KEY` и `ESB_API_KEY`. Задайте `CLICKHOUSE_USER` и `CLICKHOUSE_PASSWORD`, чтобы ESB мог подключаться к ClickHouse из отдельного контейнера. Укажите S3 bucket и параметры доступа, если используется не IAM роль окружения. Credentials PostgreSQL, ClickHouse и S3 передаются только контейнеру ESB.
+Скопируйте `.env.example` в `.env`, задайте ключ выбранного LLM gateway в `LLM_API_KEY`, а также отдельные случайные значения `HERMES_API_KEY` и `ESB_API_KEY`. Модель и endpoint задаются в `predictor/agents/*/hermes.yaml`; все агенты настроены на Gemma 4 26B A4B через Changellenge gateway. Задайте `CLICKHOUSE_USER` и `CLICKHOUSE_PASSWORD`, чтобы ESB мог подключаться к ClickHouse из отдельного контейнера. Локально Compose поднимает MinIO; ESB создаёт настроенный `S3_BUCKET` при старте и сохраняет профили по ключу `companies/{companyId}/profile.md`. Для внешнего S3 задайте endpoint и credentials, а `S3_CREATE_BUCKET` выключите, если bucket создаётся заранее. Credentials PostgreSQL, ClickHouse и S3 передаются ESB; `.env` игнорируется Git.
 
 ```bash
 cp .env.example .env
