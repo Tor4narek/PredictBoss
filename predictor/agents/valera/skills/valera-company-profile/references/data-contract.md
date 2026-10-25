@@ -12,6 +12,8 @@ Each metric has:
 - characteristic: how the metric is defined and interpreted for this company.
 - parameters: optional structured JSON settings, such as calculation rules, thresholds, or period conventions.
 
+`profile_revision` is a positive, monotonically increasing revision supplied by Domain. Repeating the same revision is safe; an older revision cannot replace the profile or metric settings.
+
 All metric settings are stored together in PostgreSQL in `company_metric_settings`, keyed by `(company_id, metric_id)`. `metric_type` is a PostgreSQL enum. PostgreSQL is the source of truth; ClickHouse contains no metric catalog or company metric characteristics.
 
 Valera writes the Markdown and settings through one ESB MCP tool. S3 uses a stable profile key and PostgreSQL uses an upsert, so the tool can be retried safely after a partial failure.
