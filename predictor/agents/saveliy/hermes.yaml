@@ -1,13 +1,8 @@
 model:
   provider: custom
-  default: deepseek/deepseek-v4.1-flash
+  default: gemma-4-26b-a4b-it
   base_url: https://changellenge.up.railway.app/v1
   key_env: LLM_API_KEY
-fallback_providers:
-  - provider: custom
-    model: deepseek/deepseek-v4.1-flash
-    base_url: https://api.alfahack-gateway26.ru/v1
-    key_env: LLM_API_KEY
 platform_toolsets:
   api_server: []
 gateway:
