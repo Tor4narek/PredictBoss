@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 "${compose[@]}" down --volumes --remove-orphans
-"${compose[@]}" up --detach --wait postgres clickhouse mock-runtime
+"${compose[@]}" up --detach --wait postgres clickhouse minio mock-runtime
 for migration in predictor/storage/migrations/*.sql; do
   "${compose[@]}" exec --no-TTY clickhouse clickhouse-client --multiquery < "$migration"
 done

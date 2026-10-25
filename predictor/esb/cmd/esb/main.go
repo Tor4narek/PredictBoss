@@ -55,6 +55,7 @@ type config struct {
 	S3AccessKey      string
 	S3SecretKey      string
 	S3PathStyle      bool
+	S3CreateBucket   bool
 	DomainAPIBaseURL string
 	DomainAPIToken   string
 	PollInterval     time.Duration
@@ -91,7 +92,7 @@ func runESB() error {
 	}
 	profileStore, err := s3.NewStore(ctx, s3.Config{
 		Bucket: cfg.S3Bucket, Region: cfg.S3Region, Endpoint: cfg.S3Endpoint,
-		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, PathStyle: cfg.S3PathStyle,
+		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, PathStyle: cfg.S3PathStyle, CreateBucket: cfg.S3CreateBucket,
 	})
 	if err != nil {
 		return err
@@ -158,6 +159,7 @@ func loadConfig() (config, error) {
 		CHDatabase: env("CLICKHOUSE_DATABASE", "default"), CHUser: env("CLICKHOUSE_USER", "default"), CHPassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		S3Bucket: os.Getenv("S3_BUCKET"), S3Region: env("S3_REGION", "us-east-1"), S3Endpoint: os.Getenv("S3_ENDPOINT"),
 		S3AccessKey: os.Getenv("S3_ACCESS_KEY_ID"), S3SecretKey: os.Getenv("S3_SECRET_ACCESS_KEY"), S3PathStyle: strings.EqualFold(os.Getenv("S3_FORCE_PATH_STYLE"), "true"),
+		S3CreateBucket:   strings.EqualFold(os.Getenv("S3_CREATE_BUCKET"), "true"),
 		DomainAPIBaseURL: strings.TrimRight(os.Getenv("DOMAIN_API_BASE_URL"), "/"), DomainAPIToken: os.Getenv("DOMAIN_API_TOKEN"),
 		PollInterval: 2 * time.Second,
 	}

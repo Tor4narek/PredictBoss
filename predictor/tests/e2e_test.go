@@ -87,6 +87,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	valera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
 	valeraCallID := stringField(t, valera.body, "callId")
 	waitForCall(t, httpClient, baseURL, "valera", valeraCallID)
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusConflict, "profile_update_pending")
 	metric := metricSetting()
 	profileMarkdown := "# Example company\n\nA manufacturer with a growing domestic market.\n"
 	savedProfile := callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
@@ -115,6 +116,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if !strings.Contains(stringField(t, profile, "markdown"), "Example company") {
 		t.Fatal("S3-compatible profile read did not return the saved Markdown")
 	}
+	waitForKonstantinReady(t, httpClient, baseURL, companyID)
 	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyID, "metrics": []any{metric}})
 	metrics := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, metrics, "metrics")) != 1 {
@@ -218,8 +220,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 
 	streamURL := baseURL + stringField(t, analysisStatus.body, "streamUrl")
 	ws := dialWebSocket(t, streamURL)
-	analysisFrame := readFrame(t, ws)
-	if stringField(t, analysisFrame, "kind") != "analysis_result" || stringField(t, analysisFrame, "analysisId") != analysisID {
+	analysisFrame := readUntilAnalysis(t, ws, analysisID)
+	if stringField(t, analysisFrame, "kind") != "analysis_result" {
 		t.Fatalf("WebSocket did not replay the persisted analysis: %#v", analysisFrame)
 	}
 
@@ -387,6 +389,18 @@ func waitForHealth(t *testing.T, client *http.Client, baseURL string) {
 
 func assertRequest(t *testing.T, client *http.Client, baseURL, method, path string, body any, authorized bool, status int, errorCode string) response {
 	t.Helper()
+	result := performRequest(t, client, baseURL, method, path, body, authorized)
+	if result.status != status {
+		t.Fatalf("%s %s returned %d, want %d: %s", method, path, result.status, status, result.raw)
+	}
+	if errorCode != "" && stringField(t, result.body, "error") != errorCode {
+		t.Fatalf("%s %s returned error %q, want %q: %s", method, path, result.body["error"], errorCode, result.raw)
+	}
+	return result
+}
+
+func performRequest(t *testing.T, client *http.Client, baseURL, method, path string, body any, authorized bool) response {
+	t.Helper()
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -416,13 +430,24 @@ func assertRequest(t *testing.T, client *http.Client, baseURL, method, path stri
 	}
 	result := response{status: resp.StatusCode, raw: data, body: map[string]any{}}
 	_ = json.Unmarshal(data, &result.body)
-	if resp.StatusCode != status {
-		t.Fatalf("%s %s returned %d, want %d: %s", method, path, resp.StatusCode, status, data)
-	}
-	if errorCode != "" && stringField(t, result.body, "error") != errorCode {
-		t.Fatalf("%s %s returned error %q, want %q: %s", method, path, result.body["error"], errorCode, data)
-	}
 	return result
+}
+
+func waitForKonstantinReady(t *testing.T, client *http.Client, baseURL, companyID string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		result := performRequest(t, client, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true)
+		if result.status == http.StatusOK && result.body["status"] == "ready" {
+			return result.body
+		}
+		if result.status != http.StatusAccepted {
+			t.Fatalf("GET /call?agent=konstantin returned %d while waiting for ready, want 202: %s", result.status, result.raw)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("Konstantin profile analysis did not become ready")
+	return nil
 }
 
 func waitForCall(t *testing.T, client *http.Client, baseURL, agent, callID string) map[string]any {
@@ -610,5 +635,18 @@ func readUntilRequest(t *testing.T, conn *websocket.Conn, requestID, kind string
 		}
 	}
 	t.Fatalf("did not receive WebSocket kind %q for request %s", kind, requestID)
+	return nil
+}
+
+func readUntilAnalysis(t *testing.T, conn *websocket.Conn, analysisID string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		frame := readFrame(t, conn)
+		if stringField(t, frame, "analysisId") == analysisID {
+			return frame
+		}
+	}
+	t.Fatalf("did not receive analysis %s", analysisID)
 	return nil
 }

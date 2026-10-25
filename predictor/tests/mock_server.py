@@ -44,7 +44,6 @@ SOURCES = {
 
 RUNS = {}
 IDEMPOTENCY = {}
-S3_OBJECTS = {}
 LOCK = threading.Lock()
 RUN_SEQUENCE = 0
 
@@ -70,25 +69,6 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             self.send_json(200, {"status": "ok"})
-            return
-
-        if path.startswith("/s3/"):
-            bucket, key = self.s3_bucket_key(path)
-            if bucket != "predictor-e2e" or key is None:
-                self.send_json(404, {"error": "bucket_or_key_not_found"})
-                return
-            with LOCK:
-                value = S3_OBJECTS.get((bucket, key))
-            if value is None:
-                self.send_json(404, {"error": "object_not_found"})
-                return
-            data, content_type = value
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("ETag", '"e2e-mock-etag"')
-            self.end_headers()
-            self.wfile.write(data)
             return
 
         if path.startswith("/internal/news-links/"):
@@ -117,31 +97,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self.send_json(404, {"error": "not_found"})
-
-    def do_PUT(self):
-        path = urlparse(self.path).path
-        if not path.startswith("/s3/"):
-            self.send_json(404, {"error": "not_found"})
-            return
-        bucket, key = self.s3_bucket_key(path)
-        if bucket != "predictor-e2e" or key is None:
-            self.send_json(404, {"error": "bucket_or_key_not_found"})
-            return
-        length = int(self.headers.get("Content-Length", "0"))
-        data = self.rfile.read(length)
-        with LOCK:
-            S3_OBJECTS[(bucket, key)] = (data, self.headers.get("Content-Type", "application/octet-stream"))
-        self.send_response(200)
-        self.send_header("ETag", '"e2e-mock-etag"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    @staticmethod
-    def s3_bucket_key(path):
-        parts = path.split("/", 3)
-        if len(parts) != 4:
-            return "", None
-        return parts[2], unquote(parts[3])
 
     def do_POST(self):
         global RUN_SEQUENCE

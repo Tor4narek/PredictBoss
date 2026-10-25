@@ -4,9 +4,9 @@ The Domain/ESB payload and event contract is documented in [`../docs/esb-contrac
 
 ## Goal and test boundary
 
-Run the built ESB service and exercise its public HTTP, WebSocket, and MCP interfaces. PostgreSQL and ClickHouse are real disposable containers. Hermes, Domain API, and the S3-compatible object endpoint are deterministic mocks. This verifies routing, authentication, asynchronous call handling, database migrations and repositories, MCP tool schemas, profile persistence, source metadata, and WebSocket replay without calling an LLM or a production Domain API.
+Run the built ESB service and exercise its public HTTP, WebSocket, and MCP interfaces. PostgreSQL, ClickHouse, and MinIO are real disposable containers. Hermes and Domain API are deterministic mocks. This verifies routing, authentication, asynchronous call handling, database migrations and repositories, MCP tool schemas, real S3 profile persistence, source metadata, and WebSocket replay without calling an LLM or a production Domain API.
 
-The test project uses a dedicated Compose project name and disposable volumes. It never uses the normal `predictor` Compose project or its volumes. The object mock accepts the path-style S3 `PutObject` and `GetObject` operations used by the ESB.
+The test project uses a dedicated Compose project name and disposable volumes. It never uses the normal `predictor` Compose project or its volumes. ESB creates the test bucket on startup, then the MCP profile write/read verifies path-style S3 `PutObject` and `GetObject` against MinIO.
 
 ## Contract matrix
 

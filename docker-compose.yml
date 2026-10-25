@@ -55,6 +55,27 @@ services:
     networks:
       - predictor-storage
 
+  minio:
+    image: ${MINIO_IMAGE:-dappros/minio:RELEASE.2025-09-07T16-13-09Z}
+    container_name: predictor-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-predictor-local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password-change-me}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    networks:
+      - predictor-storage
+
   atlas:
     image: arigaio/atlas:latest
     container_name: predictor-atlas
@@ -141,6 +162,7 @@ services:
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      S3_CREATE_BUCKET: ${S3_CREATE_BUCKET:-false}
       DOMAIN_API_BASE_URL: ${DOMAIN_API_BASE_URL:-}
       DOMAIN_API_TOKEN: ${DOMAIN_API_TOKEN:-}
     ports:
@@ -149,6 +171,8 @@ services:
       postgres:
         condition: service_healthy
       clickhouse:
+        condition: service_healthy
+      minio:
         condition: service_healthy
       hermes-serezha:
         condition: service_started
@@ -175,6 +199,7 @@ volumes:
   clickhouse-data:
   clickhouse-logs:
   postgres-data:
+  minio-data:
   hermes-serezha-data:
   hermes-saveliy-data:
   hermes-valera-data:
