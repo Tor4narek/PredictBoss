@@ -371,7 +371,10 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	if afterMessageID != "" {
 		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, afterMessageID, 500)
 		if err != nil {
-			_ = send(map[string]any{"kind": "error", "error": "invalid_replay_cursor"})
+			payload, _ := json.Marshal(map[string]any{"kind": "error", "error": "invalid_replay_cursor"})
+			writeCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+			_ = conn.Write(writeCtx, websocket.MessageText, payload)
+			stop()
 			return
 		}
 		for _, event := range events {
