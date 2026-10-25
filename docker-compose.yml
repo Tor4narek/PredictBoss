@@ -20,6 +20,11 @@ services:
     image: clickhouse/clickhouse-server:24.8-alpine
     container_name: predictor-clickhouse
     restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-default}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
@@ -57,7 +62,7 @@ services:
     working_dir: /migrations
     command: ["migrate", "apply", "--env", "local"]
     environment:
-      ATLAS_DATABASE_URL: clickhouse://clickhouse:9000/default
+      ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
       - ./predictor/storage:/migrations:ro
@@ -128,8 +133,8 @@ services:
       AGENTS_DIR: /app/agents
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_ENDPOINT: ${S3_ENDPOINT:-}

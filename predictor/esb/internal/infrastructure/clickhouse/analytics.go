@@ -47,7 +47,7 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 	if news.MediaType == "" {
 		news.MediaType = "text/html"
 	}
-	if err := r.client.Insert(ctx, "news", []newsRow{{ID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, CompanyID: news.CompanyID, MaterialKind: news.MaterialKind, MediaType: news.MediaType, Title: news.Title, PublishedAt: news.PublishedAt, Text: news.Text}}); err != nil {
+	if err := r.client.Insert(ctx, "news", []newsRow{{ID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, CompanyID: news.CompanyID, MaterialKind: news.MaterialKind, MediaType: news.MediaType, Title: news.Title, PublishedAt: clickHouseTime(news.PublishedAt), Text: news.Text}}); err != nil {
 		return nil, err
 	}
 	rows := make([]factRow, 0, len(facts))
@@ -57,7 +57,7 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 		if fact.Entities == nil {
 			fact.Entities = []string{}
 		}
-		rows = append(rows, factRow{ID: id, NewsID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, Text: fact.Text, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: fact.OccurredAt, Confidence: fact.Confidence})
+		rows = append(rows, factRow{ID: id, NewsID: news.ID, SourceID: news.SourceID, SourceURL: news.SourceURL, Text: fact.Text, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: clickHouseTime(fact.OccurredAt), Confidence: fact.Confidence})
 		ids = append(ids, id)
 	}
 	if err := r.client.Insert(ctx, "facts", rows); err != nil {
@@ -69,7 +69,7 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 func (r *Analytics) FactsByNews(ctx context.Context, newsID string, limit int) ([]domain.Fact, error) {
 	query := fmt.Sprintf(`SELECT f.fact_id, f.news_id, f.source_id, f.source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
 f.fact_text, f.category, f.entities, f.evidence, f.occurred_at, f.confidence
-FROM %s.facts FINAL AS f LEFT JOIN %s.news FINAL AS n ON f.news_id = n.news_id
+FROM (SELECT * FROM %s.facts FINAL) AS f LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON f.news_id = n.news_id
 WHERE f.news_id = %s ORDER BY f.inserted_at, f.fact_id LIMIT %d FORMAT JSONEachRow`, r.table("facts"), r.table("news"), escape(newsID), limit)
 	var rows []domain.Fact
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
@@ -96,8 +96,8 @@ type factCompanyRow struct {
 func (r *Analytics) CompanyFacts(ctx context.Context, companyID string, limit int) ([]domain.CompanyFact, error) {
 	query := fmt.Sprintf(`SELECT f.fact_id, f.news_id, f.source_id, f.source_url, ifNull(n.material_kind, 'external_news') AS material_kind,
 f.fact_text, f.category, f.entities, f.evidence, f.occurred_at, f.confidence, m.relevance, m.confidence AS match_confidence
-FROM %s.fact_company AS m FINAL INNER JOIN %s.facts AS f FINAL ON m.fact_id = f.fact_id
-LEFT JOIN %s.news FINAL AS n ON f.news_id = n.news_id
+FROM (SELECT * FROM %s.fact_company FINAL) AS m INNER JOIN (SELECT * FROM %s.facts FINAL) AS f ON m.fact_id = f.fact_id
+LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON f.news_id = n.news_id
 WHERE m.company_id = %s ORDER BY m.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("fact_company"), r.table("facts"), r.table("news"), escape(companyID), limit)
 	var rows []domain.CompanyFact
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
@@ -157,7 +157,7 @@ type totalRow struct {
 func (r *Analytics) CalculateMetricTotal(ctx context.Context, companyID, metricID, from, to string) (domain.MetricTotal, error) {
 	query := fmt.Sprintf(`SELECT %s AS company_id, %s AS metric_id, toString(toDate(%s)) AS period_from,
 toString(toDate(%s)) AS period_to, sum(ifNull(value, 0) * probability) AS total,
-countIf(isNotNull(value)) AS observation_count FROM %s.metric_observations
+toUInt32(countIf(isNotNull(value))) AS observation_count FROM %s.metric_observations
 WHERE company_id = %s AND metric_id = %s AND period_to >= toDate(%s) AND period_from <= toDate(%s)
 GROUP BY company_id, metric_id FORMAT JSONEachRow`, escape(companyID), escape(metricID), escape(from), escape(to), r.table("metric_observations"), escape(companyID), escape(metricID), escape(from), escape(to))
 	var rows []totalRow
@@ -222,8 +222,8 @@ func (r *Analytics) ConsultantContext(ctx context.Context, companyID string, lim
 ifNull(n.source_id, mo.news_id) AS source_id, ifNull(n.source_url, '') AS source_url,
 ifNull(n.material_kind, 'external_news') AS material_kind,
 mo.value, mo.probability, toString(mo.period_from) AS period_from, toString(mo.period_to) AS period_to,
-mo.source_fact_ids FROM %s.metric_observations FINAL AS mo
-LEFT JOIN %s.news FINAL AS n ON mo.news_id = n.news_id
+mo.source_fact_ids FROM (SELECT * FROM %s.metric_observations FINAL) AS mo
+LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON mo.news_id = n.news_id
 WHERE mo.company_id = %s ORDER BY mo.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("metric_observations"), r.table("news"), escape(companyID), limit)
 	var observations []domain.MetricObservation
 	if err := r.client.queryRows(ctx, query, &observations); err != nil {
@@ -248,6 +248,18 @@ func stableUUID(seed string) string {
 	data[8] = data[8]&0x3f | 0x80
 	value := hex.EncodeToString(data)
 	return value[:8] + "-" + value[8:12] + "-" + value[12:16] + "-" + value[16:20] + "-" + value[20:]
+}
+
+func clickHouseTime(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, *value)
+	if err != nil {
+		return value
+	}
+	formatted := parsed.UTC().Format("2006-01-02 15:04:05.000")
+	return &formatted
 }
 
 var _ domain.AnalyticsRepository = (*Analytics)(nil)

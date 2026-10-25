@@ -46,7 +46,7 @@ ClickHouse хранит аналитические данные:
 
 ## Запуск
 
-Скопируйте `.env.example` в `.env`, задайте API key провайдера в `LLM_API_KEY`, а также отдельные случайные значения `HERMES_API_KEY` и `ESB_API_KEY`. Укажите S3 bucket и параметры доступа, если используется не IAM роль окружения. Credentials PostgreSQL, ClickHouse и S3 передаются только контейнеру ESB.
+Скопируйте `.env.example` в `.env`, задайте API key провайдера в `LLM_API_KEY`, а также отдельные случайные значения `HERMES_API_KEY` и `ESB_API_KEY`. Задайте `CLICKHOUSE_USER` и `CLICKHOUSE_PASSWORD`, чтобы ESB мог подключаться к ClickHouse из отдельного контейнера. Укажите S3 bucket и параметры доступа, если используется не IAM роль окружения. Credentials PostgreSQL, ClickHouse и S3 передаются только контейнеру ESB.
 
 ```bash
 cp .env.example .env
