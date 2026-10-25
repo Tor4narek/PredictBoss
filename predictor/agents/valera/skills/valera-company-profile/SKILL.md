@@ -1,7 +1,7 @@
 ---
 name: valera-company-profile
 description: Turn the bank's structured company data into a careful Markdown profile in S3 and the applicable rows of the shared metric catalog in PostgreSQL through ESB.
-version: 2.0.0
+version: 2.0.1
 metadata:
   hermes:
     tags: [company-profile, metrics, s3, postgresql, esb]
@@ -77,7 +77,7 @@ The characteristic is a short Russian phrase of 1 to 5 words that completes the 
 
 Derive the phrase from mainOkvedName and the other fields so that it names concrete goods, deliveries, or staff of this company. Do not use a generic word on its own, such as "персонала", "сотрудников", "ресурсов", "сырья", or "товаров"; write "топлива", "станции", or "склада и продаж" instead.
 
-Every catalog metric uses metric_type "score" and an empty unit. Put the company_data fields that created the row in parameters.source_fields, for example {"source_fields": ["hasLoans", "hasLeasing"]}.
+Every catalog metric uses metric_type "score" and an empty unit. Its `parameters` object must contain `source_fields`, whose value is an array of the exact company_data field names that triggered the row. For example, use `{"source_fields": ["hasLeasing"]}`. Do not put field values in this object: `{"hasLeasing": true}` is invalid.
 
 # Procedure
 
@@ -119,6 +119,6 @@ Fields that are null, absent, or placeholders, and information that would improv
 
 # Output
 
-Return only JSON with company_id, profile_key, and metrics. Take profile_key only from a successful save_company_profile_and_metrics result; if the save still failed after the retry, set profile_key to null. Never construct a profile_key yourself. Each metric contains metric_id, name, description, metric_type, characteristic, unit, and parameters. Do not include Markdown, error messages, or text outside the JSON.
+Return one JSON object with company_id, profile_key, and metrics. Take profile_key only from a successful save_company_profile_and_metrics result; if the save still failed after the retry, set profile_key to null. Never construct a profile_key yourself. Each metric contains metric_id, name, description, metric_type, characteristic, unit, and `parameters` in exactly this shape: `{"source_fields": ["companyDataField"]}`. For example: `{"metric_id":"rate","name":"ставка","description":"Рост: заёмные деньги дороже.","metric_type":"score","characteristic":"лизинга","unit":"","parameters":{"source_fields":["hasLeasing"]}}`. Use an array of field-name strings, never a field-to-value object. The response must start with `{` and end with `}`. Do not wrap it in a Markdown code fence and do not add a preamble, explanation, or trailing text.
 
 See references/data-contract.md for the metric contract and profile storage.
