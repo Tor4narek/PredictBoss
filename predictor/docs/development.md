@@ -1,17 +1,19 @@
 # Разработка
 
-Из корня репозитория используйте:
+Команды запускаются из корня репозитория.
 
-| Команда | Назначение |
+| Команда | Проверка |
 | --- | --- |
-| `make lint` | Проверяет `gofmt` и закреплённый golangci-lint только для production-кода ESB. Go-тесты в lint не входят. |
-| `make test` | Запускает unit-тесты ESB и E2E-набор на отдельных PostgreSQL, ClickHouse, MinIO и mock Hermes контейнерах. Требуется Docker Compose. |
-| `make build` | Собирает ESB. |
-| `make docs` / `make docs-check` | Обновляет / проверяет генерируемую API- и конфигурационную документацию вместе с `predictor/example.env`. |
-| `make tools` | Устанавливает golangci-lint версии `2.8.0`, закреплённой в корневом Makefile. |
+| `make lint` | `gofmt` и закреплённый golangci-lint для production-кода ESB. |
+| `make test` | Unit-тесты и E2E через ESB с изолированными PostgreSQL, ClickHouse, MinIO и mock Hermes. |
+| `make test-unit` | Unit-тесты без Docker; исходники тестов лежат в `predictor/tests/unit/`. |
+| `make test-e2e` | HTTP, WebSocket, MCP и хранилища; нужны Docker Compose v2 и запущенный Docker daemon. |
+| `make test-race` | Unit-тесты с детектором гонок. |
+| `make coverage` | Покрытие unit-тестов по пакетам и общий процент; E2E в отчёт не входит. |
+| `make build` | Сборка ESB. |
+| `make docs` / `make docs-check` | Генерация и проверка API и конфигурационной документации. |
+| `make tools` | Установка golangci-lint версии `2.8.0`. |
 
-Для локальных Go-тестов можно запустить `cd predictor/esb && go test ./...`; полный сценарий E2E находится в `predictor/tests/run-e2e.sh`.
+`make lint` не проверяет тесты. Точечный `//nolint:<linter>` допустим с коротким объяснением; не добавляйте глобальные исключения ради прохождения проверки.
 
-Линтер намеренно включает небольшой набор проверок ошибок, подозрительного кода, неиспользуемых сущностей и распространённых дефектов. Не отключайте проверку пакета или группы файлов. Если конкретное место требует исключения, используйте точечный `//nolint:<linter>` с объяснением причины в `//nolint:<linter> // reason`; предпочтительно исправить код или сузить входные данные/тип. Не добавляйте глобальные исключения в `.golangci.yml` ради прохождения CI.
-
-Production-код ESB разделён на `domain`, `application`, `infrastructure` и `presentation`. Новый внешний ввод проходит через presentation; application координирует сценарии; domain задаёт политику и порты; инфраструктурные клиенты БД и S3 остаются только внутри ESB. Тестовые файлы намеренно исключены из `make lint`, но остаются частью `make test`.
+Тесты ESB физически хранятся вне модуля `predictor/esb`. `predictor/tests/run-unit.py` подключает их к исходным пакетам через Go overlay, сохраняя тестирование непубличного поведения. E2E использует отдельный Compose project и удаляет его контейнеры и тома после прогона.

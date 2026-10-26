@@ -77,11 +77,24 @@ RETURNING call_id::text, created_at, updated_at`, conversationID, string(agent),
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if rollbackErr := rollbackTransaction(ctx, tx); rollbackErr != nil {
+				return domain.Call{}, false, rollbackErr
+			}
+			if idempotencyKey != "" && pgErr.ConstraintName == "agent_calls_idempotency_key_key" {
+				call, sameRequest, lookupErr := r.byIdempotency(ctx, idempotencyKey, input)
+				if lookupErr != nil {
+					return domain.Call{}, false, fmt.Errorf("resolve concurrent idempotent call: %w", lookupErr)
+				}
+				if sameRequest && call.Agent == agent && call.ScopeID == scopeID {
+					return call, true, nil
+				}
+			}
 			return domain.Call{}, false, domain.ErrConflict
 		}
 		return domain.Call{}, false, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content) VALUES ($1, $2, 'user', $3)`, conversationID, call.ID, string(input)); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content)
+VALUES ($1, $2, 'user', $3)`, conversationID, call.ID, string(input)); err != nil {
 		return domain.Call{}, false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -566,14 +579,20 @@ WHERE call_id = $1 AND status IN ('started','running')`
 		if err != nil {
 			return profileState, false, err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE agent_calls SET request_json = $2::jsonb WHERE call_id = $1`, callID, sanitizedInput); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE agent_calls
+SET request_json = $2::jsonb
+WHERE call_id = $1`, callID, sanitizedInput); err != nil {
 			return profileState, false, err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE agent_messages SET content = $2 WHERE call_id = $1 AND role = 'user'`, callID, string(sanitizedInput)); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE agent_messages
+SET content = $2
+WHERE call_id = $1
+  AND role = 'user'`, callID, string(sanitizedInput)); err != nil {
 			return profileState, false, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content) VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content)
+VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
 		return profileState, false, err
 	}
 	if agentType == string(domain.AgentKonstantin) {
@@ -581,10 +600,14 @@ WHERE call_id = $1 AND status IN ('started','running')`
 			return profileState, false, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE agent_calls SET status = 'completed', output = $2, error = NULL, updated_at = now() WHERE call_id = $1`, callID, output); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE agent_calls
+SET status = 'completed', output = $2, error = NULL, updated_at = now()
+WHERE call_id = $1`, callID, output); err != nil {
 		return profileState, false, err
 	}
-	_, err = tx.Exec(ctx, `UPDATE agent_conversations SET updated_at = now() WHERE conversation_id = $1`, conversationID)
+	_, err = tx.Exec(ctx, `UPDATE agent_conversations
+SET updated_at = now()
+WHERE conversation_id = $1`, conversationID)
 	if err != nil {
 		return profileState, false, err
 	}
@@ -682,7 +705,10 @@ func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationI
 			continue
 		}
 		var materialKind string
-		err := tx.QueryRow(ctx, `SELECT material_kind FROM company_news_sources WHERE company_id = $1::uuid AND source_id = $2::uuid`, input.CompanyID, item.SourceID).Scan(&materialKind)
+		err := tx.QueryRow(ctx, `SELECT material_kind
+FROM company_news_sources
+WHERE company_id = $1::uuid
+  AND source_id = $2::uuid`, input.CompanyID, item.SourceID).Scan(&materialKind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
@@ -719,24 +745,43 @@ func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationI
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO konstantin_messages
-(request_id, call_id, company_id, conversation_id, analysis_id, kind, text, evidence, profile_revision, source_revision)
+	_, err = tx.Exec(ctx, `INSERT INTO konstantin_messages (
+    request_id,
+    call_id,
+    company_id,
+    conversation_id,
+    analysis_id,
+    kind,
+    text,
+    evidence,
+    profile_revision,
+    source_revision
+)
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::jsonb, $9, $10)
 ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, conversationID, input.AnalysisID, kind, result.Text, string(evidence), input.ProfileRevision, input.SourceRevision)
 	return err
 }
 
 func (r *Calls) Fail(ctx context.Context, callID, message string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = 'failed', error = $2, updated_at = now()
-WHERE call_id = $1 AND status IN ('queued','submitting')`, callID, message)
+	_, err := r.pool.Exec(ctx, `UPDATE agent_calls
+SET status = 'failed', error = $2, updated_at = now()
+WHERE call_id = $1
+  AND status IN ('queued', 'submitting')`, callID, message)
 	return err
 }
 
 func (r *Calls) Recover(ctx context.Context) error {
-	if _, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = 'queued', updated_at = now() WHERE status = 'submitting' AND hermes_run_id IS NULL`); err != nil {
+	if _, err := r.pool.Exec(ctx, `UPDATE agent_calls
+SET status = 'queued', updated_at = now()
+WHERE status = 'submitting'
+  AND hermes_run_id IS NULL`); err != nil {
 		return err
 	}
-	_, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = 'interrupted', error = 'service_restarted_during_processing', updated_at = now() WHERE status = 'processing'`)
+	_, err := r.pool.Exec(ctx, `UPDATE agent_calls
+SET status = 'interrupted',
+    error = 'service_restarted_during_processing',
+    updated_at = now()
+WHERE status = 'processing'`)
 	return err
 }
 

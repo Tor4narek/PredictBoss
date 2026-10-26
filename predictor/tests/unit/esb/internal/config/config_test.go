@@ -40,7 +40,7 @@ func testEnvironment(t *testing.T) map[string]string {
 	}
 }
 
-func TestLoadDefaultsAndAgentHistoryZero(t *testing.T) {
+func TestLoadDefaultsAndAgentHistoryFromAgentFiles(t *testing.T) {
 	values := testEnvironment(t)
 	cfg, err := LoadFrom(testLookup(values))
 	if err != nil {
@@ -135,21 +135,14 @@ func TestCleanupConfigurationAcceptsImmediateRetention(t *testing.T) {
 	}
 }
 
-func TestLoadAgentHistoryOverrideHonorsZero(t *testing.T) {
-	values := testEnvironment(t)
-	values["AGENT_KESHA_MAX_HISTORY_MESSAGES"] = "0"
-	values["AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES"] = "123"
-	cfg, err := LoadFrom(testLookup(values))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, agent := range cfg.Agents {
-		if agent.Type == "kesha" && agent.MaxHistory != 0 {
-			t.Errorf("explicit zero was replaced: Kesha history=%d", agent.MaxHistory)
-		}
-		if agent.Type == "konstantin" && agent.MaxHistory != 123 {
-			t.Errorf("history override = %d, want 123", agent.MaxHistory)
-		}
+func TestContextPolicyValidatesHistoryLimit(t *testing.T) {
+	for _, limit := range []int{-1, 10001} {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			_, err := parseContextPolicy(&contextPolicyFile{MaxHistoryMessages: limit})
+			if err == nil {
+				t.Fatalf("max_history_messages=%d was accepted", limit)
+			}
+		})
 	}
 }
 
@@ -167,11 +160,9 @@ func TestTypedEnvironmentParsingBoundariesAndErrors(t *testing.T) {
 		{name: "integer upper boundary", key: "QUEUE_DISPATCH_BATCH_SIZE", value: "10000", wantInt: 10000},
 		{name: "integer below range", key: "QUEUE_DISPATCH_BATCH_SIZE", value: "0", wantErr: true},
 		{name: "integer overflow", key: "QUEUE_DISPATCH_BATCH_SIZE", value: "999999999999999999999999999999", wantErr: true},
-		{name: "valid zero", key: "AGENT_VALERA_MAX_HISTORY_MESSAGES", value: "0", wantInt: 0},
 		{name: "Valera retries can be disabled", key: "VALERA_PROFILE_SYNC_MAX_RETRIES", value: "0", wantInt: 0},
 		{name: "Valera retries schema maximum", key: "VALERA_PROFILE_SYNC_MAX_RETRIES", value: "1", wantInt: 1},
 		{name: "Valera retries exceed schema", key: "VALERA_PROFILE_SYNC_MAX_RETRIES", value: "2", wantErr: true},
-		{name: "negative history", key: "AGENT_VALERA_MAX_HISTORY_MESSAGES", value: "-1", wantErr: true},
 		{name: "duration default", key: "HERMES_POLL_INTERVAL", wantDur: 2 * time.Second},
 		{name: "duration lower boundary", key: "HERMES_POLL_INTERVAL", value: "1ms", wantDur: time.Millisecond},
 		{name: "duration upper boundary", key: "HERMES_POLL_INTERVAL", value: "10m", wantDur: 10 * time.Minute},
@@ -419,5 +410,42 @@ func TestSettingsCatalogMatchesEnvExampleAndCompose(t *testing.T) {
 		if !strings.Contains(string(compose), setting.Name) {
 			t.Errorf("%s is missing from Docker Compose", setting.Name)
 		}
+	}
+}
+
+func TestHermesAgentModelAndRuntimeSettingsUseSharedAndAgentEnv(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []string{"serezha", "saveliy", "valera", "kesha", "konstantin"} {
+		t.Run(agent, func(t *testing.T) {
+			configPath := filepath.Join(root, "predictor", "agents", agent, "hermes.yaml")
+			config, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prefix := "AGENT_" + strings.ToUpper(agent) + "_"
+			for _, setting := range []string{"MODEL_ID", "MAX_TURNS", "REASONING_EFFORT", "MAX_CONCURRENT_RUNS"} {
+				if !strings.Contains(string(config), "${"+prefix+setting+"}") {
+					t.Errorf("Hermes config does not read %s from its environment", prefix+setting)
+				}
+			}
+			for _, sharedSetting := range []string{"HERMES_MODEL_PROVIDER", "ESB_API_KEY"} {
+				if !strings.Contains(string(config), "${"+sharedSetting+"}") {
+					t.Errorf("Hermes config does not read shared %s from Predictor env", sharedSetting)
+				}
+			}
+			if strings.Contains(string(config), "${"+prefix+"MODEL_PROVIDER}") ||
+				strings.Contains(string(config), "${"+prefix+"MODEL_BASE_URL}") {
+				t.Fatal("provider settings must be shared and base URL must remain in agent config")
+			}
+			if !strings.Contains(string(config), "key_env: LLM_API_KEY") || !strings.Contains(string(config), "tools:\n      include:") {
+				t.Fatal("Hermes agent lost its shared secret reference or structured MCP allowlist")
+			}
+			if strings.Contains(string(config), "google/gemma-4-26b-a4b-it") || !strings.Contains(string(config), "https://changellenge.up.railway.app/v1") {
+				t.Fatal("model must remain configurable while the shared provider endpoint stays in agent config")
+			}
+		})
 	}
 }

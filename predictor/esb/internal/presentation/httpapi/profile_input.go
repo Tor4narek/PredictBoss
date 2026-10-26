@@ -11,18 +11,21 @@ func normalizeValeraInput(input json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(input, &body); err != nil {
 		return nil, err
 	}
+	if body == nil {
+		return nil, errors.New("valera request must be a JSON object")
+	}
 	if nested, ok := body["payload"]; ok {
 		if err := json.Unmarshal(nested, &body); err != nil {
 			return nil, err
 		}
+		if body == nil {
+			return nil, errors.New("valera payload must be a JSON object")
+		}
 	}
 	companyID := body["companyId"]
-	if len(companyID) == 0 {
-		return input, nil
-	}
 	profileRevision := body["profileRevision"]
 	company := body["company"]
-	if len(profileRevision) == 0 || len(company) == 0 {
+	if len(companyID) == 0 || len(profileRevision) == 0 || len(company) == 0 {
 		return nil, errors.New("companyId, profileRevision and company are required")
 	}
 	var revision int64
@@ -34,6 +37,13 @@ func normalizeValeraInput(input json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil, errors.New("companyId must not be empty")
+	}
+	var companyObject map[string]json.RawMessage
+	if err := json.Unmarshal(company, &companyObject); err != nil || companyObject == nil {
+		return nil, errors.New("company must be a JSON object")
+	}
 	return json.Marshal(struct {
 		CompanyID       string          `json:"company_id"`
 		ProfileRevision int64           `json:"profile_revision"`

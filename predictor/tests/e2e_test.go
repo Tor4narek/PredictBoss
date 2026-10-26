@@ -24,6 +24,7 @@ const (
 	apiKey          = "test-esb-api-key"
 	companyID       = "11111111-1111-4111-8111-111111111111"
 	companyIDTwo    = "19717000-0000-4000-8000-000000000001"
+	concurrentID    = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	newsSourceID    = "22222222-2222-4222-8222-222222222222"
 	bankSourceID    = "33333333-3333-4333-8333-333333333333"
 	newsID          = "55555555-5555-4555-8555-555555555555"
@@ -93,6 +94,74 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if got := clickHouseCount(t, "SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('company_metric_settings', 'company_metrics')"); got != 0 {
 		t.Fatalf("ClickHouse contains %d metric catalog/settings tables; those belong only in PostgreSQL", got)
 	}
+
+	// Identical concurrent submissions must resolve to one PostgreSQL call.
+	const concurrentRequestCount = 8
+	concurrentBody, err := json.Marshal(map[string]any{"company_id": concurrentID, "request_sequence": 1})
+	if err != nil {
+		t.Fatalf("encode concurrent call body: %v", err)
+	}
+	type concurrentResult struct {
+		response response
+		err      error
+	}
+	startConcurrentRequests := make(chan struct{})
+	concurrentResults := make(chan concurrentResult, concurrentRequestCount)
+	for range concurrentRequestCount {
+		go func() {
+			<-startConcurrentRequests
+			request, requestErr := http.NewRequest(http.MethodPost, baseURL+"/call?agent=kesha", bytes.NewReader(concurrentBody))
+			if requestErr != nil {
+				concurrentResults <- concurrentResult{err: requestErr}
+				return
+			}
+			request.Header.Set("Authorization", "Bearer "+apiKey)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "e2e-concurrent-idempotency")
+			httpResponse, requestErr := httpClient.Do(request)
+			if requestErr != nil {
+				concurrentResults <- concurrentResult{err: requestErr}
+				return
+			}
+			defer httpResponse.Body.Close()
+			body, readErr := io.ReadAll(httpResponse.Body)
+			if readErr != nil {
+				concurrentResults <- concurrentResult{err: readErr}
+				return
+			}
+			result := response{status: httpResponse.StatusCode, raw: body, body: map[string]any{}}
+			if decodeErr := json.Unmarshal(body, &result.body); decodeErr != nil {
+				concurrentResults <- concurrentResult{err: decodeErr}
+				return
+			}
+			concurrentResults <- concurrentResult{response: result}
+		}()
+	}
+	close(startConcurrentRequests)
+	var concurrentCallID string
+	reusedConcurrentCalls := 0
+	for range concurrentRequestCount {
+		result := <-concurrentResults
+		if result.err != nil {
+			t.Fatalf("concurrent idempotent request failed: %v", result.err)
+		}
+		if result.response.status != http.StatusAccepted {
+			t.Fatalf("concurrent idempotent request returned %d, want %d: %s", result.response.status, http.StatusAccepted, result.response.raw)
+		}
+		callID := stringField(t, result.response.body, "call_id")
+		if concurrentCallID == "" {
+			concurrentCallID = callID
+		} else if callID != concurrentCallID {
+			t.Fatalf("same concurrent idempotency key created calls %q and %q", concurrentCallID, callID)
+		}
+		if boolField(t, result.response.body, "reused") {
+			reusedConcurrentCalls++
+		}
+	}
+	if reusedConcurrentCalls != concurrentRequestCount-1 {
+		t.Fatalf("concurrent retries reused %d times, want %d", reusedConcurrentCalls, concurrentRequestCount-1)
+	}
+	waitForCall(t, httpClient, baseURL, "kesha", concurrentCallID)
 
 	// Valera profile call: enqueue, read its status, atomically persist profile+metrics over MCP.
 	profilePayload := valeraPayload(1)

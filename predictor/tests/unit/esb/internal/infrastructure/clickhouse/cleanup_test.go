@@ -18,7 +18,7 @@ func TestPruneRetriesAfterMutationFailureAndVerifiesFinalState(t *testing.T) {
 	present := true
 	mutationAttempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		query := r.URL.Query().Get("query")
+		query := strings.Join(strings.Fields(r.URL.Query().Get("query")), " ")
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
