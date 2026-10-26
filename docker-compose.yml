@@ -107,7 +107,7 @@ services:
       ATLAS_DATABASE_URL: postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
-      - ./predictor/storage/postgres:/migrations:ro
+      - ./predictor/storage/postgres:/migrations:ro,z
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,7 +124,7 @@ services:
       ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in predictor/.env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
-      - ./predictor/storage/clickhouse:/migrations:ro
+      - ./predictor/storage/clickhouse:/migrations:ro,z
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -147,7 +147,7 @@ services:
       ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
       SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
     volumes:
-      - ${DOMAIN_CSV_PATH:?Set DOMAIN_CSV_PATH in .env}:/data/df_Uid_data_hack.csv:ro
+      - ${DOMAIN_CSV_PATH:?Set DOMAIN_CSV_PATH in .env}:/data/df_Uid_data_hack.csv:ro,z
     ports:
       - "${HOST_BIND_ADDRESS:-127.0.0.1}:8080:8080"
     depends_on:
@@ -196,8 +196,8 @@ services:
     container_name: predictor-hermes-serezha
     volumes:
       - hermes-serezha-data:/opt/data
-      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/serezha/skills:/opt/skills:ro
+      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/serezha/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       AGENT_SEREZHA_MODEL_ID: ${AGENT_SEREZHA_MODEL_ID:?Set AGENT_SEREZHA_MODEL_ID in predictor/.env}
@@ -210,16 +210,16 @@ services:
     container_name: predictor-hermes-serezha-2
     volumes:
       - hermes-serezha-2-data:/opt/data
-      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/serezha/skills:/opt/skills:ro
+      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/serezha/skills:/opt/skills:ro,z
 
   hermes-saveliy: &hermes-saveliy
     <<: *hermes-common
     container_name: predictor-hermes-saveliy
     volumes:
       - hermes-saveliy-data:/opt/data
-      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/saveliy/skills:/opt/skills:ro
+      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/saveliy/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       AGENT_SAVELIY_MODEL_ID: ${AGENT_SAVELIY_MODEL_ID:?Set AGENT_SAVELIY_MODEL_ID in predictor/.env}
@@ -232,16 +232,16 @@ services:
     container_name: predictor-hermes-saveliy-2
     volumes:
       - hermes-saveliy-2-data:/opt/data
-      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/saveliy/skills:/opt/skills:ro
+      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/saveliy/skills:/opt/skills:ro,z
 
   hermes-valera: &hermes-valera
     <<: *hermes-common
     container_name: predictor-hermes-valera
     volumes:
       - hermes-valera-data:/opt/data
-      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/valera/skills:/opt/skills:ro
+      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/valera/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       AGENT_VALERA_MODEL_ID: ${AGENT_VALERA_MODEL_ID:?Set AGENT_VALERA_MODEL_ID in predictor/.env}
@@ -254,16 +254,16 @@ services:
     container_name: predictor-hermes-valera-2
     volumes:
       - hermes-valera-2-data:/opt/data
-      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/valera/skills:/opt/skills:ro
+      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/valera/skills:/opt/skills:ro,z
 
   hermes-kesha: &hermes-kesha
     <<: *hermes-common
     container_name: predictor-hermes-kesha
     volumes:
       - hermes-kesha-data:/opt/data
-      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/kesha/skills:/opt/skills:ro
+      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/kesha/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       AGENT_KESHA_MODEL_ID: ${AGENT_KESHA_MODEL_ID:?Set AGENT_KESHA_MODEL_ID in predictor/.env}
@@ -276,16 +276,16 @@ services:
     container_name: predictor-hermes-kesha-2
     volumes:
       - hermes-kesha-2-data:/opt/data
-      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/kesha/skills:/opt/skills:ro
+      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/kesha/skills:/opt/skills:ro,z
 
   hermes-konstantin: &hermes-konstantin
     <<: *hermes-common
     container_name: predictor-hermes-konstantin
     volumes:
       - hermes-konstantin-data:/opt/data
-      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       AGENT_KONSTANTIN_MODEL_ID: ${AGENT_KONSTANTIN_MODEL_ID:?Set AGENT_KONSTANTIN_MODEL_ID in predictor/.env}
@@ -298,8 +298,8 @@ services:
     container_name: predictor-hermes-konstantin-2
     volumes:
       - hermes-konstantin-2-data:/opt/data
-      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro,z
 
   esb:
     image: predictor-esb:local
