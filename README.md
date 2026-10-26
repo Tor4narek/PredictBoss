@@ -16,22 +16,22 @@ OpenAPI, AsyncAPI и каталог MCP генерируются из Go-код�
 
 ## Быстрый запуск
 
-Нужны Docker Compose и Go 1.24. Скопируйте `predictor/example.env` в `predictor/.env`, замените локальные placeholders и передавайте файл Compose явно. URL Hermes внутри Compose уже настроены:
+Нужны Docker Compose и Go 1.24. Скопируйте `.env.example` в `.env`, замените локальные placeholders и передавайте файл Compose явно. Полный список настроек ESB приведён в `predictor/example.env` и справочнике конфигурации. URL Hermes внутри Compose уже настроены:
 
 Для пустой базы примените единственную init-миграцию PostgreSQL через Atlas и init-схему ClickHouse перед запуском ESB:
 
 ```sh
-cp predictor/example.env predictor/.env
-docker compose --env-file predictor/.env up -d postgres clickhouse
-docker compose --env-file predictor/.env --profile migrations run --rm atlas-postgres
+cp .env.example .env
+docker compose --env-file .env up -d postgres clickhouse
+docker compose --env-file .env --profile migrations run --rm atlas-postgres
 # Для ClickHouse через Atlas нужен ATLAS_TOKEN.
-docker compose --env-file predictor/.env --profile migrations run --rm atlas-clickhouse
-docker compose --env-file predictor/.env up --build
+docker compose --env-file .env --profile migrations run --rm atlas-clickhouse
+docker compose --env-file .env up --build
 ```
 
 В каждом каталоге `predictor/storage/{postgres,clickhouse}/migrations/` хранится одна версия `*_init.sql` с конечной схемой, состоящей из `CREATE`. Это исходное состояние проекта: миграций для обновления существующих баз нет. Применяйте init только к пустой базе; существующие данные и volumes автоматически не удаляются.
 
-Для запуска Domain API и фронтенда положите CSV в путь `DOMAIN_CSV_PATH` из `.env`. В локальной разработке этот файл можно хранить в `predictor/domain/data/`; он исключён из Git. EF Core миграции базы Domain применяются при старте API.
+Для запуска Domain API и фронтенда `DOMAIN_CSV_PATH` в `.env.example` указывает на CSV в `predictor/domain/data/`. В публичном репозитории находится исходный датасет; деплой workflow переносит его на сервер отдельно от архива исходников. EF Core миграции базы Domain применяются при старте API.
 
 ## Автодеплой на Fedora
 
@@ -50,4 +50,4 @@ make docs        # обновить сгенерированные API-конт�
 make docs-check  # проверить, что контракты не устарели
 ```
 
-Роли агентов, `SKILL.md` и конфигурации Hermes находятся в `predictor/agents/`. Для Compose всегда используйте `--env-file predictor/.env`; прямой запуск Go-приложения получает только экспортированные переменные и сам env-файл не загружает. Полный список настроек и их единиц — в [справочнике конфигурации](predictor/docs/configuration.md). Инструкция по lint, тестам и исключениям — в [руководстве разработчика](predictor/docs/development.md). Ручные архитектурные решения поддерживаются в `predictor/docs/`; детали протокола берутся из сгенерированных спецификаций.
+Роли агентов, `SKILL.md` и конфигурации Hermes находятся в `predictor/agents/`. Для Compose всегда передавайте `--env-file .env`; прямой запуск Go-приложения получает только экспортированные переменные и сам env-файл не загружает. Полный список настроек и их единиц — в [справочнике конфигурации](predictor/docs/configuration.md). Инструкция по lint, тестам и исключениям — в [руководстве разработчика](predictor/docs/development.md). Ручные архитектурные решения поддерживаются в `predictor/docs/`; детали протокола берутся из сгенерированных спецификаций.

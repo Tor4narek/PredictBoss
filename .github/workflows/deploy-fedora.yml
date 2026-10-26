@@ -78,6 +78,12 @@ jobs:
           fi
           {
             printf '%s' "$PRODUCTION_ENV_FILE" | awk -F= '$1 != "LLM_API_KEY" && $1 != "DOMAIN_CSV_PATH"'
+            while IFS= read -r default_setting; do
+              setting_name="${default_setting%%=*}"
+              if ! grep -q "^${setting_name}=" <<< "$PRODUCTION_ENV_FILE"; then
+                printf '%s\n' "$default_setting"
+              fi
+            done < <(grep -E '^(HERMES_MODEL_PROVIDER|AGENT_(KESHA|KONSTANTIN|SAVELIY|SEREZHA|VALERA)_(MODEL_ID|MAX_TURNS|REASONING_EFFORT|MAX_CONCURRENT_RUNS))=' predictor/example.env)
             printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY"
             printf 'DOMAIN_CSV_PATH=%s\n' "$csv_remote_path"
           } | ssh -i "$HOME/.ssh/id_ed25519" \
