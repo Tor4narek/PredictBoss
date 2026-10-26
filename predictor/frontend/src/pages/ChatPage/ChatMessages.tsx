@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { AnalysisSection, AnalystMessage, Evidence, UserMessage } from '../../api'
+import type { AnalystMessage, Evidence, UserMessage } from '../../api'
 import { formatLongDateTime, shortUrl } from '../../lib/format'
 import { Badge, Spinner, WebIcon } from '../../ui'
 import { cx } from '../../ui/cx'
@@ -29,9 +29,7 @@ export function AnalystMessageView({ message }: { message: AnalystMessage }) {
             <h3 className={styles.analysisTitle}>{message.analysis.title}</h3>
             <p className={styles.analysisSubtitle}>{message.analysis.subtitle}</p>
           </div>
-          {message.analysis.sections.map((section) => (
-            <AnalysisSectionView key={section.kind + section.title} section={section} />
-          ))}
+          <p className={styles.text}>{message.analysis.text}</p>
           {message.analysis.evidence.length > 0 && (
             <div className={styles.evidenceBlock}>
               <p className={styles.sectionTitle}>
@@ -60,17 +58,6 @@ export function AnalystMessageView({ message }: { message: AnalystMessage }) {
         </div>
       )}
     </article>
-  )
-}
-
-function AnalysisSectionView({ section }: { section: AnalysisSection }) {
-  return (
-    <section className={styles.section}>
-      <h4 className={cx(styles.sectionTitle, section.kind === 'ai_inference' && styles.accent)}>
-        {section.title}
-      </h4>
-      <p className={styles.text}>{section.text}</p>
-    </section>
   )
 }
 

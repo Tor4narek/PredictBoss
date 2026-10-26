@@ -1,0 +1,47 @@
+name: Deploy to Fedora
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fedora-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure SSH
+        shell: bash
+        env:
+          FEDORA_SSH_KEY: ${{ secrets.FEDORA_SSH_KEY }}
+          FEDORA_KNOWN_HOSTS: ${{ secrets.FEDORA_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$FEDORA_SSH_KEY"
+          test -n "$FEDORA_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$FEDORA_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$FEDORA_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy main to Fedora
+        shell: bash
+        env:
+          FEDORA_HOST: ${{ secrets.FEDORA_HOST }}
+          FEDORA_USER: ${{ secrets.FEDORA_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$FEDORA_HOST"
+          test -n "$FEDORA_USER"
+          ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            'bash "$HOME/predictboss/deploy/fedora/deploy.sh"'

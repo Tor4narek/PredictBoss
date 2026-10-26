@@ -9,10 +9,15 @@ Thumbs.db
 
 # Go build and test artifacts
 **/bin/
+**/obj/
 **/tmp/
+**/node_modules/
 **/coverage.out
 **/coverage.html
 **/*.test
+
+# Company source data is deployed separately from the application code.
+predictor/domain/data/*.csv
 
 # Local environment and secrets
 .env

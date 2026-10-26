@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Clock3 } from 'lucide-react'
 import { useNavigate } from 'react-router'
-import { isDemoData } from '../../api'
 import { useChat, useSendMessage } from '../../api/hooks'
 import { formatLongDateTime } from '../../lib/format'
 import { Badge, Button, Composer, ErrorState, LoadingState, Panel } from '../../ui'
@@ -33,7 +32,6 @@ export function ChatPage() {
       <header className={styles.header}>
         <div className={styles.headings}>
           <div className={styles.badges}>
-            {isDemoData && <Badge tone="accent">Демонстрационный диалог</Badge>}
             <Badge>Константин</Badge>
           </div>
           <h1 className={styles.title}>Диалог компании</h1>
@@ -82,6 +80,7 @@ export function ChatPage() {
                 }
               />
             )}
+            {chat.data.processing && <TypingMessage />}
             {messages.map((message) =>
               message.role === 'user' ? (
                 <UserMessageView key={message.id} message={message} />

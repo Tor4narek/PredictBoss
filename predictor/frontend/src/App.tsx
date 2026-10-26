@@ -6,7 +6,6 @@ import { LandingPage } from './pages/auth/LandingPage'
 import { LoginPage } from './pages/auth/LoginPage'
 import { RegisterPage } from './pages/auth/RegisterPage'
 import { ChatPage } from './pages/ChatPage/ChatPage'
-import { KitPage } from './pages/KitPage/KitPage'
 import { MaterialNewPage } from './pages/MaterialNewPage/MaterialNewPage'
 import { MaterialsPage } from './pages/MaterialsPage/MaterialsPage'
 import { OnboardingPage } from './pages/OnboardingPage/OnboardingPage'
@@ -45,8 +44,6 @@ const router = createBrowserRouter([
       },
     ],
   },
-  // Витрина UI kit доступна всегда.
-  { path: '/kit', element: <KitPage /> },
   { path: '*', element: <Navigate to="/" replace /> },
 ])
 

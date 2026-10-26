@@ -1,3 +1,12 @@
+import type {
+  BusinessDevelopmentStage,
+  ClientType,
+  CompanyAgeGradation,
+  EmployeeCountGradation,
+  OrganizationType,
+  OwnershipForm,
+} from './companyEnums'
+
 /*
  * Форматы данных, которые фронтенд ожидает от сервиса Domain.
  * Время — строка ISO 8601 с часовым поясом. Неизвестное значение — null.
@@ -21,22 +30,38 @@ export type Credentials = {
 // ——— Профиль компании ———
 
 export type CompanyProfile = {
-  /** Тип организации, например «Юридическое лицо». */
-  orgType: string | null
-  /** Код основного ОКВЭД, например «46.90». */
+  companyId?: string
+  profileRevision?: number
+  /** Идентификатор строки из CSV; задаётся только при импорте. */
+  syntheticU: string | null
+  orgType: OrganizationType | null
+  ownershipForm: OwnershipForm | null
+  companyAgeGradation: CompanyAgeGradation | null
+  developmentStage: BusinessDevelopmentStage | null
   mainOkvedCode: string | null
-  /** Название основного ОКВЭД. */
   mainOkvedName: string | null
-  region: string | null
+  negativeMark: boolean | null
+  workersFnsGradation: EmployeeCountGradation | null
+  workersSparkGradation: EmployeeCountGradation | null
+  clientType: ClientType | null
+  hasRko: boolean | null
+  hasGuarantees: boolean | null
+  hasLoans: boolean | null
+  hasLeasing: boolean | null
+  hasDeposits: boolean | null
+  hasPayroll: boolean | null
+  ftsFlag: boolean | null
+  ftsCountryName: string | null
+  hasFactoring: boolean | null
   /** Годовая выручка в рублях. */
   revenueCompany: number | null
-  /** Есть ли кредиты. */
-  hasLoans: boolean | null
-  /** Когда профиль последний раз сохранён. */
+  groupId: string | null
+  city: string | null
+  region: string | null
   updatedAt: string | null
 }
 
-export type CompanyProfileInput = Omit<CompanyProfile, 'updatedAt'>
+export type CompanyProfileInput = Omit<CompanyProfile, 'companyId' | 'profileRevision' | 'syntheticU' | 'updatedAt'>
 
 // ——— Регулярные источники ———
 
@@ -57,6 +82,7 @@ export type Source = {
   lastPolledAt: string | null
   /** Интервал опроса в минутах, его задаёт сервер. */
   pollIntervalMinutes: number | null
+  version?: number
 }
 
 // ——— Материалы (новости и анализы банка) ———
@@ -95,19 +121,13 @@ export type MaterialsPage = {
 // ——— Диалог с Константином ———
 
 /** Раздел карточки анализа. originKind совпадает с ESB: fact, bank_view, ai_inference. */
-export type AnalysisSection = {
-  kind: 'fact' | 'bank_view' | 'ai_inference' | 'financial_effect' | 'action'
-  title: string
-  text: string
-}
-
 /** Ссылка-доказательство. index — номер в квадратных скобках в тексте: «Факт [1]». */
 export type Evidence = {
   index: number
   sourceId: string
   title: string
   url: string
-  /** Пометка под ссылкой, например «демонстрационный материал». */
+  /** Пояснение происхождения доказательства. */
   note: string | null
 }
 
@@ -115,7 +135,8 @@ export type Analysis = {
   title: string
   /** Строка под заголовком: «Событие: … · 25 октября 2026». */
   subtitle: string
-  sections: AnalysisSection[]
+  /** Неизменённый текст карточки анализа из ESB. */
+  text: string
   evidence: Evidence[]
 }
 
@@ -147,6 +168,7 @@ export type ChatState = {
   /** Есть ли хотя бы один источник (для подсказок в пустом чате). */
   hasSources: boolean
   hasProfile: boolean
+  processing: boolean
   messages: ChatMessage[]
 }
 
@@ -164,3 +186,4 @@ export class ApiError extends Error {
     this.status = status
   }
 }
+

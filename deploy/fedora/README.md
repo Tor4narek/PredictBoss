@@ -1,0 +1,68 @@
+# Fedora deployment
+
+The GitHub Actions workflow deploys `main` to a dedicated checkout at `$HOME/predictboss`. Keep that directory dedicated to deployment: the deploy script fetches `origin/main` and resets the checkout to it.
+
+## One-time Fedora setup
+
+Install Git and Docker Engine with the Docker Compose plugin using Docker's [Fedora installation guide](https://docs.docker.com/engine/install/fedora/), then start Docker:
+
+```bash
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+Log out and back in after changing the `docker` group. The deployment account must be able to run `docker compose` without an interactive password prompt.
+
+Clone the repository and create the dedicated deployment checkout:
+
+```bash
+git clone https://github.com/Tor4narek/PredictBoss.git "$HOME/predictboss"
+cd "$HOME/predictboss"
+cp .env.example .env
+chmod 600 .env
+```
+
+Put the company CSV outside the Git checkout. For example, copy it from Windows with:
+
+```powershell
+scp "C:\PredictBoss\docs\df_Uid_data_hack.csv" guest@system.onix.fun:~/predictboss-data/df_Uid_data_hack.csv
+```
+
+Create `~/predictboss-data` on Fedora first, then set `DOMAIN_CSV_PATH` in `.env` to its absolute path. Set strong, unique production values for every password and API key, `DOMAIN_JWT_KEY` (at least 32 bytes), and `ATLAS_TOKEN` for ClickHouse migrations. Keep `SWAGGER_ENABLED=false` in production. The compose file binds application and storage ports to loopback by default.
+
+Configure the existing host Caddy to proxy your public domain to the frontend. For `system.onix.fun`, add this site block to the server's existing Caddyfile (preserve any other sites already configured):
+
+```caddyfile
+system.onix.fun {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+The domain must resolve to Fedora, and inbound TCP ports 80/443 must reach the existing Caddy service. Validate and reload its configuration using the server's established Caddy service procedure.
+
+Before enabling Actions, perform the first deployment manually from the checkout:
+
+```bash
+bash deploy/fedora/deploy.sh
+```
+
+## SSH key for GitHub Actions
+
+Create a dedicated Ed25519 key pair on an administrator workstation; leave its passphrase empty so Actions can use it non-interactively:
+
+```powershell
+ssh-keygen -t ed25519 -C github-actions-predictboss -f "$HOME/.ssh/predictboss_deploy"
+```
+
+Add the public key from `predictboss_deploy.pub` to the Fedora deploy account's `~/.ssh/authorized_keys` (mode `600`, with `~/.ssh` mode `700`). Do not copy the private key to Fedora.
+
+Verify the Fedora SSH host key out of band before trusting it. The GitHub secret `FEDORA_KNOWN_HOSTS` must contain the verified `known_hosts` line for the host. Configure these repository or `production` environment secrets in GitHub:
+
+| Secret | Value |
+| --- | --- |
+| `FEDORA_HOST` | Fedora DNS name, such as `system.onix.fun` |
+| `FEDORA_USER` | Dedicated deployment account, such as `guest` |
+| `FEDORA_SSH_KEY` | Contents of `predictboss_deploy` (private key) |
+| `FEDORA_KNOWN_HOSTS` | Verified `known_hosts` entry for `FEDORA_HOST` |
+
+After the first successful manual deployment and Actions secret setup, each push to `main` runs the deployment. The workflow keeps one deployment active at a time and never uploads `.env` or the company CSV to GitHub.

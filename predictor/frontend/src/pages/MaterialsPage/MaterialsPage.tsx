@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { isDemoData, type Material } from '../../api'
+import type { Material } from '../../api'
 import { useMaterials } from '../../api/hooks'
 import { formatDateTime, shortUrl, toDateInputValue } from '../../lib/format'
 import {
@@ -95,7 +95,6 @@ export function MaterialsPage() {
         description="Метаданные новостей и анализов банка, без полного текста"
         actions={
           <>
-            {isDemoData && <Badge tone="accent">Демонстрационные данные</Badge>}
             <Button className={styles.addButton} onClick={() => navigate('/materials/new')}>
               Добавить разовую ссылку
             </Button>

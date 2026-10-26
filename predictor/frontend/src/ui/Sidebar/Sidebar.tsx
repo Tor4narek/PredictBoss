@@ -7,7 +7,7 @@ import styles from './Sidebar.module.css'
 
 export type SidebarProps = {
   items?: SidebarItem[]
-  /** Принудительно подсветить пункт (для витрины /kit). Обычно берётся из адреса страницы. */
+  /** Принудительно подсветить пункт. Обычно берётся из адреса страницы. */
   activeTo?: string
   /** Содержимое внизу панели, например кнопка «Выйти». */
   footer?: ReactNode

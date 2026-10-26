@@ -4,7 +4,7 @@ import { useLogin } from '../../api/hooks'
 import { Button, Field } from '../../ui'
 import styles from './AuthPages.module.css'
 
-/** Вход (фрейм «01 · Вход»). Пока на моках: проходит любой логин и пароль. */
+/** Вход по учетной записи Domain. */
 export function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -35,9 +35,9 @@ export function LoginPage() {
       <div className={styles.fields}>
         <Field
           label="Логин"
-          type="email"
+          type="text"
           autoComplete="username"
-          placeholder="user@mail.com"
+          placeholder="Логин"
           value={values.login}
           onChange={(event) => setValues({ ...values, login: event.target.value })}
           error={errors.login}

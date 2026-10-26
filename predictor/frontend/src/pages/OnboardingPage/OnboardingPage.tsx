@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { useProfile, useSaveProfile, useSendMessage, useSources } from '../../api/hooks'
+import { useImportProfile, useProfile, useSaveProfile, useSendMessage, useSources } from '../../api/hooks'
 import { Button, ErrorState, LoadingState, PageHeader, Panel, Steps } from '../../ui'
-import { ProfileGridFields } from '../ProfilePage/ProfileFields'
+import { ProfileCreationFields, type CreationMode } from '../ProfilePage/ProfileFields'
 import {
   toProfileInput,
   useProfileForm,
   validateProfile,
-  type ProfileForm,
 } from '../ProfilePage/profileForm'
 import profileStyles from '../ProfilePage/ProfilePage.module.css'
 import { AddSourceForm } from '../SourcesPage/AddSourceForm'
@@ -37,8 +36,11 @@ function OnboardingWizard({ initialProfile }: { initialProfile: Parameters<typeo
   const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const form = useProfileForm(initialProfile)
-  const [errors, setErrors] = useState<ReturnType<typeof validateProfile>>({})
+  const [errors, setErrors] = useState<ReturnType<typeof validateProfile> & { syntheticU?: string }>({})
+  const [mode, setMode] = useState<CreationMode>('manual')
+  const [syntheticU, setSyntheticU] = useState('')
   const saveProfile = useSaveProfile()
+  const importProfile = useImportProfile()
   const sources = useSources()
   const sendMessage = useSendMessage()
 
@@ -51,6 +53,15 @@ function OnboardingWizard({ initialProfile }: { initialProfile: Parameters<typeo
 
   function handleNext() {
     if (step === 0) {
+      if (mode === 'dataset') {
+        if (!syntheticU.trim()) {
+          setErrors({ syntheticU: 'Укажите идентификатор компании из набора Альфы.' })
+          return
+        }
+        setErrors({})
+        importProfile.mutate(syntheticU.trim(), { onSuccess: () => setStep(1) })
+        return
+      }
       const nextErrors = validateProfile(form.values)
       setErrors(nextErrors)
       if (Object.keys(nextErrors).length > 0) return
@@ -65,8 +76,8 @@ function OnboardingWizard({ initialProfile }: { initialProfile: Parameters<typeo
   }
 
   const nextLabel = step === 2 ? 'Запустить анализ' : 'Продолжить'
-  const loading = saveProfile.isPending || sendMessage.isPending
-  const error = step === 0 ? saveProfile.error : step === 2 ? sendMessage.error : null
+  const loading = saveProfile.isPending || importProfile.isPending || sendMessage.isPending
+  const error = step === 0 ? saveProfile.error ?? importProfile.error : step === 2 ? sendMessage.error : null
 
   return (
     <>
@@ -92,7 +103,12 @@ function OnboardingWizard({ initialProfile }: { initialProfile: Parameters<typeo
         </p>
       )}
 
-      {step === 0 && <CompanyStep form={form} errors={errors} disabled={saveProfile.isPending} />}
+      {step === 0 && (
+        <ProfileCreationFields form={form} errors={errors} disabled={loading}
+          mode={mode} onModeChange={(next) => { setMode(next); setErrors({}) }}
+          syntheticUInput={syntheticU} onSyntheticUChange={setSyntheticU}
+          syntheticUError={errors.syntheticU} />
+      )}
 
       {step === 1 && (
         <>
@@ -119,8 +135,4 @@ function OnboardingWizard({ initialProfile }: { initialProfile: Parameters<typeo
       )}
     </>
   )
-}
-
-function CompanyStep(props: { form: ProfileForm; errors: { mainOkvedCode?: string }; disabled: boolean }) {
-  return <ProfileGridFields {...props} />
 }

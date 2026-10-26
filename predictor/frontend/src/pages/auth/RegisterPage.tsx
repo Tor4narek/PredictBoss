@@ -4,9 +4,9 @@ import { useRegister } from '../../api/hooks'
 import { Button, Field } from '../../ui'
 import styles from './AuthPages.module.css'
 
-const MIN_PASSWORD_LENGTH = 5
+const MIN_PASSWORD_LENGTH = 12
 
-/** Регистрация (фрейм «01 · Вход», вариант «Регистрация»). После неё — мастер создания компании. */
+/** Регистрация учётной записи Domain. После неё открывается мастер компании. */
 export function RegisterPage() {
   const navigate = useNavigate()
   const register = useRegister()
@@ -44,9 +44,9 @@ export function RegisterPage() {
       <div className={styles.fields}>
         <Field
           label="Логин"
-          type="email"
+          type="text"
           autoComplete="username"
-          placeholder="user@mail.com"
+          placeholder="Логин"
           value={values.login}
           onChange={(event) => setValues({ ...values, login: event.target.value })}
           error={errors.login}

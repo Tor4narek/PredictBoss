@@ -18,14 +18,14 @@ export function SourcesPage() {
         description="Регулярный сбор публикаций из добавленных сайтов и лент."
         actions={
           <>
-            <Chip icon={<WebIcon />}>HTTPS только</Chip>
+            <Chip icon={<WebIcon />}>HTTP / HTTPS</Chip>
             <Chip icon={<AutorenewIcon />}>Автопроверка</Chip>
             <Chip icon={<CheckSmallIcon />}>Без авторизации</Chip>
           </>
         }
       />
       <InfoBanner title="Инфо">
-        Разовая статья? Добавьте ссылку в разделе «Материалы». Публичный HTTPS, без авторизации и
+        Разовая статья? Добавьте ссылку в разделе «Материалы». Публичные HTTP- или HTTPS-страницы без авторизации и
         CAPTCHA.
       </InfoBanner>
       <AddSourceForm />

@@ -4,6 +4,8 @@
 
 ## Документация
 
+- [Domain API, Worker и миграции EF Core](predictor/domain/README.md)
+- [Контракт Domain ↔ ESB](predictor/docs/esb-contracts.md)
 - [Архитектура и границы компонентов](predictor/docs/architecture.md)
 - [Подключение Domain к ESB](predictor/docs/integration.md)
 - [Контракты HTTP, WebSocket и MCP](predictor/docs/api/README.md)
@@ -27,6 +29,14 @@ docker compose up --build
 ```
 
 Миграции — начальные схемы `CREATE` в `predictor/storage/postgres/` и `predictor/storage/clickhouse/`. Это новая baseline-история; не применяйте её поверх существующей базы со старой историей Atlas без сверки версии и текущей схемы. Существующие данные и volumes автоматически не удаляются.
+
+Для запуска Domain API и фронтенда положите CSV в путь `DOMAIN_CSV_PATH` из `.env`. В локальной разработке этот файл можно хранить в `predictor/domain/data/`; он исключён из Git. EF Core миграции базы Domain применяются при старте API.
+
+## Автодеплой на Fedora
+
+Workflow `.github/workflows/deploy-fedora.yml` обновляет выделенную копию `$HOME/predictboss` после каждого push в `main`. Он подключается к серверу по SSH, запускает `deploy/fedora/deploy.sh`, применяет Atlas-миграции и пересобирает Compose-сервисы. Установленный на Fedora Caddy проксирует HTTPS-трафик на `127.0.0.1:3000`; остальные опубликованные порты Compose также привязаны к loopback.
+
+Первичная настройка сервера, `.env`, CSV, SSH-ключа и GitHub Actions secrets описана в [deploy/fedora/README.md](deploy/fedora/README.md). Для выпуска TLS-сертификата DNS `PUBLIC_DOMAIN` должен указывать на Fedora, а входящие TCP-порты 80/443 должны быть доступны.
 
 ## Разработка
 

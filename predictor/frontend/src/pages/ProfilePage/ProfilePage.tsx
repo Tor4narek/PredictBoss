@@ -1,15 +1,14 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router'
 import type { CompanyProfile } from '../../api'
-import { useProfile, useSaveProfile } from '../../api/hooks'
+import { useImportProfile, useProfile, useSaveProfile } from '../../api/hooks'
 import { Button, ErrorState, LoadingState, PageHeader, Panel } from '../../ui'
-import { ProfileGridFields, ProfileSectionFields } from './ProfileFields'
+import { ProfileCreationFields, ProfileSectionFields, type CreationMode } from './ProfileFields'
 import { toProfileInput, useProfileForm, validateProfile } from './profileForm'
 import styles from './ProfilePage.module.css'
 
 /**
- * Профиль компании. Профиля ещё нет — короткая форма (фрейм 04),
- * профиль есть — просмотр и правка по разделам (фрейм 14).
+ * Создание из CSV или вручную; редактирование всех полей профиля по разделам.
  */
 export function ProfilePage() {
   const profile = useProfile()
@@ -43,15 +42,27 @@ export function ProfilePage() {
   return profile.data ? <EditProfile profile={profile.data} /> : <CreateProfile />
 }
 
-/** Фрейм «04 · Ручной профиль». */
 function CreateProfile() {
   const navigate = useNavigate()
   const form = useProfileForm(null)
   const save = useSaveProfile()
-  const [errors, setErrors] = useState<ReturnType<typeof validateProfile>>({})
+  const importProfile = useImportProfile()
+  const [mode, setMode] = useState<CreationMode>('manual')
+  const [syntheticU, setSyntheticU] = useState('')
+  const [errors, setErrors] = useState<ReturnType<typeof validateProfile> & { syntheticU?: string }>({})
+  const loading = save.isPending || importProfile.isPending
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
+    if (mode === 'dataset') {
+      if (!syntheticU.trim()) {
+        setErrors({ syntheticU: 'Укажите идентификатор компании из набора Альфы.' })
+        return
+      }
+      setErrors({})
+      importProfile.mutate(syntheticU.trim())
+      return
+    }
     const nextErrors = validateProfile(form.values)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) return
@@ -62,27 +73,29 @@ function CreateProfile() {
     <form className={styles.page} onSubmit={handleSubmit} noValidate>
       <PageHeader
         title="Профиль компании"
-        description="Достаточно одного содержательного признака. Остальные поля необязательны."
+        description="Выберите компанию из набора Альфы или заполните её данные вручную."
         actions={
           <>
             <Button variant="secondary" onClick={() => navigate(-1)}>
               Назад
             </Button>
-            <Button type="submit" loading={save.isPending}>
+            <Button type="submit" loading={loading}>
               Сохранить профиль
             </Button>
           </>
         }
       />
-      <FormMessages formError={errors.form} saveError={save.error?.message} />
+      <FormMessages formError={errors.form} saveError={(save.error ?? importProfile.error)?.message} />
       <Panel>
-        <ProfileGridFields form={form} errors={errors} disabled={save.isPending} />
+        <ProfileCreationFields form={form} errors={errors} disabled={loading}
+          mode={mode} onModeChange={(next) => { setMode(next); setErrors({}) }}
+          syntheticUInput={syntheticU} onSyntheticUChange={setSyntheticU}
+          syntheticUError={errors.syntheticU} />
       </Panel>
     </form>
   )
 }
 
-/** Фрейм «14 · Профиль компании». */
 function EditProfile({ profile }: { profile: CompanyProfile }) {
   const form = useProfileForm(profile)
   const save = useSaveProfile()
@@ -128,7 +141,7 @@ function EditProfile({ profile }: { profile: CompanyProfile }) {
     >
       <PageHeader
         title="Профиль компании"
-        description="Показаны поля профиля, которые используются для новостной аналитики."
+        description="Все данные профиля компании, используемые для новостной аналитики."
         actions={actions}
       />
       <FormMessages formError={errors.form} saveError={save.error?.message} />
@@ -137,6 +150,7 @@ function EditProfile({ profile }: { profile: CompanyProfile }) {
           form={form}
           errors={errors}
           disabled={save.isPending}
+          syntheticU={profile.syntheticU}
           footer={
             <div className={styles.footer}>
               <p className={saved ? styles.success : styles.footerNote} role="status">

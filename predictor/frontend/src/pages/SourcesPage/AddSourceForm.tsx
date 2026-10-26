@@ -21,7 +21,7 @@ export function AddSourceForm() {
       <form className={styles.addForm} onSubmit={handleSubmit} noValidate>
         <Field
           className={styles.addField}
-          label="HTTPS URL источника"
+          label="URL источника"
           type="url"
           inputMode="url"
           placeholder="https://example.org/news"

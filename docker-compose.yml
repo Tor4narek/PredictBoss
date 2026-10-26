@@ -54,6 +54,26 @@ services:
     networks:
       - predictor-storage
 
+  domain-postgres:
+    image: postgres:16-alpine
+    container_name: predictor-domain-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DOMAIN_POSTGRES_DB:-predictor_domain}
+      POSTGRES_USER: ${DOMAIN_POSTGRES_USER:-predictor_domain}
+      POSTGRES_PASSWORD: ${DOMAIN_POSTGRES_PASSWORD:?Set DOMAIN_POSTGRES_PASSWORD in .env}
+    volumes:
+      - domain-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DOMAIN_POSTGRES_USER:-predictor_domain} -d ${DOMAIN_POSTGRES_DB:-predictor_domain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:5433:5432"
+    networks:
+      - predictor-domain-storage
+
   minio:
     image: ${MINIO_IMAGE:-dappros/minio:RELEASE.2025-09-07T16-13-09Z}
     container_name: predictor-minio
@@ -65,8 +85,8 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:9000:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:9001:9001"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
       interval: 3s
@@ -108,6 +128,66 @@ services:
         condition: service_healthy
     networks:
       - predictor-storage
+
+  domain-api:
+    image: predictor-domain-api:local
+    build:
+      context: .
+      dockerfile: predictor/domain/src/PredictBoss.Domain.Api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DOMAIN_DATABASE_URL: Host=domain-postgres;Port=5432;Database=${DOMAIN_POSTGRES_DB:-predictor_domain};Username=${DOMAIN_POSTGRES_USER:-predictor_domain};Password=${DOMAIN_POSTGRES_PASSWORD:?Set DOMAIN_POSTGRES_PASSWORD in .env}
+      DOMAIN_JWT_KEY: ${DOMAIN_JWT_KEY:?Set DOMAIN_JWT_KEY in .env}
+      DOMAIN_JWT_ISSUER: ${DOMAIN_JWT_ISSUER:-predictor-domain}
+      DOMAIN_JWT_AUDIENCE: ${DOMAIN_JWT_AUDIENCE:-predictor-domain}
+      DOMAIN_CSV_PATH: /data/df_Uid_data_hack.csv
+      ESB_BASE_URL: http://esb:8081
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+    volumes:
+      - ${DOMAIN_CSV_PATH:?Set DOMAIN_CSV_PATH in .env}:/data/df_Uid_data_hack.csv:ro
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    depends_on:
+      domain-postgres:
+        condition: service_healthy
+    networks:
+      - predictor-domain-storage
+      - predictor-runtime
+
+  domain-worker:
+    image: predictor-domain-worker:local
+    build:
+      context: .
+      dockerfile: predictor/domain/src/PredictBoss.Domain.Worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      DOMAIN_DATABASE_URL: Host=domain-postgres;Port=5432;Database=${DOMAIN_POSTGRES_DB:-predictor_domain};Username=${DOMAIN_POSTGRES_USER:-predictor_domain};Password=${DOMAIN_POSTGRES_PASSWORD:?Set DOMAIN_POSTGRES_PASSWORD in .env}
+      ESB_BASE_URL: http://esb:8081
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
+    depends_on:
+      domain-api:
+        condition: service_started
+      esb:
+        condition: service_started
+    networks:
+      - predictor-domain-storage
+      - predictor-runtime
+
+  frontend:
+    image: predictor-frontend:local
+    build:
+      context: ./predictor/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:3000:80"
+    depends_on:
+      domain-api:
+        condition: service_started
+    networks:
+      - predictor-runtime
 
   hermes-serezha:
     <<: *hermes-common
@@ -180,7 +260,7 @@ services:
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
       S3_CREATE_BUCKET: ${S3_CREATE_BUCKET:-false}
     ports:
-      - "8081:8081"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:8081:8081"
     depends_on:
       postgres:
         condition: service_healthy
@@ -203,6 +283,9 @@ services:
       - predictor-runtime
 
 networks:
+  predictor-domain-storage:
+    name: predictor-domain-storage
+    internal: true
   predictor-runtime:
     name: predictor-runtime
   predictor-storage:
@@ -210,6 +293,7 @@ networks:
     internal: true
 
 volumes:
+  domain-postgres-data:
   clickhouse-data:
   clickhouse-logs:
   postgres-data:

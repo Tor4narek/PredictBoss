@@ -28,7 +28,7 @@ export function MaterialNewPage() {
       >
         <form className={styles.form} onSubmit={handleSubmit} noValidate>
           <Field
-            label="HTTPS URL"
+            label="URL материала"
             type="url"
             inputMode="url"
             placeholder="https://alfabank.ru/example/analysis.pdf"

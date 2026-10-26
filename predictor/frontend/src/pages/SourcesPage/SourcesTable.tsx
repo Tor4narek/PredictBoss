@@ -1,5 +1,4 @@
 import type { Source } from '../../api'
-import { isDemoData } from '../../api'
 import { useDeleteSource, useSetSourcePaused, useSources } from '../../api/hooks'
 import { formatInterval, formatShortDateTime } from '../../lib/format'
 import {
@@ -119,12 +118,7 @@ export function SourcesTable() {
   return (
     <Panel
       title="Список источников"
-      description={
-        isDemoData
-          ? 'Демонстрационные данные. История материалов сохраняется при удалении.'
-          : 'История материалов сохраняется при удалении.'
-      }
-      aside={isDemoData ? <Badge tone="accent">Демонстрационные данные</Badge> : undefined}
+      description="История материалов сохраняется при удалении."
     >
       {actionError && (
         <p className={styles.actionError} role="alert">

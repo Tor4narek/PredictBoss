@@ -70,6 +70,18 @@ export function useSaveProfile() {
   })
 }
 
+export function useImportProfile() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (syntheticU: string) => api.importProfile(syntheticU),
+    onSuccess: (profile) => {
+      client.setQueryData(queryKeys.profile, profile)
+      void client.invalidateQueries({ queryKey: queryKeys.chat })
+      void client.invalidateQueries({ queryKey: queryKeys.session })
+    },
+  })
+}
+
 // ——— Источники ———
 
 export function useSources() {
@@ -122,7 +134,11 @@ export function useAddMaterial() {
 // ——— Диалог ———
 
 export function useChat() {
-  return useQuery({ queryKey: queryKeys.chat, queryFn: api.getChat })
+  return useQuery({
+    queryKey: queryKeys.chat,
+    queryFn: api.getChat,
+    refetchInterval: (query) => query.state.data?.processing ? 2000 : false,
+  })
 }
 
 export function useSendMessage() {

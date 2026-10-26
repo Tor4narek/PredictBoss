@@ -10,10 +10,7 @@ import type {
   Source,
 } from './types'
 
-/**
- * Всё, что страницы могут попросить у бэкенда.
- * Есть две реализации с одинаковыми функциями: моки (mock/) и реальные запросы (http/).
- */
+/** Всё, что страницы могут попросить у Domain API. */
 export type Api = {
   getSession(): Promise<Session | null>
   login(credentials: Credentials): Promise<Session>
@@ -23,6 +20,7 @@ export type Api = {
   /** null — профиль ещё не заполнен. */
   getProfile(): Promise<CompanyProfile | null>
   saveProfile(input: CompanyProfileInput): Promise<CompanyProfile>
+  importProfile(syntheticU: string): Promise<CompanyProfile>
 
   getSources(): Promise<Source[]>
   addSource(url: string): Promise<Source>
