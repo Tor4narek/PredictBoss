@@ -1,0 +1,107 @@
+name: Deploy to Fedora
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fedora-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          FEDORA_SSH_KEY: ${{ secrets.FEDORA_SSH_KEY }}
+          FEDORA_KNOWN_HOSTS: ${{ secrets.FEDORA_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$FEDORA_SSH_KEY"
+          test -n "$FEDORA_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$FEDORA_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$FEDORA_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy main to Fedora
+        shell: bash
+        env:
+          FEDORA_HOST: ${{ secrets.FEDORA_HOST }}
+          FEDORA_USER: ${{ secrets.FEDORA_USER }}
+          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$FEDORA_HOST"
+          test -n "$FEDORA_USER"
+          test -n "$PRODUCTION_ENV_FILE"
+          test -n "$LLM_API_KEY"
+          git archive --format=tar HEAD | gzip -1 | ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            'set -eu; checkout="$HOME/predictboss"; staging="$HOME/predictboss-stage-$$"; backup="$HOME/predictboss-previous"; mkdir "$staging"; tar -xzf - -C "$staging"; if [ -f "$checkout/.env" ]; then mv "$checkout/.env" "$staging/.env"; fi; if [ -e "$backup" ]; then rm -rf -- "$backup"; fi; if [ -e "$checkout" ]; then mv "$checkout" "$backup"; fi; mv "$staging" "$checkout"; echo "Source archive installed"'
+          csv_repo_path=predictor/domain/data/df_Uid_data_hack.csv
+          csv_remote_path="/home/$FEDORA_USER/predictboss-data/df_Uid_data_hack.csv"
+          csv_sha256="$(git show "HEAD:$csv_repo_path" | sha256sum | cut -d' ' -f1)"
+          if ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            "test -s '$csv_remote_path' && test \"\$(sha256sum '$csv_remote_path' | cut -d' ' -f1)\" = '$csv_sha256'"; then
+            echo "Company CSV already matches; skipping transfer"
+          else
+            git show "HEAD:$csv_repo_path" | ssh -i "$HOME/.ssh/id_ed25519" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=10 \
+              "$FEDORA_USER@$FEDORA_HOST" \
+              'set -eu; dest="$HOME/predictboss-data/df_Uid_data_hack.csv"; mkdir -p "$(dirname "$dest")"; tmp="$dest.upload"; cat > "$tmp"; chmod 640 "$tmp"; mv "$tmp" "$dest"; echo "Company CSV uploaded"'
+          fi
+          {
+            printf '%s' "$PRODUCTION_ENV_FILE" | awk -F= '$1 != "LLM_API_KEY" && $1 != "DOMAIN_CSV_PATH"'
+            while IFS= read -r default_setting; do
+              setting_name="${default_setting%%=*}"
+              if ! grep -q "^${setting_name}=" <<< "$PRODUCTION_ENV_FILE"; then
+                printf '%s\n' "$default_setting"
+              fi
+            done < <(grep -E '^(HERMES_MODEL_PROVIDER|AGENT_(KESHA|KONSTANTIN|SAVELIY|SEREZHA|VALERA)_(MODEL_ID|MAX_TURNS|REASONING_EFFORT|MAX_CONCURRENT_RUNS))=' predictor/example.env)
+            for token_name in MCP_TOKEN_KESHA MCP_TOKEN_KONSTANTIN MCP_TOKEN_SAVELIY MCP_TOKEN_SEREZHA MCP_TOKEN_VALERA; do
+              if ! grep -Eq "^${token_name}=.{32,}$" <<< "$PRODUCTION_ENV_FILE"; then
+                printf '%s=%s\n' "$token_name" "$(openssl rand -hex 32)"
+              fi
+            done
+            printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY"
+            printf 'DOMAIN_CSV_PATH=%s\n' "$csv_remote_path"
+          } | ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            'umask 077; mkdir -p "$HOME/predictboss"; tmp="$HOME/predictboss/.env.tmp"; cat > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$HOME/predictboss/.env"'
+          ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            'DEPLOY_FROM_ARCHIVE=true bash "$HOME/predictboss/deploy/fedora/deploy.sh"'

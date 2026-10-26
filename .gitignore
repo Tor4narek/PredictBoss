@@ -9,10 +9,16 @@ Thumbs.db
 
 # Go build and test artifacts
 **/bin/
+**/obj/
 **/tmp/
+**/node_modules/
 **/coverage.out
 **/coverage.html
 **/*.test
+
+# Company source data is excluded except for the dataset used by Domain.
+predictor/domain/data/*.csv
+!predictor/domain/data/df_Uid_data_hack.csv
 
 # Local environment and secrets
 .env

@@ -55,6 +55,26 @@ services:
     networks:
       - predictor-storage
 
+  domain-postgres:
+    image: postgres:16-alpine
+    container_name: predictor-domain-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DOMAIN_POSTGRES_DB:-predictor_domain}
+      POSTGRES_USER: ${DOMAIN_POSTGRES_USER:-predictor_domain}
+      POSTGRES_PASSWORD: ${DOMAIN_POSTGRES_PASSWORD:?Set DOMAIN_POSTGRES_PASSWORD in .env}
+    volumes:
+      - domain-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DOMAIN_POSTGRES_USER:-predictor_domain} -d ${DOMAIN_POSTGRES_DB:-predictor_domain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:5433:5432"
+    networks:
+      - predictor-domain-storage
+
   minio:
     image: dappros/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: predictor-minio
@@ -66,8 +86,8 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "${MINIO_API_HOST_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
       interval: ${MINIO_HEALTHCHECK_INTERVAL:-3s}
@@ -84,9 +104,8 @@ services:
     command: ["migrate", "apply", "--env", "local"]
     environment:
       ATLAS_DATABASE_URL: postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable
-      ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
-      - ./predictor/storage/postgres:/migrations:ro
+      - ./predictor/storage/postgres:/migrations:ro,z
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,20 +122,81 @@ services:
       ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in predictor/.env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
-      - ./predictor/storage/clickhouse:/migrations:ro
+      - ./predictor/storage/clickhouse:/migrations:ro,z
     depends_on:
       clickhouse:
         condition: service_healthy
     networks:
       - predictor-storage
+      - predictor-atlas-egress
+
+  domain-api:
+    image: predictor-domain-api:local
+    build:
+      context: .
+      dockerfile: predictor/domain/src/PredictBoss.Domain.Api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DOMAIN_DATABASE_URL: Host=domain-postgres;Port=5432;Database=${DOMAIN_POSTGRES_DB:-predictor_domain};Username=${DOMAIN_POSTGRES_USER:-predictor_domain};Password=${DOMAIN_POSTGRES_PASSWORD:?Set DOMAIN_POSTGRES_PASSWORD in .env}
+      DOMAIN_JWT_KEY: ${DOMAIN_JWT_KEY:?Set DOMAIN_JWT_KEY in .env}
+      DOMAIN_JWT_ISSUER: ${DOMAIN_JWT_ISSUER:-predictor-domain}
+      DOMAIN_JWT_AUDIENCE: ${DOMAIN_JWT_AUDIENCE:-predictor-domain}
+      DOMAIN_CSV_PATH: /data/df_Uid_data_hack.csv
+      ESB_BASE_URL: http://esb:8081
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+    volumes:
+      - ${DOMAIN_CSV_PATH:?Set DOMAIN_CSV_PATH in .env}:/data/df_Uid_data_hack.csv:ro,z
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    depends_on:
+      domain-postgres:
+        condition: service_healthy
+    networks:
+      - predictor-domain-storage
+      - predictor-runtime
+
+  domain-worker:
+    image: predictor-domain-worker:local
+    build:
+      context: .
+      dockerfile: predictor/domain/src/PredictBoss.Domain.Worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      DOMAIN_DATABASE_URL: Host=domain-postgres;Port=5432;Database=${DOMAIN_POSTGRES_DB:-predictor_domain};Username=${DOMAIN_POSTGRES_USER:-predictor_domain};Password=${DOMAIN_POSTGRES_PASSWORD:?Set DOMAIN_POSTGRES_PASSWORD in .env}
+      ESB_BASE_URL: http://esb:8081
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
+    depends_on:
+      domain-api:
+        condition: service_started
+      esb:
+        condition: service_started
+    networks:
+      - predictor-domain-storage
+      - predictor-runtime
+
+  frontend:
+    image: predictor-frontend:local
+    build:
+      context: ./predictor/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:3000:80"
+    depends_on:
+      domain-api:
+        condition: service_started
+    networks:
+      - predictor-runtime
 
   hermes-serezha: &hermes-serezha
     <<: *hermes-common
     container_name: predictor-hermes-serezha
     volumes:
       - hermes-serezha-data:/opt/data
-      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/serezha/skills:/opt/skills:ro
+      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/serezha/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       MCP_TOKEN_SEREZHA: ${MCP_TOKEN_SEREZHA:?Set MCP_TOKEN_SEREZHA in predictor/.env}
@@ -130,16 +210,16 @@ services:
     container_name: predictor-hermes-serezha-2
     volumes:
       - hermes-serezha-2-data:/opt/data
-      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/serezha/skills:/opt/skills:ro
+      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/serezha/skills:/opt/skills:ro,z
 
   hermes-saveliy: &hermes-saveliy
     <<: *hermes-common
     container_name: predictor-hermes-saveliy
     volumes:
       - hermes-saveliy-data:/opt/data
-      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/saveliy/skills:/opt/skills:ro
+      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/saveliy/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       MCP_TOKEN_SAVELIY: ${MCP_TOKEN_SAVELIY:?Set MCP_TOKEN_SAVELIY in predictor/.env}
@@ -153,16 +233,16 @@ services:
     container_name: predictor-hermes-saveliy-2
     volumes:
       - hermes-saveliy-2-data:/opt/data
-      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/saveliy/skills:/opt/skills:ro
+      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/saveliy/skills:/opt/skills:ro,z
 
   hermes-valera: &hermes-valera
     <<: *hermes-common
     container_name: predictor-hermes-valera
     volumes:
       - hermes-valera-data:/opt/data
-      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/valera/skills:/opt/skills:ro
+      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/valera/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       MCP_TOKEN_VALERA: ${MCP_TOKEN_VALERA:?Set MCP_TOKEN_VALERA in predictor/.env}
@@ -176,16 +256,16 @@ services:
     container_name: predictor-hermes-valera-2
     volumes:
       - hermes-valera-2-data:/opt/data
-      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/valera/skills:/opt/skills:ro
+      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/valera/skills:/opt/skills:ro,z
 
   hermes-kesha: &hermes-kesha
     <<: *hermes-common
     container_name: predictor-hermes-kesha
     volumes:
       - hermes-kesha-data:/opt/data
-      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/kesha/skills:/opt/skills:ro
+      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/kesha/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       MCP_TOKEN_KESHA: ${MCP_TOKEN_KESHA:?Set MCP_TOKEN_KESHA in predictor/.env}
@@ -199,16 +279,16 @@ services:
     container_name: predictor-hermes-kesha-2
     volumes:
       - hermes-kesha-2-data:/opt/data
-      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/kesha/skills:/opt/skills:ro
+      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/kesha/skills:/opt/skills:ro,z
 
   hermes-konstantin: &hermes-konstantin
     <<: *hermes-common
     container_name: predictor-hermes-konstantin
     volumes:
       - hermes-konstantin-data:/opt/data
-      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro,z
     environment:
       <<: *hermes-env
       MCP_TOKEN_KONSTANTIN: ${MCP_TOKEN_KONSTANTIN:?Set MCP_TOKEN_KONSTANTIN in predictor/.env}
@@ -222,8 +302,8 @@ services:
     container_name: predictor-hermes-konstantin-2
     volumes:
       - hermes-konstantin-2-data:/opt/data
-      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
-      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro,z
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro,z
 
   esb:
     image: predictor-esb:local
@@ -328,7 +408,7 @@ services:
       WS_WRITE_TIMEOUT: ${WS_WRITE_TIMEOUT:-15s}
       WS_OUTGOING_QUEUE_SIZE: ${WS_OUTGOING_QUEUE_SIZE:-64}
     ports:
-      - "${ESB_HOST_PORT:-8081}:8081"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${ESB_HOST_PORT:-8081}:8081"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/healthz"]
       interval: ${ESB_HEALTHCHECK_INTERVAL:-10s}
@@ -346,13 +426,19 @@ services:
       - predictor-runtime
 
 networks:
+  predictor-domain-storage:
+    name: predictor-domain-storage
+    internal: true
   predictor-runtime:
     name: predictor-runtime
   predictor-storage:
     name: predictor-storage
     internal: true
+  predictor-atlas-egress:
+    name: predictor-atlas-egress
 
 volumes:
+  domain-postgres-data:
   clickhouse-data:
   clickhouse-logs:
   postgres-data:
