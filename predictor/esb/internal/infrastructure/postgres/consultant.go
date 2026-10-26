@@ -96,7 +96,7 @@ WHERE c.agent_type = 'konstantin' AND c.request_json->>'request_id' = $1 LIMIT 1
 }
 
 func (r *Calls) EventsAfter(ctx context.Context, companyID, conversationID, afterMessageID string, limit int) ([]domain.ConsultantEvent, error) {
-	if limit < 1 || limit > 500 {
+	if limit < 1 || limit > 10000 {
 		limit = 100
 	}
 	var query string
@@ -111,7 +111,11 @@ message_id::text, kind, text, evidence, created_at FROM (
 		args = []any{companyID, conversationID, limit}
 	} else {
 		var cursorCreatedAt time.Time
-		err := r.pool.QueryRow(ctx, `SELECT created_at FROM konstantin_messages WHERE message_id = $1::uuid AND company_id = $2::uuid AND conversation_id = $3::uuid`, afterMessageID, companyID, conversationID).Scan(&cursorCreatedAt)
+		err := r.pool.QueryRow(ctx, `SELECT created_at
+FROM konstantin_messages
+WHERE message_id = $1::uuid
+  AND company_id = $2::uuid
+  AND conversation_id = $3::uuid`, afterMessageID, companyID, conversationID).Scan(&cursorCreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -215,11 +219,30 @@ LIMIT $5`, companyID, from, to, cursor, limit+1)
 func (r *Calls) AnalysisReady(ctx context.Context, companyID, analysisID string) (bool, error) {
 	var ready bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (
-SELECT 1 FROM konstantin_messages m
-WHERE m.company_id = $1::uuid AND m.analysis_id = $2::uuid AND m.kind = 'analysis_result'
-  AND COALESCE((SELECT s.profile_synced FROM company_profile_state s WHERE s.company_id = m.company_id), TRUE)
-  AND m.profile_revision = COALESCE((SELECT s.profile_revision FROM company_profile_state s WHERE s.company_id = m.company_id), 0)
-  AND m.source_revision = COALESCE((SELECT max(n.source_revision) FROM company_news_sources n WHERE n.company_id = m.company_id), 0))`, companyID, analysisID).Scan(&ready)
+    SELECT 1
+    FROM konstantin_messages AS m
+    WHERE m.company_id = $1::uuid
+      AND m.analysis_id = $2::uuid
+      AND m.kind = 'analysis_result'
+      AND COALESCE(
+          (SELECT s.profile_synced
+           FROM company_profile_state AS s
+           WHERE s.company_id = m.company_id),
+          TRUE
+      )
+      AND m.profile_revision = COALESCE(
+          (SELECT s.profile_revision
+           FROM company_profile_state AS s
+           WHERE s.company_id = m.company_id),
+          0
+      )
+      AND m.source_revision = COALESCE(
+          (SELECT max(n.source_revision)
+           FROM company_news_sources AS n
+           WHERE n.company_id = m.company_id),
+          0
+      )
+)`, companyID, analysisID).Scan(&ready)
 	return ready, err
 }
 
@@ -235,7 +258,9 @@ ON CONFLICT (source_id) DO NOTHING`, source.CompanyID, source.SourceID, source.N
 		return true, nil
 	}
 	var existingCompany string
-	if err := r.pool.QueryRow(ctx, `SELECT company_id::text FROM company_news_sources WHERE source_id = $1::uuid`, source.SourceID).Scan(&existingCompany); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT company_id::text
+FROM company_news_sources
+WHERE source_id = $1::uuid`, source.SourceID).Scan(&existingCompany); err != nil {
 		return false, err
 	}
 	if existingCompany != source.CompanyID {
@@ -246,14 +271,18 @@ ON CONFLICT (source_id) DO NOTHING`, source.CompanyID, source.SourceID, source.N
 
 func (r *Calls) SourceRevision(ctx context.Context, companyID string) (int64, error) {
 	var revision int64
-	err := r.pool.QueryRow(ctx, `SELECT COALESCE(max(source_revision), 0) FROM company_news_sources WHERE company_id = $1::uuid`, companyID).Scan(&revision)
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(max(source_revision), 0)
+FROM company_news_sources
+WHERE company_id = $1::uuid`, companyID).Scan(&revision)
 	return revision, err
 }
 
 func (r *Calls) ProfileRevision(ctx context.Context, companyID string) (int64, error) {
 	var revision int64
 	var synced bool
-	err := r.pool.QueryRow(ctx, `SELECT profile_revision, profile_synced FROM company_profile_state WHERE company_id = $1::uuid`, companyID).Scan(&revision, &synced)
+	err := r.pool.QueryRow(ctx, `SELECT profile_revision, profile_synced
+FROM company_profile_state
+WHERE company_id = $1::uuid`, companyID).Scan(&revision, &synced)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, domain.ErrNotFound
 	}

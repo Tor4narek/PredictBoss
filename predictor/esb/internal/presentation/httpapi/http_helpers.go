@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 )
 
-const maxRequestBytes = 2 << 20
-
-func decodeJSONBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, error) {
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (json.RawMessage, error) {
 	var raw json.RawMessage
-	if err := decodeJSONInto(w, r, &raw); err != nil {
+	if err := decodeJSONInto(w, r, &raw, maxBytes); err != nil {
 		return nil, err
 	}
 	var object map[string]json.RawMessage
@@ -21,8 +20,8 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, er
 	return raw, nil
 }
 
-func decodeJSONInto(w http.ResponseWriter, r *http.Request, target any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+func decodeJSONInto(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -36,7 +35,9 @@ func decodeJSONInto(w http.ResponseWriter, r *http.Request, target any) error {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Printf("write JSON response failed (error_type=%T)", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

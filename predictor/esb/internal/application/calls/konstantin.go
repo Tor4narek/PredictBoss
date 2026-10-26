@@ -19,13 +19,6 @@ var uuidInputPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 var ErrAnalysisNotReady = errors.New("analysis_not_ready")
 var ErrInvalidHistoryRequest = errors.New("invalid_history_request")
 
-const (
-	defaultKonstantinHistoryLimit = 100
-	maxKonstantinHistoryLimit     = 100
-	defaultKonstantinHistorySpan  = 30 * 24 * time.Hour
-	maxKonstantinHistorySpan      = 90 * 24 * time.Hour
-)
-
 type konstantinAnalysisInput struct {
 	CompanyID       string `json:"company_id"`
 	RequestID       string `json:"request_id"`
@@ -103,7 +96,7 @@ func (s *Service) AskKonstantin(ctx context.Context, request domain.ConsultantRe
 	request.AnalysisID = strings.TrimSpace(request.AnalysisID)
 	request.Text = strings.TrimSpace(request.Text)
 	if !uuidInputPattern.MatchString(request.CompanyID) || !uuidInputPattern.MatchString(request.RequestID) ||
-		!uuidInputPattern.MatchString(request.AnalysisID) || !uuidInputPattern.MatchString(request.ConversationID) || request.Text == "" || len(request.Text) > 1<<20 {
+		!uuidInputPattern.MatchString(request.AnalysisID) || !uuidInputPattern.MatchString(request.ConversationID) || request.Text == "" || int64(len(request.Text)) > s.settings.MaxQuestionBytes {
 		return domain.Call{}, false, ErrInvalidCall
 	}
 	request.CompanyID = strings.ToLower(request.CompanyID)
@@ -176,11 +169,11 @@ func (s *Service) KonstantinHistory(ctx context.Context, companyID, fromText, to
 	fromText = strings.TrimSpace(fromText)
 	toText = strings.TrimSpace(toText)
 	beforeMessageID = strings.ToLower(strings.TrimSpace(beforeMessageID))
-	if !uuidInputPattern.MatchString(companyID) || (beforeMessageID != "" && !uuidInputPattern.MatchString(beforeMessageID)) || limit < 0 || limit > maxKonstantinHistoryLimit {
+	if !uuidInputPattern.MatchString(companyID) || (beforeMessageID != "" && !uuidInputPattern.MatchString(beforeMessageID)) || limit < 0 || limit > s.settings.KonstantinHistoryMaxPageSize {
 		return domain.ConsultantHistoryPage{}, ErrInvalidHistoryRequest
 	}
 	if limit == 0 {
-		limit = defaultKonstantinHistoryLimit
+		limit = s.settings.KonstantinHistoryDefaultPageSize
 	}
 	to := time.Now().UTC()
 	if toText != "" {
@@ -190,7 +183,7 @@ func (s *Service) KonstantinHistory(ctx context.Context, companyID, fromText, to
 		}
 		to = parsed.UTC()
 	}
-	from := to.Add(-defaultKonstantinHistorySpan)
+	from := to.Add(-s.settings.KonstantinDefaultWindow)
 	if fromText != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, fromText)
 		if err != nil {
@@ -198,7 +191,7 @@ func (s *Service) KonstantinHistory(ctx context.Context, companyID, fromText, to
 		}
 		from = parsed.UTC()
 	}
-	if !from.Before(to) || to.Sub(from) > maxKonstantinHistorySpan {
+	if !from.Before(to) || to.Sub(from) > s.settings.KonstantinMaxWindow {
 		return domain.ConsultantHistoryPage{}, ErrInvalidHistoryRequest
 	}
 	page, err := s.repository.KonstantinHistory(ctx, companyID, from, to, beforeMessageID, limit)
@@ -210,7 +203,7 @@ func (s *Service) KonstantinHistory(ctx context.Context, companyID, fromText, to
 }
 
 func (s *Service) WaitKonstantinEvent(ctx context.Context, requestID string) (domain.ConsultantEvent, error) {
-	ticker := time.NewTicker(300 * time.Millisecond)
+	ticker := time.NewTicker(s.settings.KonstantinEventPollInterval)
 	defer ticker.Stop()
 	for {
 		event, err := s.repository.Event(ctx, requestID)

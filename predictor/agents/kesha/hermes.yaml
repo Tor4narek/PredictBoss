@@ -1,6 +1,6 @@
 model:
-  provider: custom
-  default: google/gemma-4-26b-a4b-it
+  provider: ${HERMES_MODEL_PROVIDER}
+  default: ${AGENT_KESHA_MODEL_ID}
   base_url: https://changellenge.up.railway.app/v1
   key_env: LLM_API_KEY
 platform_toolsets:
@@ -10,16 +10,16 @@ gateway:
     enabled: true
     host: 0.0.0.0
     port: 8642
-    max_concurrent_runs: 0
+    max_concurrent_runs: ${AGENT_KESHA_MAX_CONCURRENT_RUNS}
 agent:
-  max_turns: 12
-  reasoning_effort: low
+  max_turns: ${AGENT_KESHA_MAX_TURNS}
+  reasoning_effort: ${AGENT_KESHA_REASONING_EFFORT}
   disabled_toolsets: [terminal, browser, web, file, memory, delegation, process, automation]
 skills:
   external_dirs: [/opt/skills]
 mcp_servers:
   esb:
-    url: http://esb:8081/mcp
+    url: ${ESB_MCP_URL}
     headers:
       Authorization: "Bearer ${ESB_API_KEY}"
     supports_parallel_tool_calls: false

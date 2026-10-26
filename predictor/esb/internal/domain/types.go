@@ -23,12 +23,75 @@ const (
 )
 
 type Agent struct {
-	Type           AgentType
-	ScopeField     string
-	RequiredFields []string
-	MaxHistory     int
-	RuntimeURL     string
-	Instructions   string
+	Type             AgentType
+	ScopeField       string
+	RequiredFields   []string
+	MaxHistory       int
+	ContextPolicy    ContextPolicy
+	RuntimeURL       string
+	RuntimeInstances []RuntimeInstance
+	Instructions     string
+}
+
+// RuntimeState controls whether an instance accepts newly queued work.
+type RuntimeState string
+
+const (
+	RuntimeAvailable   RuntimeState = "available"
+	RuntimeDraining    RuntimeState = "draining"
+	RuntimeUnavailable RuntimeState = "unavailable"
+)
+
+// RuntimeInstance is one stable Hermes runtime target in an agent's pool.
+type RuntimeInstance struct {
+	ID                string
+	Agent             AgentType
+	BaseURL           string
+	State             RuntimeState
+	MaxConcurrentRuns int
+}
+
+// ForRuntime resolves a call's pinned runtime into an agent-specific client view.
+func (agent Agent) ForRuntime(instanceID string) (Agent, bool) {
+	for _, instance := range agent.RuntimeInstances {
+		if instance.ID == instanceID {
+			agent.RuntimeURL = instance.BaseURL
+			return agent, true
+		}
+	}
+	if instanceID == "" && (agent.RuntimeURL != "" || len(agent.RuntimeInstances) == 0) {
+		return agent, true
+	}
+	return Agent{}, false
+}
+
+// RetentionPolicy describes when an eligible data category may be removed.
+// Immediate removal still respects dependency and retry-safety checks.
+type RetentionPolicy struct {
+	Never     bool
+	Immediate bool
+	Age       time.Duration
+}
+
+type AnalyticsRetention struct {
+	ProcessedNewsText   RetentionPolicy
+	UnprocessedNewsText RetentionPolicy
+	NewsMetadata        RetentionPolicy
+	NewsMarker          RetentionPolicy
+	Facts               RetentionPolicy
+	FactCompany         RetentionPolicy
+	MetricObservations  RetentionPolicy
+	MetricTotals        RetentionPolicy
+	CompanyAnalyses     RetentionPolicy
+}
+
+// ContextPolicy controls model context compaction. MaxHistory remains the
+// maximum number of recent PostgreSQL messages sent to Hermes.
+type ContextPolicy struct {
+	CompressAfterMessages int
+	BatchMessages         int
+	SummaryMaxBytes       int
+	SummaryStorage        string
 }
 
 type CallStatus string
@@ -45,19 +108,30 @@ const (
 	CallInterrupted CallStatus = "interrupted"
 )
 
+// Terminal reports whether a call has reached a state that cannot resume.
+func (status CallStatus) Terminal() bool {
+	switch status {
+	case CallCompleted, CallFailed, CallCancelled, CallInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 type Call struct {
-	ID             string          `json:"call_id"`
-	Agent          AgentType       `json:"agent"`
-	ScopeID        string          `json:"scope_id"`
-	ConversationID string          `json:"conversation_id"`
-	Input          json.RawMessage `json:"-"`
-	Status         CallStatus      `json:"status"`
-	HermesRunID    *string         `json:"hermes_run_id,omitempty"`
-	Output         *string         `json:"output,omitempty"`
-	Error          *string         `json:"error,omitempty"`
-	RetryCount     int             `json:"-"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	ID                string          `json:"call_id"`
+	Agent             AgentType       `json:"agent"`
+	ScopeID           string          `json:"scope_id"`
+	ConversationID    string          `json:"conversation_id"`
+	Input             json.RawMessage `json:"-"`
+	Status            CallStatus      `json:"status"`
+	HermesRunID       *string         `json:"hermes_run_id,omitempty"`
+	RuntimeInstanceID string          `json:"-"`
+	Output            *string         `json:"output,omitempty"`
+	Error             *string         `json:"error,omitempty"`
+	RetryCount        int             `json:"-"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 type CompanyProfileSyncState struct {
@@ -70,6 +144,23 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+type ContextMessage struct {
+	Message
+	CallID    string    `json:"call_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ContextWindow struct {
+	ConversationID          string
+	Summary                 string
+	SummaryThroughCallID    string
+	SummaryThroughCreatedAt time.Time
+	Recent                  []Message
+	Pending                 []ContextMessage
+	PendingThroughCallID    string
+	PendingThroughCreatedAt time.Time
+}
+
 type News struct {
 	ID           string
 	SourceID     string
@@ -80,6 +171,7 @@ type News struct {
 	Title        string
 	PublishedAt  *string
 	Text         string
+	TextHash     string
 }
 
 type Fact struct {
@@ -179,7 +271,9 @@ type MetricObservation struct {
 }
 
 type MetricTotal struct {
+	CompanyID        string       `json:"company_id"`
 	MetricID         string       `json:"metric_id"`
+	Unit             string       `json:"unit"`
 	PeriodFrom       string       `json:"period_from"`
 	PeriodTo         string       `json:"period_to"`
 	TotalValue       *float64     `json:"total_value"`
@@ -200,6 +294,7 @@ type CompanyMetricTotal struct {
 	MetricID         string       `json:"metric_id"`
 	TypeCode         string       `json:"type_code"`
 	Characteristic   string       `json:"characteristic"`
+	Unit             string       `json:"unit"`
 	TotalValue       *float64     `json:"total_value"`
 	TotalProbability *float64     `json:"total_probability"`
 	FactCount        uint32       `json:"fact_count"`
@@ -308,7 +403,7 @@ type CallRepository interface {
 	SetStatus(context.Context, string, CallStatus, string) error
 	Complete(context.Context, string, string) error
 	CompleteValera(context.Context, string, string, string, int64) (CompanyProfileSyncState, bool, error)
-	RetryProfileSave(context.Context, string, string, int64) (bool, error)
+	RetryProfileSave(context.Context, string, string, int64, int) (bool, error)
 	Fail(context.Context, string, string) error
 	Recover(context.Context) error
 	ConversationID(context.Context, AgentType, string) (string, error)
@@ -323,6 +418,28 @@ type CallRepository interface {
 	ProfileRevision(context.Context, string) (int64, error)
 }
 
+// RuntimeCallRepository claims queued calls while atomically reserving a slot
+// on one configured Hermes instance. The assignment is persisted before I/O.
+type RuntimeCallRepository interface {
+	ClaimQueuedForRuntimes(context.Context, int, []RuntimeInstance) ([]Call, error)
+	ActiveRuntimeAssignments(context.Context) ([]Call, error)
+}
+
+// ContextRepository stores compacted summaries separately from the complete
+// message history. Updates use a compare-and-swap cursor to avoid lost writes.
+type ContextRepository interface {
+	LoadContextWindow(context.Context, string, int, int, int) (ContextWindow, error)
+	SaveContextSummary(context.Context, string, string, time.Time, string, time.Time, string) (bool, error)
+}
+
+type NewsFinalizer interface {
+	FinalizeNews(context.Context, News) (string, error)
+}
+
+type NewsCallCompleter interface {
+	CompleteNews(context.Context, string, string, string) error
+}
+
 type AgentRuntime interface {
 	Start(context.Context, Agent, string, []Message, string) (string, error)
 	Status(context.Context, Agent, string) (RunState, error)
@@ -334,13 +451,37 @@ type RunState struct {
 	Error  string
 }
 
+// CleanupRepository exposes bounded, idempotent maintenance operations.
+// WithCleanupLock serializes each pass across ESB replicas using PostgreSQL.
+type CleanupRepository interface {
+	WithCleanupLock(context.Context, func(context.Context) error) (bool, error)
+	RecoverStaleSubmissions(context.Context, time.Time, int) (int, error)
+	ListStaleActive(context.Context, time.Time, int) ([]Call, error)
+	RetryStaleActive(context.Context, Call, int) (bool, error)
+	PruneCallPayloads(context.Context, time.Time, int) (int, error)
+	PruneCallRecords(context.Context, time.Time, int) (int, error)
+	PruneMessages(context.Context, AgentType, time.Time, int) (int, error)
+	PruneContextSummaries(context.Context, time.Time, int) (int, error)
+	TerminalNewsIDs(context.Context, time.Time, int) ([]string, error)
+}
+
+type AnalyticsCleanupRepository interface {
+	Prune(context.Context, AnalyticsRetention, time.Time, []string, int) (map[string]int, error)
+}
+
+type StaleCallReconciler interface {
+	ReconcileStale(context.Context, time.Time, time.Time, int, int) (int, error)
+}
+
 type AnalyticsRepository interface {
 	SaveNewsAndFacts(context.Context, News, []Fact) ([]string, error)
+	FinalizeNews(context.Context, News, string) error
 	FactsByNews(context.Context, string, int) ([]Fact, error)
 	QueryFacts(context.Context, FactQuery) ([]FactRecord, error)
 	SaveFactCompanyLinks(context.Context, string, []FactCompanyLink) error
 	CompanyFacts(context.Context, string, int) ([]CompanyFact, error)
 	SaveMetricObservations(context.Context, string, []MetricObservation) error
+	SaveMetricTotal(context.Context, MetricTotal) error
 	SaveCompanyAnalysis(context.Context, CompanyAnalysis) error
 	CalculateMetricTotal(context.Context, string, string, string) (MetricTotal, error)
 	CompanyReport(context.Context, string, string, string) (CompanyReport, error)
@@ -348,11 +489,13 @@ type AnalyticsRepository interface {
 }
 
 type CompanyMetricSettingsRepository interface {
+	WithCompanyProfileLock(context.Context, string, func(context.Context) error) error
 	ReserveCompanyProfileRevision(context.Context, string, int64, string) error
 	UpsertCompanyMetrics(context.Context, string, []CompanyMetric) error
 	ReplaceCompanyMetricsAtRevision(context.Context, string, int64, string, []CompanyMetric) error
 	MarkCompanyProfileSynced(context.Context, string, int64, string) error
 	CompanyMetrics(context.Context, string, int) ([]CompanyMetric, error)
+	MetricForID(context.Context, string) (CompanyMetric, string, error)
 }
 
 type ProfileRepository interface {

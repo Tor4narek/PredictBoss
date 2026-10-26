@@ -16,12 +16,15 @@ CREATE TABLE agent_calls (
     conversation_id UUID NOT NULL REFERENCES agent_conversations(conversation_id),
     agent_type TEXT NOT NULL CHECK (agent_type IN ('serezha', 'saveliy', 'valera', 'kesha', 'konstantin')),
     request_json JSONB NOT NULL,
-    hermes_run_id TEXT UNIQUE,
+    hermes_run_id TEXT,
+    runtime_instance_id TEXT,
+    CONSTRAINT agent_calls_runtime_run_id_unique
+        UNIQUE (agent_type, runtime_instance_id, hermes_run_id),
     idempotency_key TEXT UNIQUE,
     status TEXT NOT NULL CHECK (status IN ('queued', 'submitting', 'started', 'running', 'processing', 'completed', 'failed', 'cancelled', 'interrupted')),
     output TEXT,
     error TEXT,
-    retry_count SMALLINT NOT NULL DEFAULT 0 CONSTRAINT agent_calls_retry_count_check CHECK (retry_count BETWEEN 0 AND 1),
+    retry_count SMALLINT NOT NULL DEFAULT 0 CONSTRAINT agent_calls_retry_count_check CHECK (retry_count >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -29,6 +32,11 @@ CREATE TABLE agent_calls (
 CREATE INDEX agent_calls_active_idx
     ON agent_calls (created_at)
     WHERE status IN ('queued', 'submitting', 'started', 'running', 'processing');
+
+CREATE INDEX agent_calls_runtime_active_idx
+    ON agent_calls (agent_type, runtime_instance_id, status)
+    WHERE runtime_instance_id IS NOT NULL
+      AND status IN ('submitting', 'started', 'running', 'processing');
 
 CREATE UNIQUE INDEX agent_calls_one_active_per_conversation_idx
     ON agent_calls (conversation_id)
@@ -114,3 +122,16 @@ CREATE INDEX konstantin_messages_company_history_idx
 CREATE INDEX agent_calls_konstantin_question_history_idx
     ON agent_calls (conversation_id, created_at DESC, call_id DESC)
     WHERE agent_type = 'konstantin' AND request_json->>'request_kind' = 'question';
+
+CREATE TABLE agent_context_summaries (
+    conversation_id UUID PRIMARY KEY REFERENCES agent_conversations(conversation_id),
+    agent_type TEXT NOT NULL CHECK (agent_type IN ('serezha', 'saveliy', 'valera', 'kesha', 'konstantin')),
+    summary TEXT NOT NULL,
+    through_call_created_at TIMESTAMPTZ,
+    through_call_id UUID REFERENCES agent_calls(call_id),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((through_call_created_at IS NULL) = (through_call_id IS NULL))
+);
+
+CREATE INDEX agent_context_summaries_agent_idx
+    ON agent_context_summaries (agent_type, updated_at);

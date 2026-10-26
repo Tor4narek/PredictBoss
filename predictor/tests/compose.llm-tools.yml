@@ -1,0 +1,94 @@
+x-real-hermes: &real-hermes
+  image: nousresearch/hermes-agent:latest
+  restart: "no"
+  command: ["gateway", "run"]
+  depends_on:
+    esb:
+      condition: service_healthy
+    mcp-observer:
+      condition: service_healthy
+
+services:
+  esb:
+    environment:
+      HERMES_SAVELIY_INSTANCES: "saveliy-llm=available@http://hermes-saveliy-llm:8642"
+      HERMES_KESHA_URL: ""
+      HERMES_KESHA_INSTANCES: "kesha-llm=available@http://hermes-kesha-llm:8642"
+      HERMES_KONSTANTIN_URL: ""
+      HERMES_KONSTANTIN_INSTANCES: "konstantin-llm=available@http://hermes-konstantin-llm:8642"
+      HERMES_RETRY_MAX_ATTEMPTS: "1"
+
+  mcp-observer:
+    image: python:3.12-alpine
+    command: ["python", "/app/mcp_observer.py"]
+    environment:
+      MCP_OBSERVER_UPSTREAM: http://esb:8081/mcp
+      MCP_OBSERVER_PORT: "8095"
+    ports:
+      - "18095:8095"
+    volumes:
+      - ./mcp_observer.py:/app/mcp_observer.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  hermes-saveliy-llm:
+    <<: *real-hermes
+    environment:
+      API_SERVER_KEY: test-hermes-api-key
+      HERMES_API_KEY: test-hermes-api-key
+      HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
+      ESB_API_KEY: test-esb-api-key
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
+      ESB_MCP_URL: "http://mcp-observer:8095/mcp?agent=saveliy&correlation_id=${LLM_TEST_CORRELATION_ID_SAVELIY:?test correlation ID required}"
+      AGENT_SAVELIY_MODEL_ID: ${AGENT_SAVELIY_MODEL_ID:?Set AGENT_SAVELIY_MODEL_ID in predictor/.env}
+      AGENT_SAVELIY_MAX_TURNS: "8"
+      AGENT_SAVELIY_REASONING_EFFORT: ${AGENT_SAVELIY_REASONING_EFFORT:?Set AGENT_SAVELIY_REASONING_EFFORT in predictor/.env}
+      AGENT_SAVELIY_MAX_CONCURRENT_RUNS: ${AGENT_SAVELIY_MAX_CONCURRENT_RUNS:-1}
+    volumes:
+      - llm-saveliy-data:/opt/data
+      - ../agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
+      - ../agents/saveliy/skills:/opt/skills:ro
+
+  hermes-kesha-llm:
+    <<: *real-hermes
+    environment:
+      API_SERVER_KEY: test-hermes-api-key
+      HERMES_API_KEY: test-hermes-api-key
+      HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
+      ESB_API_KEY: test-esb-api-key
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
+      ESB_MCP_URL: "http://mcp-observer:8095/mcp?agent=kesha&correlation_id=${LLM_TEST_CORRELATION_ID_KESHA:?test correlation ID required}"
+      AGENT_KESHA_MODEL_ID: ${AGENT_KESHA_MODEL_ID:?Set AGENT_KESHA_MODEL_ID in predictor/.env}
+      AGENT_KESHA_MAX_TURNS: "8"
+      AGENT_KESHA_REASONING_EFFORT: ${AGENT_KESHA_REASONING_EFFORT:?Set AGENT_KESHA_REASONING_EFFORT in predictor/.env}
+      AGENT_KESHA_MAX_CONCURRENT_RUNS: ${AGENT_KESHA_MAX_CONCURRENT_RUNS:-1}
+    volumes:
+      - llm-kesha-data:/opt/data
+      - ../agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
+      - ../agents/kesha/skills:/opt/skills:ro
+
+  hermes-konstantin-llm:
+    <<: *real-hermes
+    environment:
+      API_SERVER_KEY: test-hermes-api-key
+      HERMES_API_KEY: test-hermes-api-key
+      HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
+      ESB_API_KEY: test-esb-api-key
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
+      ESB_MCP_URL: "http://mcp-observer:8095/mcp?agent=konstantin&correlation_id=${LLM_TEST_CORRELATION_ID_KONSTANTIN:?test correlation ID required}"
+      AGENT_KONSTANTIN_MODEL_ID: ${AGENT_KONSTANTIN_MODEL_ID:?Set AGENT_KONSTANTIN_MODEL_ID in predictor/.env}
+      AGENT_KONSTANTIN_MAX_TURNS: "8"
+      AGENT_KONSTANTIN_REASONING_EFFORT: ${AGENT_KONSTANTIN_REASONING_EFFORT:?Set AGENT_KONSTANTIN_REASONING_EFFORT in predictor/.env}
+      AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS: ${AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS:-1}
+    volumes:
+      - llm-konstantin-data:/opt/data
+      - ../agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
+      - ../agents/konstantin/skills:/opt/skills:ro
+
+volumes:
+  llm-saveliy-data:
+  llm-kesha-data:
+  llm-konstantin-data:

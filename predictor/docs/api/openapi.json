@@ -136,7 +136,7 @@
             "type": "string"
           },
           "historyLimit": {
-            "description": "Maximum number of Konstantin history messages in this batch.",
+            "description": "Number of Konstantin history messages; defaults to KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE and cannot exceed KONSTANTIN_HISTORY_MAX_PAGE_SIZE.",
             "type": "integer"
           },
           "historyTo": {
@@ -388,12 +388,16 @@
                 },
                 "type_code": {
                   "type": "string"
+                },
+                "unit": {
+                  "type": "string"
                 }
               },
               "required": [
                 "metric_id",
                 "type_code",
                 "characteristic",
+                "unit",
                 "total_value",
                 "total_probability",
                 "fact_count",
@@ -755,7 +759,7 @@
             "type": "string"
           },
           "limit": {
-            "description": "Page size, at most 100.",
+            "description": "Page size; defaults to FACTS_DEFAULT_PAGE_SIZE and cannot exceed FACTS_MAX_PAGE_SIZE.",
             "type": "integer"
           },
           "materialKind": {
@@ -1048,7 +1052,7 @@
             "type": "string"
           },
           "news_text": {
-            "description": "Cleaned text of the news article, up to 1 MiB.",
+            "description": "Cleaned text of the news article; maximum size is configured by MAX_NEWS_TEXT_BYTES.",
             "type": "string"
           },
           "published_at": {

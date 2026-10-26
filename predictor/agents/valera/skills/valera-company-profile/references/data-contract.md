@@ -11,7 +11,7 @@ PostgreSQL is the source of truth for structured settings. Each row stores:
 - `type_code`: catalog word: `ставка`, `депозит`, `курс`, `логистика`, `цена`, `спрос`, `запас`, `контрагент`, or `зарплата`.
 - `name`, `description`, `metric_type`, `characteristic`, `unit`, and structured `parameters`.
 
-At most one row per `(company_id, type_code)` is stored. The metric type is the PostgreSQL `company_metric_type` enum. For the Valera catalog, use `metric_type: score`, an empty unit, and `parameters.source_fields` containing the exact input field names that triggered the row. Do not include source field values.
+At most one row per `(company_id, type_code)` is stored. The metric type is the PostgreSQL `company_metric_type` enum. Current Valera catalog rows use `metric_type: score` and an empty unit. Other metric types can retain a concise measurement unit such as `₽`, `%`, `шт.`, `тонн/месяц`, or `USD/баррель`; PostgreSQL is the source of truth for that unit. `parameters.source_fields` contains the exact input field names that triggered the row. Do not include source field values.
 
 The type order is `ставка`, `депозит`, `курс`, `логистика`, `цена`, `спрос`, `запас`, `контрагент`, `зарплата`. Unknown type codes are preserved and sorted after these values; Valera must use the nine catalog codes above.
 

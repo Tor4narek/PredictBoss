@@ -12,6 +12,7 @@ BANK_SOURCE_ID = "33333333-3333-4333-8333-333333333333"
 
 RUNS = {}
 IDEMPOTENCY = {}
+REQUESTS = []
 LOCK = threading.Lock()
 RUN_SEQUENCE = 0
 
@@ -39,6 +40,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"status": "ok"})
             return
 
+        if path == "/test/runs":
+            with LOCK:
+                runs = [dict(run_id=run_id, **run) for run_id, run in RUNS.items()]
+            self.send_json(200, {"runs": runs})
+            return
+
+        if path == "/test/requests":
+            with LOCK:
+                requests = list(REQUESTS)
+            self.send_json(200, {"requests": requests})
+            return
+
         if path.startswith("/v1/runs/"):
             if not self.authorized("test-hermes-api-key"):
                 self.send_json(401, {"error": "unauthorized"})
@@ -49,13 +62,36 @@ class Handler(BaseHTTPRequestHandler):
             if run is None:
                 self.send_json(404, {"error": "run_not_found"})
             else:
-                self.send_json(200, {"status": "completed", "output": run["output"]})
+                self.send_json(200, {
+                    "status": run.get("status", "completed"),
+                    "output": run["output"],
+                    "error": run.get("error", ""),
+                })
             return
 
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):
         global RUN_SEQUENCE
+        if urlparse(self.path).path == "/test/runs":
+            try:
+                fixture = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                run_id = fixture["run_id"]
+                status = fixture["status"]
+            except (ValueError, TypeError, KeyError):
+                self.send_json(400, {"error": "invalid_fixture"})
+                return
+            with LOCK:
+                RUNS[run_id] = {
+                    "output": fixture.get("output", "{}"),
+                    "status": status,
+                    "error": fixture.get("error", ""),
+                    "input": {},
+                    "instructions": "test fixture",
+                    "conversation_history": [],
+                }
+            self.send_json(201, {"run_id": run_id})
+            return
         if urlparse(self.path).path != "/v1/runs":
             self.send_json(404, {"error": "not_found"})
             return
@@ -78,7 +114,9 @@ class Handler(BaseHTTPRequestHandler):
             RUN_SEQUENCE += 1
             run_id = "e2e-run-%d" % RUN_SEQUENCE
             kind = agent_input.get("request_kind")
-            if kind in ("analysis", "question"):
+            if "compact historical conversation context" in request.get("instructions", ""):
+                output = "## Facts and identifiers\n- Preserve the conversation's known facts and identifiers.\n\n## Decisions\n- None\n\n## Open tasks\n- None\n\n## Constraints\n- Retain stated restrictions."
+            elif kind in ("analysis", "question"):
                 if kind == "analysis":
                     text = "E2E analysis: market changes affect the company."
                 else:
@@ -92,7 +130,18 @@ class Handler(BaseHTTPRequestHandler):
                 })
             else:
                 output = json.dumps({"status": "completed", "mock": True})
-            RUNS[run_id] = {"output": output, "input": agent_input}
+            RUNS[run_id] = {
+                "output": output,
+                "status": agent_input.get("mock_status", "completed"),
+                "input": agent_input,
+                "instructions": request.get("instructions", ""),
+                "conversation_history": request.get("conversation_history", []),
+            }
+            REQUESTS.append({
+                "instance_id": os.environ.get("MOCK_INSTANCE_ID", "mock"),
+                "run_id": run_id,
+                "idempotency_key": key,
+            })
             if key:
                 IDEMPOTENCY[key] = run_id
         self.send_json(202, {"run_id": run_id})

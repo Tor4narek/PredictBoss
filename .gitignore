@@ -23,7 +23,6 @@ predictor/domain/data/*.csv
 # Local environment and secrets
 .env
 .env.*
-!.env.example
 
 # Docker and local tooling
 .docker/

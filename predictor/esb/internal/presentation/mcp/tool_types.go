@@ -21,7 +21,7 @@ type factInput struct {
 	Category   string   `json:"category"`
 	Entities   []string `json:"entities"`
 	Evidence   string   `json:"evidence"`
-	OccurredAt *string  `json:"occurred_at"`
+	OccurredAt *string  `json:"occurred_at" jsonschema:"RFC3339 timestamp with an explicit timezone, or null. ESB normalizes empty or non-RFC3339 values to null."`
 	Confidence any      `json:"confidence" jsonschema:"confidence from 0 to 1; accepts a number or numeric string"`
 }
 type saveNewsFactsOutput struct {

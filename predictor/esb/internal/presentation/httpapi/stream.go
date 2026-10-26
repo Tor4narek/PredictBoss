@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 	"github.com/predictboss/predictor/esb/internal/application/calls"
@@ -36,10 +36,14 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-	conn.SetReadLimit(1 << 20)
-	ctx, cancel := context.WithCancel(context.Background())
-	outgoing := make(chan []byte, 64)
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+			log.Printf("consultant WebSocket close failed (company_id=%s error_type=%T)", companyID, err)
+		}
+	}()
+	conn.SetReadLimit(h.maxFrameBytes)
+	ctx, cancel := context.WithCancel(r.Context())
+	outgoing := make(chan []byte, h.outgoingQueue)
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -50,7 +54,7 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 				return
 			case payload = <-outgoing:
 			}
-			writeCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+			writeCtx, stop := context.WithTimeout(ctx, h.writeTimeout)
 			err := conn.Write(writeCtx, websocket.MessageText, payload)
 			stop()
 			if err != nil {
@@ -88,11 +92,16 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		return send(event)
 	}
 	if afterMessageID != "" {
-		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, afterMessageID, 500)
+		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, afterMessageID, h.replayLimit)
 		if err != nil {
-			payload, _ := json.Marshal(errorFrame{Kind: "error", Error: "invalid_replay_cursor"})
-			writeCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
-			_ = conn.Write(writeCtx, websocket.MessageText, payload)
+			payload, marshalErr := json.Marshal(errorFrame{Kind: "error", Error: "invalid_replay_cursor"})
+			if marshalErr != nil {
+				return
+			}
+			writeCtx, stop := context.WithTimeout(ctx, h.writeTimeout)
+			if writeErr := conn.Write(writeCtx, websocket.MessageText, payload); writeErr != nil {
+				log.Printf("consultant WebSocket error frame failed (company_id=%s error_type=%T)", companyID, writeErr)
+			}
 			stop()
 			return
 		}
@@ -102,7 +111,7 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, "", 500)
+		events, err := h.calls.KonstantinEventsAfter(r.Context(), companyID, conversationID, "", h.replayLimit)
 		if err == nil {
 			for _, event := range events {
 				if err := sendEvent(event); err != nil {
@@ -115,20 +124,34 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			event, err := h.calls.WaitKonstantinEvent(ctx, initialRequestID)
 			if err == nil && event.CompanyID == companyID && event.ConversationID == conversationID {
-				_ = sendEvent(event)
+				if sendErr := sendEvent(event); sendErr != nil && !errors.Is(sendErr, context.Canceled) {
+					log.Printf("consultant WebSocket event queue failed (company_id=%s error_type=%T)", companyID, sendErr)
+					cancel()
+				}
 			} else if err != nil && ctx.Err() == nil {
-				_ = send(errorFrame{Kind: "error", RequestID: initialRequestID, Error: "analysis_failed"})
+				if sendErr := send(errorFrame{Kind: "error", RequestID: initialRequestID, Error: "analysis_failed"}); sendErr != nil && !errors.Is(sendErr, context.Canceled) {
+					log.Printf("consultant WebSocket error queue failed (company_id=%s error_type=%T)", companyID, sendErr)
+					cancel()
+				}
 			}
 		}()
 	}
 	for {
-		_, payload, err := conn.Read(ctx)
+		readCtx := ctx
+		cancelRead := func() {}
+		if h.readTimeout > 0 {
+			readCtx, cancelRead = context.WithTimeout(ctx, h.readTimeout)
+		}
+		_, payload, err := conn.Read(readCtx)
+		cancelRead()
 		if err != nil {
 			return
 		}
 		var frame questionFrame
 		if json.Unmarshal(payload, &frame) != nil || frame.Kind != "question" {
-			_ = send(errorFrame{Kind: "error", Error: "expected_question_frame"})
+			if !sendOrCancel(ctx, cancel, send, errorFrame{Kind: "error", Error: "expected_question_frame"}, companyID) {
+				return
+			}
 			continue
 		}
 		frame.CompanyID = strings.ToLower(strings.TrimSpace(frame.CompanyID))
@@ -136,21 +159,29 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		frame.RequestID = strings.ToLower(strings.TrimSpace(frame.RequestID))
 		frame.AnalysisID = strings.ToLower(strings.TrimSpace(frame.AnalysisID))
 		if (frame.CompanyID != "" && frame.CompanyID != companyID) || (frame.ConversationID != "" && frame.ConversationID != conversationID) {
-			_ = send(errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "subscription_scope_mismatch"})
+			if !sendOrCancel(ctx, cancel, send, errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "subscription_scope_mismatch"}, companyID) {
+				return
+			}
 			continue
 		}
 		call, reused, err := h.calls.AskKonstantin(ctx, domain.ConsultantRequest{Kind: frame.Kind, RequestID: frame.RequestID,
 			CompanyID: companyID, ConversationID: conversationID, AnalysisID: frame.AnalysisID, Text: frame.Text})
 		if errors.Is(err, calls.ErrAnalysisNotReady) {
-			_ = send(errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "analysis_not_ready"})
+			if !sendOrCancel(ctx, cancel, send, errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "analysis_not_ready"}, companyID) {
+				return
+			}
 			continue
 		}
 		if errors.Is(err, calls.ErrInvalidCall) {
-			_ = send(errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "invalid_question"})
+			if !sendOrCancel(ctx, cancel, send, errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "invalid_question"}, companyID) {
+				return
+			}
 			continue
 		}
 		if err != nil {
-			_ = send(errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "question_persistence_failed"})
+			if !sendOrCancel(ctx, cancel, send, errorFrame{Kind: "error", RequestID: frame.RequestID, Error: "question_persistence_failed"}, companyID) {
+				return
+			}
 			continue
 		}
 		if err := send(acceptedFrame{Kind: "accepted", RequestID: frame.RequestID, CallID: call.ID, Reused: reused}); err != nil {
@@ -160,10 +191,27 @@ func (h *consultantHandler) stream(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			event, err := h.calls.WaitKonstantinEvent(ctx, requestID)
 			if err == nil {
-				_ = sendEvent(event)
+				if sendErr := sendEvent(event); sendErr != nil && !errors.Is(sendErr, context.Canceled) {
+					log.Printf("consultant WebSocket event queue failed (company_id=%s error_type=%T)", companyID, sendErr)
+					cancel()
+				}
 			} else if ctx.Err() == nil {
-				_ = send(errorFrame{Kind: "error", RequestID: requestID, Error: "assistant_response_failed"})
+				if sendErr := send(errorFrame{Kind: "error", RequestID: requestID, Error: "assistant_response_failed"}); sendErr != nil && !errors.Is(sendErr, context.Canceled) {
+					log.Printf("consultant WebSocket error queue failed (company_id=%s error_type=%T)", companyID, sendErr)
+					cancel()
+				}
 			}
 		}()
 	}
+}
+
+func sendOrCancel(ctx context.Context, cancel context.CancelFunc, send func(any) error, value any, companyID string) bool {
+	if err := send(value); err != nil {
+		if !errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			log.Printf("consultant WebSocket response queue failed (company_id=%s error_type=%T)", companyID, err)
+		}
+		cancel()
+		return false
+	}
+	return true
 }

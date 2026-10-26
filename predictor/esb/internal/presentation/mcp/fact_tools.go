@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/predictboss/predictor/esb/internal/application/analytics"
@@ -11,7 +12,7 @@ import (
 )
 
 func registerFactTools(server *mcp.Server, service *analytics.Service) {
-	mcp.AddTool(server, &mcp.Tool{Name: "save_news_and_facts", Description: "Store submitted news and company-independent facts in ClickHouse. Confidence accepts a JSON number or a numeric string; ESB normalizes numeric strings."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveNewsFactsInput) (*mcp.CallToolResult, saveNewsFactsOutput, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "save_news_and_facts", Description: "Store submitted news and company-independent facts in ClickHouse. Copy news_id, source_id, and news_text exactly from the current call. Copy optional metadata only when supplied; never invent company_id, source_url, or timestamps. An empty facts array is valid. occurred_at must be RFC3339 with an explicit timezone or null. ESB normalizes empty or non-RFC3339 values to null because the event time is unknown or ambiguous. Confidence accepts a JSON number or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveNewsFactsInput) (*mcp.CallToolResult, saveNewsFactsOutput, error) {
 		if strings.TrimSpace(input.NewsID) == "" || strings.TrimSpace(input.SourceID) == "" || strings.TrimSpace(input.NewsText) == "" {
 			return nil, saveNewsFactsOutput{}, fmt.Errorf("news_id, source_id and news_text are required")
 		}
@@ -21,7 +22,8 @@ func registerFactTools(server *mcp.Server, service *analytics.Service) {
 			if err != nil {
 				return nil, saveNewsFactsOutput{}, fmt.Errorf("fact %d confidence must be a number: %w", i, err)
 			}
-			facts = append(facts, domain.Fact{Text: fact.FactText, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: fact.OccurredAt, Confidence: confidence})
+			occurredAt := normalizeOccurredAt(fact.OccurredAt)
+			facts = append(facts, domain.Fact{Text: fact.FactText, Category: fact.Category, Entities: fact.Entities, Evidence: fact.Evidence, OccurredAt: occurredAt, Confidence: confidence})
 		}
 		ids, err := service.SaveNewsAndFacts(ctx, domain.News{ID: input.NewsID, SourceID: input.SourceID, SourceURL: input.SourceURL,
 			CompanyID: input.CompanyID, MaterialKind: input.MaterialKind, MediaType: input.MediaType, Title: input.Title,
@@ -71,4 +73,19 @@ func registerFactTools(server *mcp.Server, service *analytics.Service) {
 		return nil, companyFactsOutput{Facts: facts}, nil
 	})
 
+}
+
+func normalizeOccurredAt(value *string) *string {
+	if value == nil {
+		return nil
+	}
+
+	timestamp := strings.TrimSpace(*value)
+	if timestamp == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, timestamp); err != nil {
+		return nil
+	}
+	return &timestamp
 }

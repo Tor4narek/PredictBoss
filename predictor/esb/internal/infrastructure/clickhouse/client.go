@@ -15,27 +15,46 @@ import (
 	"time"
 )
 
-const maxResponseBytes = 4 << 20
-
 var databasePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-type Client struct {
-	baseURL  string
-	database string
-	user     string
-	password string
-	http     *http.Client
+type ClientConfig struct {
+	RequestTimeout   time.Duration
+	MaxResponseBytes int64
 }
 
-func NewClient(baseURL, database, user, password string) (*Client, error) {
+type Client struct {
+	baseURL          string
+	database         string
+	user             string
+	password         string
+	http             *http.Client
+	maxResponseBytes int64
+}
+
+func NewClient(baseURL, database, user, password string, config ClientConfig) (*Client, error) {
 	database = strings.TrimSpace(database)
 	if !databasePattern.MatchString(database) {
 		return nil, errors.New("invalid ClickHouse database name")
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), database: database, user: user, password: password, http: &http.Client{Timeout: 45 * time.Second}}, nil
+	if config.RequestTimeout <= 0 || config.MaxResponseBytes <= 0 {
+		return nil, errors.New("ClickHouse timeout and response limit must be positive")
+	}
+	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || !parsedURL.IsAbs() || parsedURL.Host == "" ||
+		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") ||
+		parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+		return nil, errors.New("invalid ClickHouse HTTP URL")
+	}
+	return &Client{baseURL: strings.TrimRight(parsedURL.String(), "/"), database: database, user: user, password: password,
+		http: &http.Client{
+			Timeout: config.RequestTimeout,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}, maxResponseBytes: config.MaxResponseBytes}, nil
 }
 
-func (c *Client) Ping(ctx context.Context) error {
+func (c *Client) Ping(ctx context.Context) (resultErr error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/ping", nil)
 	if err != nil {
 		return err
@@ -45,14 +64,14 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("ClickHouse returned HTTP %d", response.StatusCode)
 	}
 	return nil
 }
 
-func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
+func (c *Client) Query(ctx context.Context, sql string) (body []byte, resultErr error) {
 	values := url.Values{}
 	values.Set("query", sql)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/?"+values.Encode(), nil)
@@ -64,24 +83,25 @@ func (c *Client) Query(ctx context.Context, sql string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
+	body, err = io.ReadAll(io.LimitReader(response.Body, c.maxResponseBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(body) > maxResponseBytes {
+	if int64(len(body)) > c.maxResponseBytes {
 		return nil, errors.New("ClickHouse response exceeds size limit")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("ClickHouse HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("ClickHouse returned HTTP %d", response.StatusCode)
 	}
 	return body, nil
 }
 
-func (c *Client) Insert(ctx context.Context, table string, rows any) error {
+func (c *Client) Insert(ctx context.Context, table string, rows any) (resultErr error) {
 	allowed := map[string]bool{
-		"news": true, "facts": true, "fact_company": true, "metric_observations": true,
-		"company_analyses": true,
+		"news": true, "news_content": true, "news_processing": true,
+		"facts": true, "fact_company": true, "metric_observations": true,
+		"metric_totals": true, "company_analyses": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("unknown ClickHouse table %q", table)
@@ -112,10 +132,16 @@ func (c *Client) Insert(ctx context.Context, table string, rows any) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("ClickHouse HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+		return fmt.Errorf("ClickHouse returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func closeResponseBody(body io.Closer) error {
+	if err := body.Close(); err != nil {
+		return fmt.Errorf("close ClickHouse response body: %w", err)
 	}
 	return nil
 }
@@ -144,7 +170,7 @@ func (c *Client) queryRows(ctx context.Context, sql string, target any) error {
 		return err
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Buffer(make([]byte, 64*1024), maxResponseBytes)
+	scanner.Buffer(make([]byte, 64*1024), int(c.maxResponseBytes))
 	items := make([]json.RawMessage, 0)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -155,18 +181,15 @@ func (c *Client) queryRows(ctx context.Context, sql string, target any) error {
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	return json.Unmarshal(mustMarshal(items), target)
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("encode ClickHouse rows: %w", err)
+	}
+	return json.Unmarshal(encoded, target)
 }
-
-func mustMarshal(value any) []byte { data, _ := json.Marshal(value); return data }
 
 func escape(value string) string {
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `'`, `\'`)
 	return `'` + value + `'`
-}
-
-func checkedDate(value string) bool {
-	_, err := time.Parse("2006-01-02", value)
-	return err == nil
 }

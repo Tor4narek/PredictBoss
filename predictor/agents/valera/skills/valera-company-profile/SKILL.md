@@ -79,7 +79,7 @@ The characteristic is a short Russian phrase of 1 to 5 words that completes the 
 
 Derive the phrase from mainOkvedName and the other fields so that it names concrete goods, deliveries, or staff of this company. Do not use a generic word on its own, such as "персонала", "сотрудников", "ресурсов", "сырья", or "товаров"; write "топлива", "станции", or "склада и продаж" instead.
 
-Every catalog metric uses metric_type "score" and an empty unit. Its `parameters` object must contain `source_fields`, whose value is an array of the exact company_data field names that triggered the row. For example, use `{"source_fields": ["hasLeasing"]}`. Do not put field values in this object: `{"hasLeasing": true}` is invalid.
+Current Valera catalog metrics use metric_type `score` and an empty unit. For other metric types, preserve the measurement unit as a concise string when the value has a dimension (for example `₽`, `%`, `шт.`, `тонн/месяц`, or `USD/баррель`); leave it empty for scores or dimensionless values. The unit is stored in PostgreSQL with the company metric settings. A metric's `parameters` object must contain `source_fields`, whose value is an array of the exact company_data field names that triggered the row. For example, use `{"source_fields": ["hasLeasing"]}`. Do not put field values in this object: `{"hasLeasing": true}` is invalid.
 
 # Procedure
 

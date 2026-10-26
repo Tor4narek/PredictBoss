@@ -10,7 +10,7 @@ import (
 
 func (h *factsHandler) getFacts(w http.ResponseWriter, r *http.Request) {
 	var request getFactsRequest
-	if err := decodeJSONInto(w, r, &request); err != nil {
+	if err := decodeJSONInto(w, r, &request, h.maxJSONBodyBytes); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json_body")
 		return
 	}
@@ -46,7 +46,7 @@ func (h *factsHandler) getFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		log.Printf("read facts from ClickHouse: %v", err)
+		log.Printf("read facts from ClickHouse failed (error_type=%T)", err)
 		writeError(w, http.StatusInternalServerError, "facts_lookup_failed")
 		return
 	}

@@ -3,6 +3,8 @@ package tests
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,15 +21,16 @@ import (
 )
 
 const (
-	apiKey       = "test-esb-api-key"
-	companyID    = "11111111-1111-4111-8111-111111111111"
-	companyIDTwo = "19717000-0000-4000-8000-000000000001"
-	newsSourceID = "22222222-2222-4222-8222-222222222222"
-	bankSourceID = "33333333-3333-4333-8333-333333333333"
-	newSourceID  = "44444444-4444-4444-8444-444444444444"
-	newsID       = "55555555-5555-4555-8555-555555555555"
-	bankNewsID   = "66666666-6666-4666-8666-666666666666"
-	newNewsID    = "77777777-7777-4777-8777-777777777777"
+	apiKey          = "test-esb-api-key"
+	companyID       = "11111111-1111-4111-8111-111111111111"
+	companyIDTwo    = "19717000-0000-4000-8000-000000000001"
+	concurrentID    = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	newsSourceID    = "22222222-2222-4222-8222-222222222222"
+	bankSourceID    = "33333333-3333-4333-8333-333333333333"
+	newsID          = "55555555-5555-4555-8555-555555555555"
+	bankNewsID      = "66666666-6666-4666-8666-666666666666"
+	partialNewsID   = "abababab-abab-4bab-8bab-abababababab"
+	partialSourceID = "acacacac-acac-4cac-8cac-acacacacacac"
 )
 
 type response struct {
@@ -51,6 +54,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=", map[string]any{}, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=missing", map[string]any{"company_id": companyID}, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", map[string]any{"company_id": companyID}, true, http.StatusBadRequest, "")
+	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", map[string]any{
+		"news_id": "env-limit-news", "source_id": newsSourceID, "news_text": strings.Repeat("x", 1025),
+	}, true, http.StatusBadRequest, "invalid_news_request")
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", nil, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/stream?agent=konstantin", nil, true, http.StatusBadRequest, "stream_does_not_accept_agent")
 
@@ -85,6 +91,77 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 			t.Errorf("MCP tools/list is missing %q", name)
 		}
 	}
+	if got := clickHouseCount(t, "SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('company_metric_settings', 'company_metrics')"); got != 0 {
+		t.Fatalf("ClickHouse contains %d metric catalog/settings tables; those belong only in PostgreSQL", got)
+	}
+
+	// Identical concurrent submissions must resolve to one PostgreSQL call.
+	const concurrentRequestCount = 8
+	concurrentBody, err := json.Marshal(map[string]any{"company_id": concurrentID, "request_sequence": 1})
+	if err != nil {
+		t.Fatalf("encode concurrent call body: %v", err)
+	}
+	type concurrentResult struct {
+		response response
+		err      error
+	}
+	startConcurrentRequests := make(chan struct{})
+	concurrentResults := make(chan concurrentResult, concurrentRequestCount)
+	for range concurrentRequestCount {
+		go func() {
+			<-startConcurrentRequests
+			request, requestErr := http.NewRequest(http.MethodPost, baseURL+"/call?agent=kesha", bytes.NewReader(concurrentBody))
+			if requestErr != nil {
+				concurrentResults <- concurrentResult{err: requestErr}
+				return
+			}
+			request.Header.Set("Authorization", "Bearer "+apiKey)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "e2e-concurrent-idempotency")
+			httpResponse, requestErr := httpClient.Do(request)
+			if requestErr != nil {
+				concurrentResults <- concurrentResult{err: requestErr}
+				return
+			}
+			defer httpResponse.Body.Close()
+			body, readErr := io.ReadAll(httpResponse.Body)
+			if readErr != nil {
+				concurrentResults <- concurrentResult{err: readErr}
+				return
+			}
+			result := response{status: httpResponse.StatusCode, raw: body, body: map[string]any{}}
+			if decodeErr := json.Unmarshal(body, &result.body); decodeErr != nil {
+				concurrentResults <- concurrentResult{err: decodeErr}
+				return
+			}
+			concurrentResults <- concurrentResult{response: result}
+		}()
+	}
+	close(startConcurrentRequests)
+	var concurrentCallID string
+	reusedConcurrentCalls := 0
+	for range concurrentRequestCount {
+		result := <-concurrentResults
+		if result.err != nil {
+			t.Fatalf("concurrent idempotent request failed: %v", result.err)
+		}
+		if result.response.status != http.StatusAccepted {
+			t.Fatalf("concurrent idempotent request returned %d, want %d: %s", result.response.status, http.StatusAccepted, result.response.raw)
+		}
+		callID := stringField(t, result.response.body, "call_id")
+		if concurrentCallID == "" {
+			concurrentCallID = callID
+		} else if callID != concurrentCallID {
+			t.Fatalf("same concurrent idempotency key created calls %q and %q", concurrentCallID, callID)
+		}
+		if boolField(t, result.response.body, "reused") {
+			reusedConcurrentCalls++
+		}
+	}
+	if reusedConcurrentCalls != concurrentRequestCount-1 {
+		t.Fatalf("concurrent retries reused %d times, want %d", reusedConcurrentCalls, concurrentRequestCount-1)
+	}
+	waitForCall(t, httpClient, baseURL, "kesha", concurrentCallID)
 
 	// Valera profile call: enqueue, read its status, atomically persist profile+metrics over MCP.
 	profilePayload := valeraPayload(1)
@@ -135,6 +212,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	for _, rawMetric := range metricRows {
 		row := rawMetric.(map[string]any)
 		metricIDs[stringField(t, row, "type_code")] = stringField(t, row, "metric_id")
+		if stringField(t, row, "type_code") == "цена" && stringField(t, row, "unit") != "₽/шт." {
+			t.Fatalf("metric measurement unit was not retained by PostgreSQL/MCP: %#v", row)
+		}
 	}
 	profileRetry := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
 	if !boolField(t, profileRetry.body, "reused") {
@@ -144,22 +224,29 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	changedRevision["company"] = map[string]any{"city": "different payload"}
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", changedRevision, true, http.StatusConflict, "profile_revision_conflict")
 
-	// News intake uses the unified asynchronous agent route; there is no /news route.
+	// Seed the result through ESB MCP, then verify that Hermes completion alone
+	// is insufficient and that confirmed processing retains source text until
+	// its independent post-processing retention period expires.
+	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, newsID, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
+	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, bankNewsID, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
 	newsCall := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newsCall.body, "call_id"))
 	bankCall := postSerezha(t, httpClient, baseURL, bankSourceID, bankNewsID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Cleaned Alpha analysis text.")
 	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, bankCall.body, "call_id"))
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+newsID+"'"); got != 1 {
+		t.Fatalf("confirmed news raw text rows = %d, want 1 before retention expires", got)
+	}
 	duplicateNews := postSerezha(t, httpClient, baseURL, newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "Cleaned external news text.")
 	if !boolField(t, duplicateNews.body, "reused") || stringField(t, duplicateNews.body, "call_id") != stringField(t, newsCall.body, "call_id") {
 		t.Fatal("repeated sourceId created a duplicate call")
 	}
 	assertRequest(t, httpClient, baseURL, http.MethodPost, "/news", map[string]any{}, true, http.StatusNotFound, "")
 	largeNews := serezhaPayload(newsSourceID, newsID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", strings.Repeat("x", (1<<20)+1))
-	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", largeNews, true, http.StatusBadRequest, "invalid_news_request")
+	// The E2E Compose override caps the entire JSON body at 8 KiB, so this
+	// oversized payload is rejected by the HTTP body limit before news validation.
+	assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=serezha", largeNews, true, http.StatusBadRequest, "invalid_json_body")
 
-	// Exercise all ClickHouse-facing MCP tools against the real ClickHouse service.
-	newsFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, newsID, newsSourceID, "external_news", "text/html", "Market change", "https://example.test/news/market-change", "A market shift affects manufacturers.")
-	bankFacts := saveNewsFacts(t, mcpCtx, mcpSession, companyID, bankNewsID, bankSourceID, "alpha_analysis", "application/pdf", "Alpha market analysis", "https://example.test/alpha/market-analysis.pdf", "Costs are likely to change.")
+	// Exercise all ClickHouse-facing MCP tools while source-text retention is active.
 	globalNewsID := "88888888-8888-4888-8888-888888888888"
 	globalNews := callTool(t, mcpCtx, mcpSession, "save_news_and_facts", map[string]any{
 		"news_id": globalNewsID, "source_id": "99999999-9999-4999-8999-999999999999",
@@ -288,6 +375,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	periodFrom, periodTo := "2026-09-01 00:00:00", "2026-09-30 23:59:59"
 	totalArgs := map[string]any{"metric_id": metricIDs["ставка"], "period_from": periodFrom, "period_to": periodTo}
 	total := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", totalArgs)
+	if stringField(t, total, "company_id") != companyID || stringField(t, total, "metric_id") != metricIDs["ставка"] {
+		t.Fatalf("single metric total lost its PostgreSQL ownership IDs: %#v", total)
+	}
 	if got := floatField(t, total, "total_value"); math.Abs(got-1) > 0.000001 {
 		t.Fatalf("unweighted value mean = %v, want 1", got)
 	}
@@ -319,6 +409,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	totalItems := arrayField(t, totals, "items")
 	if len(totalItems) != 8 {
 		t.Fatalf("calculate_all_metric_totals returned %d rows, want all 8 configured metrics", len(totalItems))
+	}
+	if got := clickHouseCount(t, "SELECT count() FROM metric_totals FINAL WHERE company_id = '"+companyID+"' AND period_from = toDateTime64('2026-09-01 00:00:00', 3, 'UTC') AND period_to = toDateTime64('2026-09-30 23:59:59', 3, 'UTC')"); got != 8 {
+		t.Fatalf("ClickHouse has %d stored metric totals for the company period, want 8", got)
 	}
 	wantOrder := []string{"ставка", "курс", "логистика", "цена", "спрос", "запас", "контрагент", "зарплата"}
 	for i, raw := range totalItems {
@@ -386,6 +479,17 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-09-01", "period_to": "2026-09-30"})
 	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 8 || len(arrayField(t, companyReport, "totals")) != 8 || len(arrayField(t, companyReport, "analyses")) != 1 {
 		t.Fatalf("company report is missing ClickHouse or PostgreSQL data: %#v", companyReport)
+	}
+	var priceTotal map[string]any
+	for _, rawTotal := range arrayField(t, companyReport, "totals") {
+		item, ok := rawTotal.(map[string]any)
+		if ok && stringField(t, item, "type_code") == "цена" {
+			priceTotal = item
+			break
+		}
+	}
+	if priceTotal == nil || stringField(t, priceTotal, "unit") != "₽/шт." {
+		t.Fatalf("metric total did not return its PostgreSQL unit: %#v", priceTotal)
 	}
 	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, consultantContext, "facts")) != 2 || len(arrayField(t, consultantContext, "observations")) != 13 || len(arrayField(t, consultantContext, "totals")) == 0 {
@@ -511,8 +615,26 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	_ = duplicateWS.Close(websocket.StatusNormalClosure, "")
 
 	// New source and profile revisions independently invalidate saved analysis.
-	newSourceCall := postSerezha(t, httpClient, baseURL, newSourceID, newNewsID, "external_news", "text/html", "New source", "https://example.test/news/new-source", "A newly published source.")
-	waitForCall(t, httpClient, baseURL, "serezha", stringField(t, newSourceCall.body, "call_id"))
+	partialText := "Partial source text remains until its facts are confirmed."
+	seedPartialNewsContent(t, partialNewsID, partialSourceID, "https://example.test/news/partial", "Partial source", partialText)
+	newSourceCall := postSerezha(t, httpClient, baseURL, partialSourceID, partialNewsID, "external_news", "text/html", "Partial source", "https://example.test/news/partial", partialText)
+	partialCallID := stringField(t, newSourceCall.body, "call_id")
+	failedNewsCall := waitForFailedCall(t, httpClient, baseURL, "serezha", partialCallID)
+	if stringField(t, failedNewsCall.body, "error") != "news_persistence_unconfirmed" {
+		t.Fatalf("Serezha completed without persisted facts: %#v", failedNewsCall.body)
+	}
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 1 {
+		t.Fatalf("unconfirmed news raw text rows = %d, want 1", got)
+	}
+	saveNewsFacts(t, mcpCtx, mcpSession, companyID, partialNewsID, partialSourceID, "external_news", "text/html", "Partial source", "https://example.test/news/partial", partialText)
+	partialRetry := postSerezha(t, httpClient, baseURL, partialSourceID, partialNewsID, "external_news", "text/html", "Partial source", "https://example.test/news/partial", partialText)
+	if !boolField(t, partialRetry.body, "reused") || stringField(t, partialRetry.body, "call_id") != partialCallID {
+		t.Fatalf("retry did not reuse the failed news call: %#v", partialRetry.body)
+	}
+	waitForCall(t, httpClient, baseURL, "serezha", partialCallID)
+	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 1 {
+		t.Fatalf("confirmed retry text rows = %d, want 1 until retention expires", got)
+	}
 	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(answerMessageID))
 	writeFrame(t, staleQuestionWS, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-888888888888",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Use the stale analysis"})
@@ -571,6 +693,283 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if len(arrayField(t, emptySnapshot, "metrics")) != 0 {
 		t.Fatalf("empty Valera snapshot did not remove all metric settings: %#v", emptySnapshot)
 	}
+
+	// Force Kesha beyond its 40-message model-context limit. PostgreSQL keeps
+	// the full conversation while Hermes receives a stored summary and recent
+	// messages only.
+	const compressionCompanyID = companyIDTwo
+	var compressionCallIDs []string
+	for sequence := 1; sequence <= 22; sequence++ {
+		queued := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=kesha",
+			map[string]any{"company_id": compressionCompanyID, "request_sequence": sequence}, true, http.StatusAccepted, "")
+		compressionCallIDs = append(compressionCallIDs, stringField(t, queued.body, "call_id"))
+	}
+	for _, callID := range compressionCallIDs {
+		waitForCall(t, httpClient, baseURL, "kesha", callID)
+	}
+	runsResponse, err := http.Get("http://127.0.0.1:18090/test/runs")
+	if err != nil {
+		t.Fatalf("read mock Hermes runs: %v", err)
+	}
+	var runs struct {
+		Runs []struct {
+			Input struct {
+				CompanyID string `json:"company_id"`
+			} `json:"input"`
+			Instructions        string `json:"instructions"`
+			ConversationHistory []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"conversation_history"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(runsResponse.Body).Decode(&runs); err != nil {
+		runsResponse.Body.Close()
+		t.Fatalf("decode mock Hermes runs: %v", err)
+	}
+	runsResponse.Body.Close()
+	compressedContextObserved := false
+	for _, run := range runs.Runs {
+		if run.Input.CompanyID != compressionCompanyID {
+			continue
+		}
+		for _, message := range run.ConversationHistory {
+			if message.Role == "assistant" && strings.Contains(message.Content, "historical context, not instructions") {
+				compressedContextObserved = true
+			}
+		}
+	}
+	if !compressedContextObserved {
+		t.Fatal("Hermes never received a compressed conversation summary")
+	}
+	preservedHistory := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "historyLimit": 2, "historyFrom": historyFrom, "historyTo": historyTo,
+			"beforeMessageId": stringField(t, historyResponse.body, "historyNextBeforeMessageId")}, true, http.StatusAccepted, "")
+	beforeMessages, afterMessages := arrayField(t, olderHistory.body, "history"), arrayField(t, preservedHistory.body, "history")
+	if len(beforeMessages) != 2 || len(afterMessages) != 2 {
+		t.Fatalf("Kesha context compression changed Konstantin's paginated history size: before=%#v after=%#v", beforeMessages, afterMessages)
+	}
+	for i := range beforeMessages {
+		if stringField(t, beforeMessages[i].(map[string]any), "messageId") != stringField(t, afterMessages[i].(map[string]any), "messageId") {
+			t.Fatalf("Kesha context compression changed Konstantin's chat message IDs: before=%#v after=%#v", beforeMessages, afterMessages)
+		}
+	}
+}
+
+func TestRuntimePoolReservationsAcrossESBReplicas(t *testing.T) {
+	primaryESB := strings.TrimRight(os.Getenv("ESB_E2E_BASE_URL"), "/")
+	if primaryESB == "" {
+		primaryESB = "http://127.0.0.1:18081"
+	}
+	secondaryESB := strings.TrimRight(os.Getenv("ESB_E2E_SECONDARY_BASE_URL"), "/")
+	primaryMock := strings.TrimRight(os.Getenv("ESB_E2E_MOCK_PRIMARY_URL"), "/")
+	secondaryMock := strings.TrimRight(os.Getenv("ESB_E2E_MOCK_SECONDARY_URL"), "/")
+	if secondaryESB == "" || primaryMock == "" || secondaryMock == "" {
+		t.Skip("the two-runtime, two-ESB test requires both ESB and mock runtime endpoints")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	waitForHealth(t, client, primaryESB)
+	waitForHealth(t, client, secondaryESB)
+
+	callIDs := make([]string, 0, 5)
+	activeRequests := make([]mockRunRequest, 0, 4)
+	for sequence := 1; sequence <= 4; sequence++ {
+		key := fmt.Sprintf("runtime-pool-%d", sequence)
+		companyID := fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012x", sequence)
+		endpoint := primaryESB
+		if sequence%2 == 0 {
+			endpoint = secondaryESB
+		}
+		call := startHeldSaveliyCall(t, client, endpoint, key, companyID)
+		callIDs = append(callIDs, call.callID)
+		assertCallHasNoRuntimeDetails(t, call.body)
+		activeRequests = append(activeRequests, waitForMockRequest(t, client, []string{primaryMock, secondaryMock}, call.callID))
+	}
+	primarySlots, secondarySlots := 0, 0
+	for _, request := range activeRequests {
+		if request.instance == "primary" {
+			primarySlots++
+		} else if request.instance == "secondary" {
+			secondarySlots++
+		}
+	}
+	if primarySlots != 2 || secondarySlots != 2 {
+		t.Fatalf("runtime pool assignment counts = primary:%d secondary:%d, want two each", primarySlots, secondarySlots)
+	}
+	third := startHeldSaveliyCall(t, client, primaryESB, "runtime-pool-5", "aaaaaaaa-0000-4000-8000-000000000005")
+	callIDs = append(callIDs, third.callID)
+	assertCallHasNoRuntimeDetails(t, third.body)
+	assertCallRemainsQueued(t, client, primaryESB, third.callID, []string{primaryMock, secondaryMock}, third.callID)
+
+	for _, request := range activeRequests {
+		completeMockRun(t, client, request.baseURL, request.runID)
+	}
+	for _, callID := range callIDs[:4] {
+		waitForCall(t, client, primaryESB, "saveliy", callID)
+	}
+	thirdRequest := waitForMockRequest(t, client, []string{primaryMock, secondaryMock}, third.callID)
+	completeMockRun(t, client, thirdRequest.baseURL, thirdRequest.runID)
+	waitForCall(t, client, primaryESB, "saveliy", third.callID)
+}
+
+type mockRunRequest struct {
+	baseURL  string
+	instance string
+	runID    string
+}
+
+type heldCall struct {
+	callID string
+	body   map[string]any
+}
+
+func startHeldSaveliyCall(t *testing.T, client *http.Client, baseURL, key, companyID string) heldCall {
+	t.Helper()
+	body := map[string]any{"company_id": companyID, "news_id": "bbbbbbbb-0000-4000-8000-000000000001", "mock_status": "running"}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/call?agent=saveliy", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", key)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("start held Saveliy call through ESB: %v", err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := responseBody(t, response.StatusCode, data)
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("held Saveliy call returned %d, want 202: %s", response.StatusCode, data)
+	}
+	return heldCall{callID: stringField(t, result, "call_id"), body: result}
+}
+
+func responseBody(t *testing.T, status int, data []byte) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("decode HTTP %d JSON response: %v", status, err)
+	}
+	return body
+}
+
+func assertCallHasNoRuntimeDetails(t *testing.T, body map[string]any) {
+	t.Helper()
+	for _, key := range []string{"runtime_instance_id", "runtimeInstanceId", "runtime_url", "runtimeUrl"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("public /call response unexpectedly exposed %s", key)
+		}
+	}
+}
+
+func waitForMockRequest(t *testing.T, client *http.Client, mockURLs []string, idempotencyKey string) mockRunRequest {
+	t.Helper()
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, baseURL := range mockURLs {
+			result := readMockRequests(t, client, baseURL)
+			for _, request := range result {
+				if request.key == idempotencyKey {
+					return mockRunRequest{baseURL: baseURL, instance: request.instance, runID: request.runID}
+				}
+			}
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("Hermes mocks did not receive idempotency key %q", idempotencyKey)
+		case <-ticker.C:
+		}
+	}
+}
+
+type mockRequestRecord struct {
+	key      string
+	instance string
+	runID    string
+}
+
+func readMockRequests(t *testing.T, client *http.Client, baseURL string) []mockRequestRecord {
+	t.Helper()
+	response, err := client.Get(baseURL + "/test/requests")
+	if err != nil {
+		t.Fatalf("read Hermes mock request list: %v", err)
+	}
+	defer response.Body.Close()
+	var result struct {
+		Requests []struct {
+			InstanceID     string `json:"instance_id"`
+			RunID          string `json:"run_id"`
+			IdempotencyKey string `json:"idempotency_key"`
+		} `json:"requests"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode Hermes mock request list: %v", err)
+	}
+	requests := make([]mockRequestRecord, 0, len(result.Requests))
+	for _, request := range result.Requests {
+		requests = append(requests, mockRequestRecord{key: request.IdempotencyKey, instance: request.InstanceID, runID: request.RunID})
+	}
+	return requests
+}
+
+func assertCallRemainsQueued(t *testing.T, client *http.Client, baseURL, callID string, mockURLs []string, key string) {
+	t.Helper()
+	deadline := time.NewTimer(500 * time.Millisecond)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		result := assertRequest(t, client, baseURL, http.MethodGet, "/call?agent=saveliy", map[string]any{"call_id": callID}, true, http.StatusOK, "")
+		if stringField(t, result.body, "status") != "queued" {
+			t.Fatalf("third call status = %q while both runtime slots are occupied, want queued", result.body["status"])
+		}
+		for _, mockURL := range mockURLs {
+			for _, request := range readMockRequests(t, client, mockURL) {
+				if request.key == key {
+					t.Fatalf("runtime accepted third call while both slots were occupied")
+				}
+			}
+		}
+		select {
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func completeMockRun(t *testing.T, client *http.Client, baseURL, runID string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"run_id": runID, "status": "completed", "output": `{"ok":true}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/test/runs", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("complete Hermes mock run: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("complete Hermes mock run returned %d: %s", response.StatusCode, data)
+	}
 }
 
 func valeraPayload(revision int) map[string]any {
@@ -597,9 +996,13 @@ func metricSettingsForVector() []any {
 	}
 	result := make([]any, 0, len(types))
 	for i, item := range types {
+		metricType, unit := "score", ""
+		if item.code == "цена" {
+			metricType, unit = "currency", "₽/шт."
+		}
 		result = append(result, map[string]any{
 			"type_code": item.code, "name": item.code, "description": "Показатель компании: " + item.code,
-			"metric_type": "score", "characteristic": item.characteristic, "unit": "",
+			"metric_type": metricType, "characteristic": item.characteristic, "unit": unit,
 			"parameters": map[string]any{"source_fields": []string{fmt.Sprintf("source_%d", i+1)}},
 		})
 	}
@@ -672,6 +1075,68 @@ func saveNewsFacts(t *testing.T, ctx context.Context, session *mcp.ClientSession
 		t.Fatalf("save_news_and_facts returned %d fact IDs, want one", len(ids))
 	}
 	return ids
+}
+
+func seedPartialNewsContent(t *testing.T, newsID, sourceID, sourceURL, title, text string) {
+	t.Helper()
+	publishedAt := "2026-10-25 09:00:00.000"
+	metadata, err := json.Marshal(map[string]any{
+		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL,
+		"material_kind": "external_news", "media_type": "text/html", "title": title,
+		"published_at": publishedAt,
+	})
+	if err != nil {
+		t.Fatal("encode partial ClickHouse metadata")
+	}
+	digest := sha256.Sum256([]byte(text))
+	content, err := json.Marshal(map[string]any{
+		"news_id": newsID, "content_hash": hex.EncodeToString(digest[:]), "news_text": text,
+	})
+	if err != nil {
+		t.Fatal("encode partial ClickHouse text")
+	}
+	clickHouseExec(t, "INSERT INTO default.news (news_id, source_id, source_url, material_kind, media_type, title, published_at) FORMAT JSONEachRow", metadata)
+	clickHouseExec(t, "INSERT INTO default.news_content (news_id, content_hash, news_text) FORMAT JSONEachRow", content)
+}
+
+func clickHouseExec(t *testing.T, query string, body []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:18123/?query="+url.QueryEscape(query), bytes.NewReader(body))
+	if err != nil {
+		t.Fatal("create ClickHouse test request")
+	}
+	request.SetBasicAuth("predictor", "test-clickhouse-password")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("execute ClickHouse test query: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		t.Fatalf("ClickHouse test query returned HTTP %d", response.StatusCode)
+	}
+}
+
+func clickHouseCount(t *testing.T, query string) uint64 {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:18123/?query="+url.QueryEscape(query), nil)
+	if err != nil {
+		t.Fatal("create ClickHouse count request")
+	}
+	request.SetBasicAuth("predictor", "test-clickhouse-password")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("read ClickHouse count: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		t.Fatalf("ClickHouse count returned HTTP %d", response.StatusCode)
+	}
+	var count uint64
+	if _, err := fmt.Fscan(response.Body, &count); err != nil {
+		t.Fatalf("decode ClickHouse count: %v", err)
+	}
+	return count
 }
 
 func assertEvidence(t *testing.T, value any, sourceIDs ...string) {

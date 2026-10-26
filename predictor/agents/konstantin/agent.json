@@ -3,6 +3,13 @@
   "scope_field": "company_id",
   "skill_file": "skills/konstantin-realtime-consultant/SKILL.md",
   "runtime_url_env": "HERMES_KONSTANTIN_URL",
+  "runtime_instances_env": "HERMES_KONSTANTIN_INSTANCES",
   "required_fields": [],
-  "max_history_messages": 80
+  "context_policy": {
+    "compress_after_messages": 80,
+    "batch_messages": 100,
+    "summary_max_bytes": 12000,
+    "summary_storage": "postgres",
+    "max_history_messages": 80
+  }
 }

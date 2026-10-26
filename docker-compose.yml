@@ -5,13 +5,15 @@ x-hermes-common: &hermes-common
   restart: unless-stopped
   command: ["gateway", "run"]
   environment: &hermes-env
-    API_SERVER_ENABLED: "true"
-    API_SERVER_HOST: 0.0.0.0
-    API_SERVER_PORT: 8642
-    API_SERVER_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in .env}
-    HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in .env}
-    ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
-    LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in .env}
+    API_SERVER_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
+    HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
+    HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
+    ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
+    LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
+    ESB_MCP_URL: http://esb:8081/mcp
+  depends_on:
+    esb:
+      condition: service_healthy
   networks:
     - predictor-runtime
 
@@ -23,16 +25,16 @@ services:
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-default}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in predictor/.env}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      interval: ${CLICKHOUSE_HEALTHCHECK_INTERVAL:-5s}
+      timeout: ${CLICKHOUSE_HEALTHCHECK_TIMEOUT:-3s}
+      retries: ${CLICKHOUSE_HEALTHCHECK_RETRIES:-20}
     networks:
       - predictor-storage
 
@@ -48,9 +50,9 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-predictor} -d ${POSTGRES_DB:-predictor}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      interval: ${POSTGRES_HEALTHCHECK_INTERVAL:-5s}
+      timeout: ${POSTGRES_HEALTHCHECK_TIMEOUT:-3s}
+      retries: ${POSTGRES_HEALTHCHECK_RETRIES:-20}
     networks:
       - predictor-storage
 
@@ -75,7 +77,7 @@ services:
       - predictor-domain-storage
 
   minio:
-    image: ${MINIO_IMAGE:-dappros/minio:RELEASE.2025-09-07T16-13-09Z}
+    image: dappros/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: predictor-minio
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
@@ -85,13 +87,13 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "${HOST_BIND_ADDRESS:-127.0.0.1}:9000:9000"
-      - "${HOST_BIND_ADDRESS:-127.0.0.1}:9001:9001"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
-      interval: 3s
-      timeout: 2s
-      retries: 30
+      interval: ${MINIO_HEALTHCHECK_INTERVAL:-3s}
+      timeout: ${MINIO_HEALTHCHECK_TIMEOUT:-2s}
+      retries: ${MINIO_HEALTHCHECK_RETRIES:-30}
     networks:
       - predictor-storage
 
@@ -119,7 +121,7 @@ services:
     working_dir: /migrations
     command: ["migrate", "apply", "--env", "local"]
     environment:
-      ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
+      ATLAS_DATABASE_URL: clickhouse://${CLICKHOUSE_USER:-predictor}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in predictor/.env}@clickhouse:9000/${CLICKHOUSE_DATABASE:-default}
       ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
       - ./predictor/storage/clickhouse:/migrations:ro
@@ -189,43 +191,113 @@ services:
     networks:
       - predictor-runtime
 
-  hermes-serezha:
+  hermes-serezha: &hermes-serezha
     <<: *hermes-common
     container_name: predictor-hermes-serezha
     volumes:
       - hermes-serezha-data:/opt/data
       - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/serezha/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_SEREZHA_MODEL_ID: ${AGENT_SEREZHA_MODEL_ID:?Set AGENT_SEREZHA_MODEL_ID in predictor/.env}
+      AGENT_SEREZHA_MAX_TURNS: ${AGENT_SEREZHA_MAX_TURNS:?Set AGENT_SEREZHA_MAX_TURNS in predictor/.env}
+      AGENT_SEREZHA_REASONING_EFFORT: ${AGENT_SEREZHA_REASONING_EFFORT:?Set AGENT_SEREZHA_REASONING_EFFORT in predictor/.env}
+      AGENT_SEREZHA_MAX_CONCURRENT_RUNS: ${AGENT_SEREZHA_MAX_CONCURRENT_RUNS:?Set AGENT_SEREZHA_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-saveliy:
+  hermes-serezha-2:
+    <<: *hermes-serezha
+    container_name: predictor-hermes-serezha-2
+    volumes:
+      - hermes-serezha-2-data:/opt/data
+      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/serezha/skills:/opt/skills:ro
+
+  hermes-saveliy: &hermes-saveliy
     <<: *hermes-common
     container_name: predictor-hermes-saveliy
     volumes:
       - hermes-saveliy-data:/opt/data
       - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/saveliy/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_SAVELIY_MODEL_ID: ${AGENT_SAVELIY_MODEL_ID:?Set AGENT_SAVELIY_MODEL_ID in predictor/.env}
+      AGENT_SAVELIY_MAX_TURNS: ${AGENT_SAVELIY_MAX_TURNS:?Set AGENT_SAVELIY_MAX_TURNS in predictor/.env}
+      AGENT_SAVELIY_REASONING_EFFORT: ${AGENT_SAVELIY_REASONING_EFFORT:?Set AGENT_SAVELIY_REASONING_EFFORT in predictor/.env}
+      AGENT_SAVELIY_MAX_CONCURRENT_RUNS: ${AGENT_SAVELIY_MAX_CONCURRENT_RUNS:?Set AGENT_SAVELIY_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-valera:
+  hermes-saveliy-2:
+    <<: *hermes-saveliy
+    container_name: predictor-hermes-saveliy-2
+    volumes:
+      - hermes-saveliy-2-data:/opt/data
+      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/saveliy/skills:/opt/skills:ro
+
+  hermes-valera: &hermes-valera
     <<: *hermes-common
     container_name: predictor-hermes-valera
     volumes:
       - hermes-valera-data:/opt/data
       - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/valera/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_VALERA_MODEL_ID: ${AGENT_VALERA_MODEL_ID:?Set AGENT_VALERA_MODEL_ID in predictor/.env}
+      AGENT_VALERA_MAX_TURNS: ${AGENT_VALERA_MAX_TURNS:?Set AGENT_VALERA_MAX_TURNS in predictor/.env}
+      AGENT_VALERA_REASONING_EFFORT: ${AGENT_VALERA_REASONING_EFFORT:?Set AGENT_VALERA_REASONING_EFFORT in predictor/.env}
+      AGENT_VALERA_MAX_CONCURRENT_RUNS: ${AGENT_VALERA_MAX_CONCURRENT_RUNS:?Set AGENT_VALERA_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-kesha:
+  hermes-valera-2:
+    <<: *hermes-valera
+    container_name: predictor-hermes-valera-2
+    volumes:
+      - hermes-valera-2-data:/opt/data
+      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/valera/skills:/opt/skills:ro
+
+  hermes-kesha: &hermes-kesha
     <<: *hermes-common
     container_name: predictor-hermes-kesha
     volumes:
       - hermes-kesha-data:/opt/data
       - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/kesha/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_KESHA_MODEL_ID: ${AGENT_KESHA_MODEL_ID:?Set AGENT_KESHA_MODEL_ID in predictor/.env}
+      AGENT_KESHA_MAX_TURNS: ${AGENT_KESHA_MAX_TURNS:?Set AGENT_KESHA_MAX_TURNS in predictor/.env}
+      AGENT_KESHA_REASONING_EFFORT: ${AGENT_KESHA_REASONING_EFFORT:?Set AGENT_KESHA_REASONING_EFFORT in predictor/.env}
+      AGENT_KESHA_MAX_CONCURRENT_RUNS: ${AGENT_KESHA_MAX_CONCURRENT_RUNS:?Set AGENT_KESHA_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-konstantin:
+  hermes-kesha-2:
+    <<: *hermes-kesha
+    container_name: predictor-hermes-kesha-2
+    volumes:
+      - hermes-kesha-2-data:/opt/data
+      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/kesha/skills:/opt/skills:ro
+
+  hermes-konstantin: &hermes-konstantin
     <<: *hermes-common
     container_name: predictor-hermes-konstantin
     volumes:
       - hermes-konstantin-data:/opt/data
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_KONSTANTIN_MODEL_ID: ${AGENT_KONSTANTIN_MODEL_ID:?Set AGENT_KONSTANTIN_MODEL_ID in predictor/.env}
+      AGENT_KONSTANTIN_MAX_TURNS: ${AGENT_KONSTANTIN_MAX_TURNS:?Set AGENT_KONSTANTIN_MAX_TURNS in predictor/.env}
+      AGENT_KONSTANTIN_REASONING_EFFORT: ${AGENT_KONSTANTIN_REASONING_EFFORT:?Set AGENT_KONSTANTIN_REASONING_EFFORT in predictor/.env}
+      AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS: ${AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS:?Set AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS in predictor/.env}
+
+  hermes-konstantin-2:
+    <<: *hermes-konstantin
+    container_name: predictor-hermes-konstantin-2
+    volumes:
+      - hermes-konstantin-2-data:/opt/data
       - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/konstantin/skills:/opt/skills:ro
 
@@ -237,30 +309,100 @@ services:
     container_name: predictor-esb
     restart: unless-stopped
     environment:
-      HTTP_ADDR: :8081
+      HTTP_ADDR: ${HTTP_ADDR:-:8081}
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable}
-      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
-      HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in .env}
-      HERMES_SEREZHA_URL: http://hermes-serezha:8642
-      HERMES_SAVELIY_URL: http://hermes-saveliy:8642
-      HERMES_VALERA_URL: http://hermes-valera:8642
-      HERMES_KESHA_URL: http://hermes-kesha:8642
-      HERMES_KONSTANTIN_URL: http://hermes-konstantin:8642
-      HERMES_POLL_INTERVAL: 2s
-      AGENTS_DIR: /app/agents
-      CLICKHOUSE_URL: http://clickhouse:8123
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
+      HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
+      HERMES_SEREZHA_INSTANCES: ${HERMES_SEREZHA_INSTANCES:-serezha-1=available@http://hermes-serezha:8642;serezha-2=available@http://hermes-serezha-2:8642}
+      HERMES_SAVELIY_INSTANCES: ${HERMES_SAVELIY_INSTANCES:-saveliy-1=available@http://hermes-saveliy:8642;saveliy-2=available@http://hermes-saveliy-2:8642}
+      HERMES_VALERA_INSTANCES: ${HERMES_VALERA_INSTANCES:-valera-1=available@http://hermes-valera:8642;valera-2=available@http://hermes-valera-2:8642}
+      HERMES_KESHA_INSTANCES: ${HERMES_KESHA_INSTANCES:-kesha-1=available@http://hermes-kesha:8642;kesha-2=available@http://hermes-kesha-2:8642}
+      HERMES_KONSTANTIN_INSTANCES: ${HERMES_KONSTANTIN_INSTANCES:-konstantin-1=available@http://hermes-konstantin:8642;konstantin-2=available@http://hermes-konstantin-2:8642}
+      HERMES_POLL_INTERVAL: ${HERMES_POLL_INTERVAL:-2s}
+      QUEUE_DISPATCH_BATCH_SIZE: ${QUEUE_DISPATCH_BATCH_SIZE:-100}
+      CONTEXT_COMPACTION_TIMEOUT: ${CONTEXT_COMPACTION_TIMEOUT:-30s}
+      VALERA_PROFILE_SYNC_MAX_RETRIES: ${VALERA_PROFILE_SYNC_MAX_RETRIES:-1}
+      CLEANUP_ENABLED: ${CLEANUP_ENABLED:-true}
+      CLEANUP_STATUS_CHECK_INTERVAL: ${CLEANUP_STATUS_CHECK_INTERVAL:-1h}
+      CLEANUP_RETENTION_CHECK_INTERVAL: ${CLEANUP_RETENTION_CHECK_INTERVAL:-24h}
+      CLEANUP_BATCH_SIZE: ${CLEANUP_BATCH_SIZE:-500}
+      CLEANUP_QUEUED_STALE_AFTER: ${CLEANUP_QUEUED_STALE_AFTER:-10m}
+      CLEANUP_RUNNING_STALE_AFTER: ${CLEANUP_RUNNING_STALE_AFTER:-30m}
+      CLEANUP_ACTIVE_MAX_RETRIES: ${CLEANUP_ACTIVE_MAX_RETRIES:-1}
+      CLEANUP_CALL_PAYLOAD_RETENTION: ${CLEANUP_CALL_PAYLOAD_RETENTION:-2160h}
+      CLEANUP_CALL_RECORD_RETENTION: ${CLEANUP_CALL_RECORD_RETENTION:-2160h}
+      CLEANUP_CONTEXT_SUMMARY_RETENTION: ${CLEANUP_CONTEXT_SUMMARY_RETENTION:-never}
+      CLEANUP_MESSAGES_RETENTION_SEREZHA: ${CLEANUP_MESSAGES_RETENTION_SEREZHA:-never}
+      CLEANUP_MESSAGES_RETENTION_SAVELIY: ${CLEANUP_MESSAGES_RETENTION_SAVELIY:-never}
+      CLEANUP_MESSAGES_RETENTION_VALERA: ${CLEANUP_MESSAGES_RETENTION_VALERA:-never}
+      CLEANUP_MESSAGES_RETENTION_KESHA: ${CLEANUP_MESSAGES_RETENTION_KESHA:-never}
+      CLEANUP_MESSAGES_RETENTION_KONSTANTIN: ${CLEANUP_MESSAGES_RETENTION_KONSTANTIN:-never}
+      CLEANUP_PROCESSED_NEWS_TEXT_RETENTION: ${CLEANUP_PROCESSED_NEWS_TEXT_RETENTION:-168h}
+      CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION: ${CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION:-never}
+      CLEANUP_NEWS_METADATA_RETENTION: ${CLEANUP_NEWS_METADATA_RETENTION:-never}
+      CLEANUP_NEWS_MARKER_RETENTION: ${CLEANUP_NEWS_MARKER_RETENTION:-never}
+      CLEANUP_FACTS_RETENTION: ${CLEANUP_FACTS_RETENTION:-never}
+      CLEANUP_FACT_COMPANY_RETENTION: ${CLEANUP_FACT_COMPANY_RETENTION:-never}
+      CLEANUP_METRIC_OBSERVATIONS_RETENTION: ${CLEANUP_METRIC_OBSERVATIONS_RETENTION:-never}
+      CLEANUP_METRIC_TOTALS_RETENTION: ${CLEANUP_METRIC_TOTALS_RETENTION:-never}
+      CLEANUP_COMPANY_ANALYSES_RETENTION: ${CLEANUP_COMPANY_ANALYSES_RETENTION:-never}
+      HERMES_REQUEST_TIMEOUT: ${HERMES_REQUEST_TIMEOUT:-45s}
+      HERMES_HEALTH_TIMEOUT: ${HERMES_HEALTH_TIMEOUT:-2s}
+      HERMES_RETRY_MAX_ATTEMPTS: ${HERMES_RETRY_MAX_ATTEMPTS:-5}
+      HERMES_RETRY_BASE_DELAY: ${HERMES_RETRY_BASE_DELAY:-1s}
+      HERMES_MAX_RESPONSE_BYTES: ${HERMES_MAX_RESPONSE_BYTES:-1048576}
+      AGENTS_DIR: ${AGENTS_DIR:-/app/agents}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
-      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in predictor/.env}
+      CLICKHOUSE_REQUEST_TIMEOUT: ${CLICKHOUSE_REQUEST_TIMEOUT:-45s}
+      CLICKHOUSE_MAX_RESPONSE_BYTES: ${CLICKHOUSE_MAX_RESPONSE_BYTES:-4194304}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in predictor/.env}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_ENDPOINT: ${S3_ENDPOINT:-}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
       S3_CREATE_BUCKET: ${S3_CREATE_BUCKET:-false}
+      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+      HTTP_SHUTDOWN_TIMEOUT: ${HTTP_SHUTDOWN_TIMEOUT:-10s}
+      HTTP_MAX_JSON_BODY_BYTES: ${HTTP_MAX_JSON_BODY_BYTES:-2097152}
+      MAX_NEWS_TEXT_BYTES: ${MAX_NEWS_TEXT_BYTES:-1048576}
+      MAX_QUESTION_BYTES: ${MAX_QUESTION_BYTES:-1048576}
+      WS_MAX_FRAME_BYTES: ${WS_MAX_FRAME_BYTES:-1048576}
+      S3_PROFILE_MAX_BYTES: ${S3_PROFILE_MAX_BYTES:-2097152}
+      MAX_FACTS_PER_NEWS: ${MAX_FACTS_PER_NEWS:-500}
+      MAX_FACT_COMPANY_LINKS_PER_REQUEST: ${MAX_FACT_COMPANY_LINKS_PER_REQUEST:-1000}
+      MAX_METRIC_OBSERVATIONS_PER_REQUEST: ${MAX_METRIC_OBSERVATIONS_PER_REQUEST:-1000}
+      MAX_COMPANY_METRICS_PER_REQUEST: ${MAX_COMPANY_METRICS_PER_REQUEST:-500}
+      FACTS_DEFAULT_PAGE_SIZE: ${FACTS_DEFAULT_PAGE_SIZE:-100}
+      FACTS_MAX_PAGE_SIZE: ${FACTS_MAX_PAGE_SIZE:-100}
+      FACTS_MAX_PERIOD_DAYS: ${FACTS_MAX_PERIOD_DAYS:-90}
+      COMPANY_ITEMS_DEFAULT_PAGE_SIZE: ${COMPANY_ITEMS_DEFAULT_PAGE_SIZE:-100}
+      COMPANY_ITEMS_MAX_PAGE_SIZE: ${COMPANY_ITEMS_MAX_PAGE_SIZE:-500}
+      CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE: ${CONSULTANT_CONTEXT_DEFAULT_PAGE_SIZE:-100}
+      CONSULTANT_CONTEXT_MAX_PAGE_SIZE: ${CONSULTANT_CONTEXT_MAX_PAGE_SIZE:-500}
+      KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE: ${KONSTANTIN_HISTORY_DEFAULT_PAGE_SIZE:-100}
+      KONSTANTIN_HISTORY_MAX_PAGE_SIZE: ${KONSTANTIN_HISTORY_MAX_PAGE_SIZE:-100}
+      KONSTANTIN_HISTORY_DEFAULT_WINDOW_DAYS: ${KONSTANTIN_HISTORY_DEFAULT_WINDOW_DAYS:-30}
+      KONSTANTIN_HISTORY_MAX_WINDOW_DAYS: ${KONSTANTIN_HISTORY_MAX_WINDOW_DAYS:-90}
+      COMPANY_REPORT_DEFAULT_WINDOW_DAYS: ${COMPANY_REPORT_DEFAULT_WINDOW_DAYS:-30}
+      COMPANY_REPORT_FACTS_LIMIT: ${COMPANY_REPORT_FACTS_LIMIT:-200}
+      COMPANY_REPORT_ANALYSIS_LIMIT: ${COMPANY_REPORT_ANALYSIS_LIMIT:-100}
+      STREAM_REPLAY_LIMIT: ${STREAM_REPLAY_LIMIT:-500}
+      KONSTANTIN_EVENT_POLL_INTERVAL: ${KONSTANTIN_EVENT_POLL_INTERVAL:-300ms}
+      WS_READ_TIMEOUT: ${WS_READ_TIMEOUT:-0s}
+      WS_WRITE_TIMEOUT: ${WS_WRITE_TIMEOUT:-15s}
+      WS_OUTGOING_QUEUE_SIZE: ${WS_OUTGOING_QUEUE_SIZE:-64}
     ports:
-      - "${HOST_BIND_ADDRESS:-127.0.0.1}:8081:8081"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${ESB_HOST_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/healthz"]
+      interval: ${ESB_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${ESB_HEALTHCHECK_TIMEOUT:-3s}
+      retries: ${ESB_HEALTHCHECK_RETRIES:-20}
     depends_on:
       postgres:
         condition: service_healthy
@@ -268,16 +410,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      hermes-serezha:
-        condition: service_started
-      hermes-saveliy:
-        condition: service_started
-      hermes-valera:
-        condition: service_started
-      hermes-kesha:
-        condition: service_started
-      hermes-konstantin:
-        condition: service_started
     networks:
       - predictor-storage
       - predictor-runtime
@@ -299,7 +431,12 @@ volumes:
   postgres-data:
   minio-data:
   hermes-serezha-data:
+  hermes-serezha-2-data:
   hermes-saveliy-data:
+  hermes-saveliy-2-data:
   hermes-valera-data:
+  hermes-valera-2-data:
   hermes-kesha-data:
+  hermes-kesha-2-data:
   hermes-konstantin-data:
+  hermes-konstantin-2-data:

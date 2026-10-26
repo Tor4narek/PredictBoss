@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,29 +16,44 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
-const MaxProfileBytes = 2 << 20
-
 type Config struct {
-	Bucket       string
-	Region       string
-	Endpoint     string
-	AccessKey    string
-	SecretKey    string
-	PathStyle    bool
-	CreateBucket bool
+	Bucket          string
+	Region          string
+	Endpoint        string
+	AccessKey       string
+	SecretKey       string
+	PathStyle       bool
+	CreateBucket    bool
+	MaxProfileBytes int64
 }
 
 type Store struct {
-	bucket string
-	client *awsS3.Client
+	bucket          string
+	client          *awsS3.Client
+	maxProfileBytes int64
 }
 
 func NewStore(ctx context.Context, cfg Config) (*Store, error) {
-	if strings.TrimSpace(cfg.Bucket) == "" {
+	cfg.Bucket = strings.TrimSpace(cfg.Bucket)
+	if cfg.Bucket == "" {
 		return nil, errors.New("S3 bucket is required")
 	}
+	if cfg.MaxProfileBytes <= 0 {
+		return nil, errors.New("S3 profile size limit must be positive")
+	}
+	cfg.Region = strings.TrimSpace(cfg.Region)
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
+	}
+	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
+	if cfg.Endpoint != "" {
+		parsedURL, err := url.Parse(cfg.Endpoint)
+		if err != nil || !parsedURL.IsAbs() || parsedURL.Host == "" ||
+			(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") ||
+			parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+			return nil, errors.New("invalid S3 endpoint URL")
+		}
+		cfg.Endpoint = strings.TrimRight(parsedURL.String(), "/")
 	}
 	if (cfg.AccessKey == "") != (cfg.SecretKey == "") {
 		return nil, errors.New("S3 access key and secret key must be set together")
@@ -66,10 +82,10 @@ func NewStore(ctx context.Context, cfg Config) (*Store, error) {
 			}
 		}
 	}
-	return &Store{bucket: cfg.Bucket, client: client}, nil
+	return &Store{bucket: cfg.Bucket, client: client, maxProfileBytes: cfg.MaxProfileBytes}, nil
 }
 
-func (s *Store) Get(ctx context.Context, companyID string) (string, string, error) {
+func (s *Store) Get(ctx context.Context, companyID string) (markdown string, key string, resultErr error) {
 	key, err := profileKey(companyID)
 	if err != nil {
 		return "", "", err
@@ -78,12 +94,16 @@ func (s *Store) Get(ctx context.Context, companyID string) (string, string, erro
 	if err != nil {
 		return "", "", fmt.Errorf("read company profile from S3: %w", err)
 	}
-	defer result.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(result.Body, MaxProfileBytes+1))
+	defer func() {
+		if err := result.Body.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close S3 company profile response: %w", err))
+		}
+	}()
+	body, err := io.ReadAll(io.LimitReader(result.Body, s.maxProfileBytes+1))
 	if err != nil {
 		return "", "", fmt.Errorf("read company profile body: %w", err)
 	}
-	if len(body) > MaxProfileBytes {
+	if int64(len(body)) > s.maxProfileBytes {
 		return "", "", errors.New("company profile exceeds size limit")
 	}
 	if strings.TrimSpace(string(body)) == "" {
@@ -98,7 +118,7 @@ func (s *Store) Save(ctx context.Context, companyID, markdown string) (string, e
 		return "", err
 	}
 	markdown = strings.TrimSpace(markdown)
-	if markdown == "" || len(markdown) > MaxProfileBytes {
+	if markdown == "" || int64(len(markdown)) > s.maxProfileBytes {
 		return "", errors.New("profile markdown is empty or too large")
 	}
 	_, err = s.client.PutObject(ctx, &awsS3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Body: strings.NewReader(markdown), ContentType: aws.String("text/markdown; charset=utf-8")})
@@ -114,11 +134,16 @@ func profileKey(companyID string) (string, error) {
 		return "", errors.New("invalid company_id")
 	}
 	for _, char := range companyID {
-		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("._-", char)) {
+		if !validCompanyIDCharacter(char) {
 			return "", errors.New("invalid company_id")
 		}
 	}
 	return "companies/" + companyID + "/profile.md", nil
+}
+
+func validCompanyIDCharacter(char rune) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' ||
+		char >= '0' && char <= '9' || strings.ContainsRune("._-", char)
 }
 
 var _ domain.ProfileRepository = (*Store)(nil)

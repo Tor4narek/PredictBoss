@@ -12,8 +12,6 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
-const MaxNewsTextBytes = 1 << 20
-
 var ErrInvalidInput = errors.New("invalid news input")
 var sourceIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var newsIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
@@ -27,8 +25,9 @@ type CallCreator interface {
 }
 
 type Service struct {
-	sources SourceRegistry
-	calls   CallCreator
+	sources          SourceRegistry
+	calls            CallCreator
+	maxNewsTextBytes int64
 }
 
 // CallInput is the JSON contract accepted by POST /call?agent=serezha.
@@ -42,11 +41,11 @@ type CallInput struct {
 	MediaType    string  `json:"media_type,omitempty" jsonschema:"Source media type: text/html or application/pdf."`
 	Title        string  `json:"title,omitempty" jsonschema:"News title."`
 	PublishedAt  *string `json:"published_at,omitempty" jsonschema:"Publication timestamp in RFC 3339 format."`
-	NewsText     string  `json:"news_text" jsonschema:"Cleaned text of the news article, up to 1 MiB."`
+	NewsText     string  `json:"news_text" jsonschema:"Cleaned text of the news article; maximum size is configured by MAX_NEWS_TEXT_BYTES."`
 }
 
-func NewService(sources SourceRegistry, callsService CallCreator) *Service {
-	return &Service{sources: sources, calls: callsService}
+func NewService(sources SourceRegistry, callsService CallCreator, maxNewsTextBytes int64) *Service {
+	return &Service{sources: sources, calls: callsService, maxNewsTextBytes: maxNewsTextBytes}
 }
 
 // Submit validates a Serezha request, registers company source metadata when
@@ -64,7 +63,7 @@ func (s *Service) Submit(ctx context.Context, raw json.RawMessage) (domain.Call,
 	request.MediaType = strings.TrimSpace(request.MediaType)
 	request.Title = strings.TrimSpace(request.Title)
 	request.NewsText = strings.TrimSpace(request.NewsText)
-	if !newsIDPattern.MatchString(request.NewsID) || !sourceIDPattern.MatchString(request.SourceID) || request.NewsText == "" || len(request.NewsText) > MaxNewsTextBytes {
+	if !newsIDPattern.MatchString(request.NewsID) || !sourceIDPattern.MatchString(request.SourceID) || request.NewsText == "" || int64(len(request.NewsText)) > s.maxNewsTextBytes {
 		return domain.Call{}, false, ErrInvalidInput
 	}
 	if request.CompanyID != "" && !sourceIDPattern.MatchString(request.CompanyID) {

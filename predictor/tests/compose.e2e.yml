@@ -26,6 +26,8 @@ services:
       interval: 2s
       timeout: 3s
       retries: 40
+    ports:
+      - "18123:8123"
     volumes:
       - ch-data:/var/lib/clickhouse
 
@@ -48,6 +50,9 @@ services:
     command: ["python", "/app/mock_server.py"]
     environment:
       MOCK_PORT: "8090"
+      MOCK_INSTANCE_ID: "primary"
+    ports:
+      - "18090:8090"
     volumes:
       - ./mock_server.py:/app/mock_server.py:ro
     healthcheck:
@@ -56,7 +61,23 @@ services:
       timeout: 3s
       retries: 40
 
-  esb:
+  mock-runtime-secondary:
+    image: python:3.12-alpine
+    command: ["python", "/app/mock_server.py"]
+    environment:
+      MOCK_PORT: "8091"
+      MOCK_INSTANCE_ID: "secondary"
+    ports:
+      - "18091:8091"
+    volumes:
+      - ./mock_server.py:/app/mock_server.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  esb: &esb-service
     image: predictor-esb-e2e:local
     build:
       context: ../..
@@ -67,11 +88,36 @@ services:
       ESB_API_KEY: test-esb-api-key
       HERMES_API_KEY: test-hermes-api-key
       HERMES_SEREZHA_URL: http://mock-runtime:8090
-      HERMES_SAVELIY_URL: http://mock-runtime:8090
       HERMES_VALERA_URL: http://mock-runtime:8090
       HERMES_KESHA_URL: http://mock-runtime:8090
       HERMES_KONSTANTIN_URL: http://mock-runtime:8090
+      HERMES_SAVELIY_INSTANCES: "saveliy-primary=available@http://mock-runtime:8090;saveliy-secondary=available@http://mock-runtime-secondary:8091"
+      AGENT_SAVELIY_MAX_CONCURRENT_RUNS: "2"
       HERMES_POLL_INTERVAL: 50ms
+      CLEANUP_ENABLED: ${E2E_CLEANUP_ENABLED:-false}
+      CLEANUP_STATUS_CHECK_INTERVAL: ${E2E_CLEANUP_STATUS_INTERVAL:-1h}
+      CLEANUP_RETENTION_CHECK_INTERVAL: ${E2E_CLEANUP_RETENTION_INTERVAL:-24h}
+      CLEANUP_BATCH_SIZE: ${E2E_CLEANUP_BATCH_SIZE:-500}
+      CLEANUP_QUEUED_STALE_AFTER: ${E2E_CLEANUP_QUEUED_STALE_AFTER:-10m}
+      CLEANUP_RUNNING_STALE_AFTER: ${E2E_CLEANUP_RUNNING_STALE_AFTER:-30m}
+      CLEANUP_ACTIVE_MAX_RETRIES: ${E2E_CLEANUP_ACTIVE_MAX_RETRIES:-1}
+      CLEANUP_CALL_PAYLOAD_RETENTION: ${E2E_CLEANUP_CALL_PAYLOAD_RETENTION:-2160h}
+      CLEANUP_CALL_RECORD_RETENTION: ${E2E_CLEANUP_CALL_RECORD_RETENTION:-2160h}
+      CLEANUP_CONTEXT_SUMMARY_RETENTION: ${E2E_CLEANUP_CONTEXT_SUMMARY_RETENTION:-never}
+      CLEANUP_MESSAGES_RETENTION_SEREZHA: ${E2E_CLEANUP_MESSAGES_RETENTION_SEREZHA:-never}
+      CLEANUP_MESSAGES_RETENTION_SAVELIY: ${E2E_CLEANUP_MESSAGES_RETENTION_SAVELIY:-never}
+      CLEANUP_MESSAGES_RETENTION_VALERA: ${E2E_CLEANUP_MESSAGES_RETENTION_VALERA:-never}
+      CLEANUP_MESSAGES_RETENTION_KESHA: ${E2E_CLEANUP_MESSAGES_RETENTION_KESHA:-never}
+      CLEANUP_MESSAGES_RETENTION_KONSTANTIN: ${E2E_CLEANUP_MESSAGES_RETENTION_KONSTANTIN:-never}
+      CLEANUP_PROCESSED_NEWS_TEXT_RETENTION: ${E2E_CLEANUP_PROCESSED_NEWS_TEXT_RETENTION:-168h}
+      CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION: ${E2E_CLEANUP_UNPROCESSED_NEWS_TEXT_RETENTION:-never}
+      CLEANUP_NEWS_METADATA_RETENTION: ${E2E_CLEANUP_NEWS_METADATA_RETENTION:-never}
+      CLEANUP_NEWS_MARKER_RETENTION: ${E2E_CLEANUP_NEWS_MARKER_RETENTION:-never}
+      CLEANUP_FACTS_RETENTION: ${E2E_CLEANUP_FACTS_RETENTION:-never}
+      CLEANUP_FACT_COMPANY_RETENTION: ${E2E_CLEANUP_FACT_COMPANY_RETENTION:-never}
+      CLEANUP_METRIC_OBSERVATIONS_RETENTION: ${E2E_CLEANUP_METRIC_OBSERVATIONS_RETENTION:-never}
+      CLEANUP_METRIC_TOTALS_RETENTION: ${E2E_CLEANUP_METRIC_TOTALS_RETENTION:-never}
+      CLEANUP_COMPANY_ANALYSES_RETENTION: ${E2E_CLEANUP_COMPANY_ANALYSES_RETENTION:-never}
       AGENTS_DIR: /app/agents
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DATABASE: default
@@ -84,6 +130,8 @@ services:
       S3_SECRET_ACCESS_KEY: test-minio-password
       S3_FORCE_PATH_STYLE: "true"
       S3_CREATE_BUCKET: "true"
+      HTTP_MAX_JSON_BODY_BYTES: "8192"
+      MAX_NEWS_TEXT_BYTES: "1024"
     ports:
       - "18081:8081"
     depends_on:
@@ -93,6 +141,8 @@ services:
         condition: service_healthy
       mock-runtime:
         condition: service_healthy
+      mock-runtime-secondary:
+        condition: service_healthy
       minio:
         condition: service_healthy
     healthcheck:
@@ -100,6 +150,11 @@ services:
       interval: 2s
       timeout: 3s
       retries: 40
+
+  esb-secondary:
+    <<: *esb-service
+    ports:
+      - "18082:8081"
 
   atlas-postgres:
     image: arigaio/atlas:latest
