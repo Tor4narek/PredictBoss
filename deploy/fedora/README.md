@@ -15,13 +15,9 @@ Log out and back in after changing the `docker` group. The deployment account mu
 
 The workflow creates `$HOME/predictboss` on its first run. The deployment account must own its home directory and have permission to create files there.
 
-Put the company CSV outside the Git checkout. For example, copy it from Windows with:
+The company CSV is tracked at `predictor/domain/data/df_Uid_data_hack.csv` in this public repository. On deployment, Actions transfers it to `~/predictboss-data/df_Uid_data_hack.csv` only when that server copy is missing or has a different checksum. The normal source archive excludes the CSV. `DOMAIN_CSV_PATH` is set to its absolute server path by the workflow; it does not need to be added to `PRODUCTION_ENV_FILE`.
 
-```powershell
-scp "C:\PredictBoss\docs\df_Uid_data_hack.csv" guest@system.onix.fun:~/predictboss-data/df_Uid_data_hack.csv
-```
-
-Create `~/predictboss-data` on Fedora first. Set `DOMAIN_CSV_PATH` in the `PRODUCTION_ENV_FILE` GitHub secret to the CSV's absolute path. Set strong, unique production values for every password and API key, `DOMAIN_JWT_KEY` (at least 32 bytes), and `ATLAS_TOKEN` for ClickHouse migrations. Keep `SWAGGER_ENABLED=false` in production. The compose file binds application and storage ports to loopback by default.
+Set strong, unique production values for every password and API key, `DOMAIN_JWT_KEY` (at least 32 bytes), and `ATLAS_TOKEN` for ClickHouse migrations. Keep `SWAGGER_ENABLED=false` in production. The compose file binds application and storage ports to loopback by default.
 
 Configure the existing host Caddy to proxy your public domain to the frontend. For `system.onix.fun`, add this site block to the server's existing Caddyfile (preserve any other sites already configured):
 
@@ -60,6 +56,6 @@ Verify the Fedora SSH host key out of band before trusting it. The GitHub secret
 | `PRODUCTION_ENV_FILE` | Full production `.env` contents in dotenv format (multiline secret) |
 | `LLM_API_KEY` | Current LLM provider API key; kept separate for rotation |
 
-Before every deployment, the workflow writes `$HOME/predictboss/.env` over the verified SSH connection with file mode `600`. Put the stable production settings and credentials in `PRODUCTION_ENV_FILE`, replacing placeholders and local defaults. Keep `LLM_API_KEY` out of that file; the workflow adds its value from the separate secret of the same name. Set `DOMAIN_CSV_PATH` to the absolute CSV path on Fedora (for example `/home/guest/predictboss-data/df_Uid_data_hack.csv`); the CSV itself stays on the server and is never sent to GitHub. Keep `SWAGGER_ENABLED=false` and `HOST_BIND_ADDRESS=127.0.0.1`.
+Before every deployment, the workflow writes `$HOME/predictboss/.env` over the verified SSH connection with file mode `600`. Put the stable production settings and credentials in `PRODUCTION_ENV_FILE`, replacing placeholders and local defaults. Keep `LLM_API_KEY` out of that file; the workflow adds its value from the separate secret of the same name. The workflow sets `DOMAIN_CSV_PATH` to `/home/$FEDORA_USER/predictboss-data/df_Uid_data_hack.csv`. Keep `SWAGGER_ENABLED=false` and `HOST_BIND_ADDRESS=127.0.0.1`.
 
-Each push to `main` composes the server `.env` from `PRODUCTION_ENV_FILE` and `LLM_API_KEY`, transfers the tracked source archive, and runs the deployment. The workflow keeps one deployment active at a time. Update the LLM credential by changing only the `LLM_API_KEY` GitHub secret; update other production settings through `PRODUCTION_ENV_FILE`. Each deployment replaces the server `.env` with the current composed values.
+Each push to `main` composes the server `.env` from `PRODUCTION_ENV_FILE` and `LLM_API_KEY`, transfers the tracked source archive and ensures the server CSV matches the tracked dataset, then runs the deployment. The workflow keeps one deployment active at a time. Update the LLM credential by changing only the `LLM_API_KEY` GitHub secret; update other production settings through `PRODUCTION_ENV_FILE`. Each deployment replaces the server `.env` with the current composed values.
