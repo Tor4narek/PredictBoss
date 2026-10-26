@@ -44,6 +44,16 @@ func TestKonstantinAssistantTextDoesNotRequireCitationFields(t *testing.T) {
 			want:   "A concise answer.",
 		},
 		{
+			name:   "JSON ignores reasoning fields",
+			output: `{"text":"A concise answer.","thoughts":"private reasoning"}`,
+			want:   "A concise answer.",
+		},
+		{
+			name:   "JSON with only reasoning has no answer",
+			output: `{"thoughts":"private reasoning"}`,
+			want:   "",
+		},
+		{
 			name:   "answer alias",
 			output: `{"answer":"A concise answer."}`,
 			want:   "A concise answer.",
