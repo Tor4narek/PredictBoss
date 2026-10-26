@@ -1005,26 +1005,70 @@ ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, 
 
 func konstantinAssistantText(output string) string {
 	candidate := strings.TrimSpace(output)
+	if strings.HasSuffix(candidate, "```") {
+		candidate = strings.TrimSpace(strings.TrimSuffix(candidate, "```"))
+	}
 	if strings.HasPrefix(candidate, "```") {
 		lineEnd := strings.IndexByte(candidate, '\n')
-		if lineEnd >= 0 && strings.HasSuffix(candidate, "```") {
-			candidate = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(candidate[lineEnd+1:]), "```"))
+		if lineEnd >= 0 {
+			candidate = strings.TrimSpace(candidate[lineEnd+1:])
 		}
 	}
-	var result assistantOutput
-	if err := json.Unmarshal([]byte(candidate), &result); err == nil {
-		if result.Text != "" {
-			return strings.TrimSpace(result.Text)
-		}
-		return strings.TrimSpace(result.Answer)
+	if text, valid := decodeKonstantinAnswer(candidate); valid {
+		return text
 	}
-	// Do not treat malformed JSON as user-facing text. A plain response, however,
-	// is still the model's final answer and is normalized into the public `text`
-	// field by the caller. Structured reasoning fields are never copied.
+	// Some providers prepend untagged reasoning to the final JSON object. Read
+	// only a complete trailing object on its own line, never the raw preamble.
+	// Malformed structured output must not expose a nested reasoning field.
 	if strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[") {
 		return ""
 	}
-	return candidate
+	if !strings.HasSuffix(candidate, "}") {
+		return ""
+	}
+	depth, quoted := 0, false
+	for start := len(candidate) - 1; start >= 0; start-- {
+		switch candidate[start] {
+		case '"':
+			escapes := 0
+			for before := start - 1; before >= 0 && candidate[before] == '\\'; before-- {
+				escapes++
+			}
+			if escapes%2 == 0 {
+				quoted = !quoted
+			}
+		case '}':
+			if !quoted {
+				depth++
+			}
+		case '{':
+			if quoted {
+				continue
+			}
+			depth--
+			if depth != 0 {
+				continue
+			}
+			lineStart := strings.LastIndexByte(candidate[:start], '\n') + 1
+			if strings.TrimSpace(candidate[lineStart:start]) != "" {
+				return ""
+			}
+			text, _ := decodeKonstantinAnswer(candidate[start:])
+			return text
+		}
+	}
+	return ""
+}
+
+func decodeKonstantinAnswer(candidate string) (string, bool) {
+	var result assistantOutput
+	if err := json.Unmarshal([]byte(candidate), &result); err != nil {
+		return "", false
+	}
+	if text := strings.TrimSpace(result.Text); text != "" {
+		return text, true
+	}
+	return strings.TrimSpace(result.Answer), true
 }
 
 func konstantinCallSources(ctx context.Context, tx pgx.Tx, callID, conversationID, companyID string) ([]domain.ConsultantEvidence, error) {

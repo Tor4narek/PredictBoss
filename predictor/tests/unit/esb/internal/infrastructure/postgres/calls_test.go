@@ -59,9 +59,9 @@ func TestKonstantinAssistantTextDoesNotRequireCitationFields(t *testing.T) {
 			want:   "A concise answer.",
 		},
 		{
-			name:   "plain text",
+			name:   "unstructured output is not a final answer",
 			output: "A concise answer without a JSON wrapper.",
-			want:   "A concise answer without a JSON wrapper.",
+			want:   "",
 		},
 		{
 			name:   "fenced JSON",
@@ -72,6 +72,51 @@ func TestKonstantinAssistantTextDoesNotRequireCitationFields(t *testing.T) {
 			name:   "malformed JSON object",
 			output: `{"text":`,
 			want:   "",
+		},
+		{
+			name:   "untagged reasoning before final JSON",
+			output: "The tools returned company data.\nI will now prepare the answer.\n{\n  \"text\": \"Краткий итог.\"\n}",
+			want:   "Краткий итог.",
+		},
+		{
+			name:   "reasoning before fenced final JSON",
+			output: "Private planning.\n```json\n{\"text\":\"Итог.\",\"reasoning\":\"private\"}\n```",
+			want:   "Итог.",
+		},
+		{
+			name:   "tagged reasoning before final JSON",
+			output: "<think>Private planning.</think>\n{\"text\":\"Итог.\"}",
+			want:   "Итог.",
+		},
+		{
+			name:   "reasoning without final JSON is withheld",
+			output: "<think>Private planning with no final answer.</think>",
+			want:   "",
+		},
+		{
+			name:   "JSON followed by prose is withheld",
+			output: "Private planning.\n{\"text\":\"Итог.\"}\nMore private planning.",
+			want:   "",
+		},
+		{
+			name:   "nested object is not a final answer",
+			output: "{\"reasoning\":\n{\"text\":\"Private planning.\"}",
+			want:   "",
+		},
+		{
+			name:   "final JSON string is not an answer object",
+			output: `"Private planning."`,
+			want:   "",
+		},
+		{
+			name:   "quoted braces in final answer",
+			output: "Private planning.\n  {\"text\":\"Значение {цена} выросло.\"}",
+			want:   "Значение {цена} выросло.",
+		},
+		{
+			name:   "empty text uses nonempty legacy answer",
+			output: `{"text":" ","answer":"Итог."}`,
+			want:   "Итог.",
 		},
 	}
 	for _, test := range tests {

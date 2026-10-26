@@ -132,13 +132,13 @@ class Handler(BaseHTTPRequestHandler):
                 company_id = fixture["company_id"]
                 request_kind = fixture["request_kind"]
                 output = fixture["output"]
-                if not isinstance(company_id, str) or request_kind not in ("analysis", "question") or not isinstance(output, dict):
+                if not isinstance(company_id, str) or request_kind not in ("analysis", "question") or not isinstance(output, (dict, str)):
                     raise ValueError("invalid fixture")
             except (ValueError, TypeError, KeyError):
                 self.send_json(400, {"error": "invalid_fixture"})
                 return
             with LOCK:
-                NEXT_OUTPUTS[(company_id, request_kind)] = json.dumps(output, separators=(",", ":"))
+                NEXT_OUTPUTS[(company_id, request_kind)] = output if isinstance(output, str) else json.dumps(output, separators=(",", ":"))
             self.send_json(201, {"status": "queued"})
             return
         if path == "/test/runs":

@@ -692,6 +692,17 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertModelTextAndServerEvidence(t, unavailableEvidence, "Answer with an unavailable source ID.", newsSourceID, bankSourceID)
 	assertEvidenceExcludes(t, unavailableEvidence["evidence"], unavailableSourceID)
 
+	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question",
+		"Private planning about the tool results.\nI will prepare a final answer.\n{\"text\":\"Краткий итог для компании.\",\"thoughts\":\"private\"}")
+	finalOnly := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-000000000001",
+		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Дай краткий итог."})
+	assertModelTextAndServerEvidence(t, finalOnly, "Краткий итог для компании.", newsSourceID, bankSourceID)
+	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", "Private planning without a final JSON answer.")
+	noFinal := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-000000000002",
+		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Повтори краткий итог."})
+	assertModelTextAndServerEvidence(t, noFinal,
+		"Не удалось подготовить итоговый ответ по данным этого вызова. Попробуйте повторить запрос.", newsSourceID, bankSourceID)
+
 	// Cancellation is a lifecycle operation: the model still produces one full
 	// answer per request, and an active Hermes run must be stopped exactly once.
 	cancelRequestID := "77777777-7777-4777-8777-777777777782"
@@ -845,7 +856,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 1 {
 		t.Fatalf("confirmed retry text rows = %d, want 1 until retention expires", got)
 	}
-	lastEvidenceMessageID := stringField(t, unavailableEvidence, "messageId")
+	lastEvidenceMessageID := stringField(t, noFinal, "messageId")
 	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(lastEvidenceMessageID))
 	writeFrame(t, staleQuestionWS, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-888888888888",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Use the stale analysis"})
@@ -1868,7 +1879,7 @@ func assertInsufficientEvidence(t *testing.T, answer map[string]any) {
 	}
 }
 
-func queueMockNextOutput(t *testing.T, client *http.Client, mockURL, companyID, requestKind string, output map[string]any) {
+func queueMockNextOutput(t *testing.T, client *http.Client, mockURL, companyID, requestKind string, output any) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"company_id": companyID, "request_kind": requestKind, "output": output})
 	if err != nil {
