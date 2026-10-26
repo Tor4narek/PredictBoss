@@ -21,7 +21,7 @@ mcp_servers:
   esb:
     url: ${ESB_MCP_URL}
     headers:
-      Authorization: "Bearer ${ESB_API_KEY}"
+      Authorization: "Bearer ${MCP_TOKEN_SAVELIY}"
     supports_parallel_tool_calls: false
     tools:
       include: [get_company_profile, get_facts, save_fact_company_links]

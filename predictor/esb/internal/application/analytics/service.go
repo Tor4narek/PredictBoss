@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -32,7 +33,20 @@ type Limits struct {
 	MaxFactCompanyLinks         int
 	MaxMetricObservations       int
 	MaxCompanyMetrics           int
+	MaxNewsTextBytes            int64
 }
+
+const (
+	maxFactTextBytes           = 4096
+	maxFactEvidenceBytes       = 2048
+	maxFactCategoryBytes       = 128
+	maxFactEntityBytes         = 256
+	maxFactEntities            = 64
+	maxLinkRelevanceBytes      = 1024
+	maxAnalysisTextBytes       = 32 << 10
+	maxSourceFactIDsPerRow     = 100
+	maxSourceFactIDsPerRequest = 10000
+)
 
 type Service struct {
 	repository domain.AnalyticsRepository
@@ -65,11 +79,15 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 	if !idPattern.MatchString(news.ID) {
 		return nil, fmt.Errorf("%w: news_id must contain 1 to 128 letters, digits, dots, underscores, or hyphens", ErrInvalidAnalyticsInput)
 	}
-	if news.SourceID == "" {
-		return nil, fmt.Errorf("%w: source_id is required", ErrInvalidAnalyticsInput)
+	news.SourceID = strings.ToLower(news.SourceID)
+	if !uuidPattern.MatchString(news.SourceID) {
+		return nil, fmt.Errorf("%w: source_id must be a UUID", ErrInvalidAnalyticsInput)
 	}
-	if news.Text == "" {
-		return nil, fmt.Errorf("%w: news_text is required", ErrInvalidAnalyticsInput)
+	if news.Text == "" || (s.limits.MaxNewsTextBytes > 0 && int64(len(news.Text)) > s.limits.MaxNewsTextBytes) {
+		return nil, fmt.Errorf("%w: news_text is empty or exceeds the configured limit", ErrInvalidAnalyticsInput)
+	}
+	if len(news.Title) > 512 || len(news.SourceURL) > 4096 || !validSourceURL(news.SourceURL) {
+		return nil, fmt.Errorf("%w: source metadata is invalid", ErrInvalidAnalyticsInput)
 	}
 	if len(facts) > s.limits.MaxFactsPerNews {
 		return nil, fmt.Errorf("%w: facts contains more than %d items", ErrInvalidAnalyticsInput, s.limits.MaxFactsPerNews)
@@ -90,8 +108,17 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 	}
 	for i := range facts {
 		facts[i].Text = strings.TrimSpace(facts[i].Text)
-		if facts[i].Text == "" || !probability(facts[i].Confidence) {
+		facts[i].Evidence = strings.TrimSpace(facts[i].Evidence)
+		facts[i].Category = strings.TrimSpace(facts[i].Category)
+		if facts[i].Text == "" || len(facts[i].Text) > maxFactTextBytes ||
+			facts[i].Evidence == "" || len(facts[i].Evidence) > maxFactEvidenceBytes || !strings.Contains(news.Text, facts[i].Evidence) ||
+			len(facts[i].Category) > maxFactCategoryBytes || len(facts[i].Entities) > maxFactEntities || !probability(facts[i].Confidence) {
 			return nil, fmt.Errorf("%w: fact at index %d", ErrInvalidAnalyticsInput, i)
+		}
+		for _, entity := range facts[i].Entities {
+			if strings.TrimSpace(entity) == "" || len(entity) > maxFactEntityBytes {
+				return nil, fmt.Errorf("%w: fact entity at index %d", ErrInvalidAnalyticsInput, i)
+			}
 		}
 		if facts[i].OccurredAt != nil {
 			if _, err := time.Parse(time.RFC3339, *facts[i].OccurredAt); err != nil {
@@ -112,8 +139,8 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 // processing marker, source metadata, and complete fact set.
 func (s *Service) FinalizeNews(ctx context.Context, news domain.News) (string, error) {
 	news.ID = strings.TrimSpace(news.ID)
-	news.SourceID = strings.TrimSpace(news.SourceID)
-	if !idPattern.MatchString(news.ID) || news.SourceID == "" {
+	news.SourceID = strings.ToLower(strings.TrimSpace(news.SourceID))
+	if !idPattern.MatchString(news.ID) || !uuidPattern.MatchString(news.SourceID) {
 		return "", ErrInvalidAnalyticsInput
 	}
 	hash := strings.TrimSpace(news.TextHash)
@@ -193,16 +220,32 @@ func (s *Service) QueryFacts(ctx context.Context, request FactsRequest) (domain.
 }
 
 func (s *Service) SaveFactCompanyLinks(ctx context.Context, companyID string, links []domain.FactCompanyLink) error {
-	companyID = strings.TrimSpace(companyID)
-	companyID = strings.ToLower(companyID)
-	if !idPattern.MatchString(companyID) || len(links) > s.limits.MaxFactCompanyLinks {
+	companyID = strings.ToLower(strings.TrimSpace(companyID))
+	if !uuidPattern.MatchString(companyID) || len(links) > s.limits.MaxFactCompanyLinks {
 		return ErrInvalidAnalyticsInput
 	}
+	factIDs := make([]string, 0, len(links))
+	seen := make(map[string]struct{}, len(links))
 	for i := range links {
-		links[i].FactID = strings.TrimSpace(links[i].FactID)
+		links[i].FactID = strings.ToLower(strings.TrimSpace(links[i].FactID))
 		links[i].Relevance = strings.TrimSpace(links[i].Relevance)
-		if !uuidPattern.MatchString(links[i].FactID) || links[i].Relevance == "" || !probability(links[i].Confidence) {
+		if !uuidPattern.MatchString(links[i].FactID) || links[i].Relevance == "" || len(links[i].Relevance) > maxLinkRelevanceBytes || !probability(links[i].Confidence) {
 			return fmt.Errorf("%w: fact-company link at index %d", ErrInvalidAnalyticsInput, i)
+		}
+		if _, duplicate := seen[links[i].FactID]; duplicate {
+			return fmt.Errorf("%w: duplicate fact-company link at index %d", ErrInvalidAnalyticsInput, i)
+		}
+		seen[links[i].FactID] = struct{}{}
+		factIDs = append(factIDs, links[i].FactID)
+	}
+	references, err := s.repository.FactReferences(ctx, factIDs)
+	if err != nil {
+		return err
+	}
+	persistedIDs := stringSetFactReferences(references)
+	for _, factID := range factIDs {
+		if _, exists := persistedIDs[factID]; !exists {
+			return fmt.Errorf("%w: one or more fact IDs are not persisted", ErrInvalidAnalyticsInput)
 		}
 	}
 	return s.repository.SaveFactCompanyLinks(ctx, companyID, links)
@@ -216,14 +259,21 @@ func (s *Service) CompanyFacts(ctx context.Context, companyID string, limit int)
 }
 
 func (s *Service) SaveMetricObservations(ctx context.Context, companyID string, observations []domain.MetricObservation) error {
-	companyID = strings.TrimSpace(companyID)
-	if !idPattern.MatchString(companyID) || len(observations) > s.limits.MaxMetricObservations {
+	companyID = strings.ToLower(strings.TrimSpace(companyID))
+	if !uuidPattern.MatchString(companyID) || len(observations) > s.limits.MaxMetricObservations {
 		return ErrInvalidAnalyticsInput
 	}
+	newsIDs := make([]string, 0, len(observations))
+	factIDs := make([]string, 0)
+	seenNews := make(map[string]struct{}, len(observations))
+	seenFacts := make(map[string]struct{})
 	for i := range observations {
 		observation := &observations[i]
+		if observation.CompanyID != "" && !strings.EqualFold(strings.TrimSpace(observation.CompanyID), companyID) {
+			return fmt.Errorf("%w: observation at index %d has a mismatched company_id", ErrInvalidAnalyticsInput, i)
+		}
 		observation.CompanyID = companyID
-		observation.MetricID = strings.TrimSpace(observation.MetricID)
+		observation.MetricID = strings.ToLower(strings.TrimSpace(observation.MetricID))
 		observation.NewsID = strings.TrimSpace(observation.NewsID)
 		if !uuidPattern.MatchString(observation.MetricID) || !idPattern.MatchString(observation.NewsID) {
 			return fmt.Errorf("%w: metric observation at index %d", ErrInvalidAnalyticsInput, i)
@@ -237,10 +287,41 @@ func (s *Service) SaveMetricObservations(ctx context.Context, companyID string, 
 		if observation.ID != "" && !uuidPattern.MatchString(observation.ID) {
 			return fmt.Errorf("%w: observation id at index %d", ErrInvalidAnalyticsInput, i)
 		}
-		for _, factID := range observation.SourceFactIDs {
+		seenObservationFacts := make(map[string]struct{}, len(observation.SourceFactIDs))
+		for factIndex, factID := range observation.SourceFactIDs {
+			factID = strings.ToLower(strings.TrimSpace(factID))
 			if !uuidPattern.MatchString(factID) {
 				return fmt.Errorf("%w: source fact id at index %d", ErrInvalidAnalyticsInput, i)
 			}
+			if _, duplicate := seenObservationFacts[factID]; duplicate {
+				return fmt.Errorf("%w: duplicate source fact id at index %d", ErrInvalidAnalyticsInput, i)
+			}
+			seenObservationFacts[factID] = struct{}{}
+			observation.SourceFactIDs[factIndex] = factID
+			if _, queried := seenFacts[factID]; !queried {
+				if len(factIDs) >= maxSourceFactIDsPerRequest {
+					return fmt.Errorf("%w: request has too many distinct source fact IDs", ErrInvalidAnalyticsInput)
+				}
+				seenFacts[factID] = struct{}{}
+				factIDs = append(factIDs, factID)
+			}
+		}
+		if len(observation.SourceFactIDs) > maxSourceFactIDsPerRow {
+			return fmt.Errorf("%w: observation at index %d has too many source facts", ErrInvalidAnalyticsInput, i)
+		}
+		if observation.SourceID != "" && !uuidPattern.MatchString(observation.SourceID) {
+			return fmt.Errorf("%w: observation source_id at index %d must be a UUID", ErrInvalidAnalyticsInput, i)
+		}
+		observation.SourceID = strings.ToLower(observation.SourceID)
+		if observation.SourceURL != "" && !validSourceURL(observation.SourceURL) {
+			return fmt.Errorf("%w: observation source_url at index %d is invalid", ErrInvalidAnalyticsInput, i)
+		}
+		if observation.MaterialKind != "" && observation.MaterialKind != "external_news" && observation.MaterialKind != "alpha_analysis" {
+			return fmt.Errorf("%w: observation material_kind at index %d is invalid", ErrInvalidAnalyticsInput, i)
+		}
+		if _, exists := seenNews[observation.NewsID]; !exists {
+			seenNews[observation.NewsID] = struct{}{}
+			newsIDs = append(newsIDs, observation.NewsID)
 		}
 	}
 	known, err := s.knownMetricIDs(ctx, companyID)
@@ -252,22 +333,120 @@ func (s *Service) SaveMetricObservations(ctx context.Context, companyID string, 
 			return fmt.Errorf("%w: unknown metric_id %q for company", ErrInvalidAnalyticsInput, observations[i].MetricID)
 		}
 	}
+	if err := s.validateObservationReferences(ctx, companyID, observations, newsIDs, factIDs); err != nil {
+		return err
+	}
 	return s.repository.SaveMetricObservations(ctx, companyID, observations)
+}
+
+func (s *Service) validateObservationReferences(ctx context.Context, companyID string,
+	observations []domain.MetricObservation, newsIDs, factIDs []string) error {
+	newsReferences, err := s.repository.NewsReferences(ctx, newsIDs)
+	if err != nil {
+		return err
+	}
+	newsByID := make(map[string]domain.NewsReference, len(newsReferences))
+	for _, reference := range newsReferences {
+		newsByID[reference.ID] = reference
+	}
+	if len(newsByID) != len(newsIDs) {
+		return fmt.Errorf("%w: one or more observation news IDs are not persisted", ErrInvalidAnalyticsInput)
+	}
+
+	companyNewsIDs, err := s.repository.CompanyNewsIDs(ctx, companyID, newsIDs)
+	if err != nil {
+		return err
+	}
+	companyNews := stringSet(companyNewsIDs)
+
+	factReferences, err := s.repository.FactReferences(ctx, factIDs)
+	if err != nil {
+		return err
+	}
+	factsByID := make(map[string]domain.FactReference, len(factReferences))
+	for _, reference := range factReferences {
+		factsByID[reference.ID] = reference
+	}
+	if len(factsByID) != len(factIDs) {
+		return fmt.Errorf("%w: one or more observation fact IDs are not persisted", ErrInvalidAnalyticsInput)
+	}
+	companyFactIDs, err := s.repository.CompanyFactIDs(ctx, companyID, factIDs)
+	if err != nil {
+		return err
+	}
+	companyFacts := stringSet(companyFactIDs)
+
+	for i := range observations {
+		observation := &observations[i]
+		news, exists := newsByID[observation.NewsID]
+		if !exists {
+			return fmt.Errorf("%w: news_id at observation %d is not persisted", ErrInvalidAnalyticsInput, i)
+		}
+		if _, linked := companyNews[observation.NewsID]; !linked {
+			return fmt.Errorf("%w: news_id at observation %d is not linked to the requested company", ErrInvalidAnalyticsInput, i)
+		}
+		if observation.SourceID != "" && observation.SourceID != news.SourceID {
+			return fmt.Errorf("%w: source_id at observation %d does not match its news", ErrInvalidAnalyticsInput, i)
+		}
+		if observation.SourceURL != "" && observation.SourceURL != news.SourceURL {
+			return fmt.Errorf("%w: source_url at observation %d does not match its news", ErrInvalidAnalyticsInput, i)
+		}
+		if observation.MaterialKind != "" && observation.MaterialKind != news.MaterialKind {
+			return fmt.Errorf("%w: material_kind at observation %d does not match its news", ErrInvalidAnalyticsInput, i)
+		}
+		observation.SourceID = news.SourceID
+		observation.SourceURL = news.SourceURL
+		observation.MaterialKind = news.MaterialKind
+		for _, factID := range observation.SourceFactIDs {
+			fact, exists := factsByID[factID]
+			if !exists || fact.NewsID != observation.NewsID {
+				return fmt.Errorf("%w: source fact at observation %d does not belong to its news", ErrInvalidAnalyticsInput, i)
+			}
+			if _, linked := companyFacts[factID]; !linked {
+				return fmt.Errorf("%w: source fact at observation %d is not linked to the requested company", ErrInvalidAnalyticsInput, i)
+			}
+		}
+	}
+	return nil
+}
+
+func stringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func stringSetFactReferences(references []domain.FactReference) map[string]struct{} {
+	result := make(map[string]struct{}, len(references))
+	for _, reference := range references {
+		result[reference.ID] = struct{}{}
+	}
+	return result
 }
 
 func (s *Service) SaveCompanyAnalysis(ctx context.Context, analysis domain.CompanyAnalysis) error {
 	analysis.CompanyID = strings.TrimSpace(analysis.CompanyID)
 	analysis.Text = strings.TrimSpace(analysis.Text)
-	if !idPattern.MatchString(analysis.CompanyID) || analysis.Text == "" || !probability(analysis.Probability) {
+	analysis.CompanyID = strings.ToLower(analysis.CompanyID)
+	if !uuidPattern.MatchString(analysis.CompanyID) || analysis.Text == "" || len(analysis.Text) > maxAnalysisTextBytes || !probability(analysis.Probability) {
 		return ErrInvalidAnalyticsInput
 	}
 	if _, err := dateRange(analysis.PeriodFrom, analysis.PeriodTo); err != nil {
 		return ErrInvalidAnalyticsInput
 	}
-	for _, metricID := range analysis.MetricIDs {
-		if !idPattern.MatchString(metricID) {
+	seenMetrics := make(map[string]struct{}, len(analysis.MetricIDs))
+	for i, metricID := range analysis.MetricIDs {
+		metricID = strings.ToLower(strings.TrimSpace(metricID))
+		analysis.MetricIDs[i] = metricID
+		if !uuidPattern.MatchString(metricID) {
 			return ErrInvalidAnalyticsInput
 		}
+		if _, duplicate := seenMetrics[metricID]; duplicate {
+			return ErrInvalidAnalyticsInput
+		}
+		seenMetrics[metricID] = struct{}{}
 	}
 	known, err := s.knownMetricIDs(ctx, analysis.CompanyID)
 	if err != nil {
@@ -456,6 +635,14 @@ func (s *Service) knownMetricIDs(ctx context.Context, companyID string) (map[str
 
 func probability(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
+}
+
+func validSourceURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" && parsed.User == nil
 }
 
 func clampLimit(value, defaultValue, maxValue int) int {

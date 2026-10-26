@@ -21,17 +21,27 @@ import (
 )
 
 const (
-	apiKey          = "test-esb-api-key"
-	companyID       = "11111111-1111-4111-8111-111111111111"
-	companyIDTwo    = "19717000-0000-4000-8000-000000000001"
-	concurrentID    = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-	newsSourceID    = "22222222-2222-4222-8222-222222222222"
-	bankSourceID    = "33333333-3333-4333-8333-333333333333"
-	newsID          = "55555555-5555-4555-8555-555555555555"
-	bankNewsID      = "66666666-6666-4666-8666-666666666666"
-	partialNewsID   = "abababab-abab-4bab-8bab-abababababab"
-	partialSourceID = "acacacac-acac-4cac-8cac-acacacacacac"
+	apiKey           = "test-esb-api-key"
+	serezhaMCPKey    = "test-only-serezha-mcp-token-000000000001"
+	saveliyMCPKey    = "test-only-saveliy-mcp-token-000000000002"
+	valeraMCPKey     = "test-only-valera-mcp-token-000000000003"
+	keshaMCPKey      = "test-only-kesha-mcp-token-000000000004"
+	konstantinMCPKey = "test-only-konstantin-mcp-token-000000000005"
+	companyID        = "11111111-1111-4111-8111-111111111111"
+	companyIDTwo     = "19717000-0000-4000-8000-000000000001"
+	concurrentID     = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	newsSourceID     = "22222222-2222-4222-8222-222222222222"
+	bankSourceID     = "33333333-3333-4333-8333-333333333333"
+	newsID           = "55555555-5555-4555-8555-555555555555"
+	bankNewsID       = "66666666-6666-4666-8666-666666666666"
+	partialNewsID    = "abababab-abab-4bab-8bab-abababababab"
+	partialSourceID  = "acacacac-acac-4cac-8cac-acacacacacac"
 )
+
+var agentMCPKeys = map[string]string{
+	"serezha": serezhaMCPKey, "saveliy": saveliyMCPKey, "valera": valeraMCPKey,
+	"kesha": keshaMCPKey, "konstantin": konstantinMCPKey,
+}
 
 type response struct {
 	status int
@@ -60,37 +70,34 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", nil, true, http.StatusBadRequest, "")
 	assertRequest(t, httpClient, baseURL, http.MethodGet, "/stream?agent=konstantin", nil, true, http.StatusBadRequest, "stream_does_not_accept_agent")
 
-	// Connect to the real Streamable HTTP MCP endpoint and enumerate every tool.
+	// MCP roles are authenticated independently from Domain HTTP and WebSocket.
 	mcpCtx, cancelMCP := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancelMCP()
-	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "predictor-esb-e2e", Version: "1.0.0"}, nil)
-	mcpHTTP := &http.Client{Transport: bearerTransport{key: apiKey, base: http.DefaultTransport}}
-	mcpSession, err := mcpClient.Connect(mcpCtx, &mcp.StreamableClientTransport{
-		Endpoint: baseURL + "/mcp", HTTPClient: mcpHTTP, DisableStandaloneSSE: true,
-	}, nil)
-	if err != nil {
-		t.Fatalf("connect to MCP endpoint: %v", err)
+	assertMCPUnauthorized(t, httpClient, baseURL, "")
+	assertMCPUnauthorized(t, httpClient, baseURL, "invalid-e2e-mcp-token")
+	assertMCPUnauthorized(t, httpClient, baseURL, apiKey)
+	assertMCPCallUnauthorized(t, httpClient, baseURL, "")
+	assertMCPCallUnauthorized(t, httpClient, baseURL, "invalid-e2e-mcp-token")
+	assertMCPCallUnauthorized(t, httpClient, baseURL, apiKey)
+	mcpSession := connectAgentMCPs(t, mcpCtx, baseURL)
+	defer mcpSession.close(t)
+	wantTools := map[string][]string{
+		"serezha":    {"save_news_and_facts"},
+		"saveliy":    {"get_company_profile", "get_facts", "save_fact_company_links"},
+		"valera":     {"get_company_metrics", "save_company_profile_and_metrics"},
+		"kesha":      {"get_company_profile", "get_company_facts", "get_company_metrics", "save_metric_observations", "calculate_all_metric_totals", "save_company_analysis", "get_company_report"},
+		"konstantin": {"get_company_profile", "get_company_metrics", "get_consultant_context"},
 	}
-	defer mcpSession.Close()
-	tools, err := mcpSession.ListTools(mcpCtx, &mcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("list MCP tools: %v", err)
+	for agent, expected := range wantTools {
+		assertAgentTools(t, mcpCtx, mcpSession.sessions[agent], agent, expected)
 	}
-	wantTools := []string{
-		"get_company_profile", "save_company_profile_and_metrics", "save_news_and_facts", "get_facts",
-		"save_fact_company_links", "get_company_facts", "save_company_metrics", "get_company_metrics",
-		"save_metric_observations", "calculate_metric_total", "calculate_all_metric_totals",
-		"save_company_analysis", "get_company_report", "get_consultant_context",
-	}
-	toolNames := make(map[string]bool, len(tools.Tools))
-	for _, tool := range tools.Tools {
-		toolNames[tool.Name] = true
-	}
-	for _, name := range wantTools {
-		if !toolNames[name] {
-			t.Errorf("MCP tools/list is missing %q", name)
-		}
-	}
+	assertAgentToolsThroughSpoofedQuery(t, mcpCtx, baseURL, "saveliy", "/mcp?agent=valera", wantTools["saveliy"])
+	assertMCPRoleCannotReuseAnotherAgentsSession(t, httpClient, baseURL,
+		mcpSession.sessions["saveliy"].ID(), valeraMCPKey)
+	assertForbiddenMCPCallWithoutList(t, mcpCtx, baseURL, saveliyMCPKey,
+		"save_company_profile_and_metrics", map[string]any{"agent": "valera", "company_id": companyID})
+	assertForbiddenMCPCallWithoutList(t, mcpCtx, baseURL, keshaMCPKey,
+		"save_company_metrics", map[string]any{"agent": "valera", "company_id": companyID})
 	if got := clickHouseCount(t, "SELECT count() FROM system.tables WHERE database = 'default' AND name IN ('company_metric_settings', 'company_metrics')"); got != 0 {
 		t.Fatalf("ClickHouse contains %d metric catalog/settings tables; those belong only in PostgreSQL", got)
 	}
@@ -202,7 +209,6 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatal("S3-compatible profile read did not return the saved Markdown")
 	}
 	waitForKonstantinReady(t, httpClient, baseURL, companyID)
-	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyID, "metrics": vectorMetrics})
 	metrics := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
 	metricRows := arrayField(t, metrics, "metrics")
 	if len(metricRows) != 8 {
@@ -253,7 +259,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		"source_url": "https://example.test/news/global-market", "material_kind": "external_news",
 		"media_type": "text/html", "title": "Global market trend", "news_text": "A global trend affects manufacturing.",
 		"facts": []any{map[string]any{"fact_text": "Manufacturing output is increasing globally.", "category": "market",
-			"entities": []string{"manufacturing"}, "evidence": "source text", "occurred_at": "2026-10-25T09:00:00Z", "confidence": "0.9"}},
+			"entities": []string{"manufacturing"}, "evidence": "manufacturing", "occurred_at": "2026-10-25T09:00:00Z", "confidence": "0.9"}},
 	})
 	if len(stringArrayField(t, globalNews, "fact_ids")) != 1 {
 		t.Fatal("saving company-independent news did not create its universal fact")
@@ -329,6 +335,11 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("expected two linked company facts, got %d", len(arrayField(t, companyFacts, "facts")))
 	}
 	validSources := map[string]bool{newsSourceID: true, bankSourceID: true}
+	for index := 1; index <= 10; index++ {
+		validSources[testSourceID(index)] = true
+	}
+	validSources[testSourceID(11)] = true
+	validSources[testSourceID(100)] = true
 	for _, rawFact := range companyFactRows {
 		fact, ok := rawFact.(map[string]any)
 		if !ok || stringField(t, fact, "fact_id") == "" || !validSources[stringField(t, fact, "source_id")] {
@@ -350,9 +361,10 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		{testNewsID(8), "2026-09-05T11:00:00Z", "https://example.test/news/L1", "external_news"},
 		{testNewsID(9), "2026-09-06T11:00:00Z", "https://example.test/news/L2", "external_news"},
 		{testNewsID(10), "2026-09-07T11:00:00Z", "https://example.test/news/L3", "external_news"},
+		{testNewsID(12), "2026-10-02T00:00:00Z", "https://example.test/news/N12", "external_news"},
 	}
 	for i, item := range vectorNews {
-		saveNewsAt(t, mcpCtx, mcpSession, companyID, item.id, fmt.Sprintf("source-%d", i), item.at, item.url, item.kind)
+		saveNewsAt(t, mcpCtx, mcpSession, companyID, item.id, testSourceID(i+1), item.at, item.url, item.kind)
 	}
 	newsWithoutTimeID := testNewsID(11)
 	saveNewsWithoutTime(t, mcpCtx, mcpSession, companyID, newsWithoutTimeID)
@@ -373,10 +385,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": observations})
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": observations})
 	periodFrom, periodTo := "2026-09-01 00:00:00", "2026-09-30 23:59:59"
-	totalArgs := map[string]any{"metric_id": metricIDs["ставка"], "period_from": periodFrom, "period_to": periodTo}
-	total := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", totalArgs)
-	if stringField(t, total, "company_id") != companyID || stringField(t, total, "metric_id") != metricIDs["ставка"] {
-		t.Fatalf("single metric total lost its PostgreSQL ownership IDs: %#v", total)
+	total := calculateOneMetric(t, mcpCtx, mcpSession, companyID, metricIDs["ставка"], periodFrom, periodTo)
+	if stringField(t, total, "metric_id") != metricIDs["ставка"] {
+		t.Fatalf("metric total lost its PostgreSQL ownership ID: %#v", total)
 	}
 	if got := floatField(t, total, "total_value"); math.Abs(got-1) > 0.000001 {
 		t.Fatalf("unweighted value mean = %v, want 1", got)
@@ -390,7 +401,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if got := intField(t, total, "probability_count"); got != 3 {
 		t.Fatalf("probability_count = %d, want 3", got)
 	}
-	dateOnlyTotal := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", map[string]any{"metric_id": metricIDs["ставка"], "period_from": "2026-09-01", "period_to": "2026-09-30"})
+	dateOnlyTotal := calculateOneMetric(t, mcpCtx, mcpSession, companyID, metricIDs["ставка"], "2026-09-01", "2026-09-30")
 	if floatField(t, dateOnlyTotal, "total_value") != 1 {
 		t.Fatalf("date-only inclusive period produced total %v, want 1", floatField(t, dateOnlyTotal, "total_value"))
 	}
@@ -401,7 +412,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if stringField(t, metricLinks[0].(map[string]any), "source_kind") != "bank" || stringField(t, metricLinks[1].(map[string]any), "news_url") != "" || stringField(t, metricLinks[2].(map[string]any), "source_kind") != "external" {
 		t.Fatalf("news metadata or sorted links are incorrect: %#v", metricLinks)
 	}
-	logistics := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", map[string]any{"metric_id": metricIDs["логистика"], "period_from": periodFrom, "period_to": periodTo})
+	logistics := calculateOneMetric(t, mcpCtx, mcpSession, companyID, metricIDs["логистика"], periodFrom, periodTo)
 	if floatField(t, logistics, "total_value") != 3 || floatField(t, logistics, "total_probability") != 0.8 || intField(t, logistics, "fact_count") != 2 || intField(t, logistics, "probability_count") != 1 {
 		t.Fatalf("nullable probability handling differs from source example: %#v", logistics)
 	}
@@ -432,19 +443,38 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("company without metric rows should return an empty list: %#v", noSettings)
 	}
 	secondCompanyMetrics := metricSettingsForCatalog()
-	callTool(t, mcpCtx, mcpSession, "save_company_metrics", map[string]any{"company_id": companyIDTwo, "metrics": secondCompanyMetrics})
+	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
+		"company_id": companyIDTwo, "profile_revision": 1, "markdown": "# Second synthetic company\n",
+		"metrics": secondCompanyMetrics,
+	})
 	secondCompanyRows := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyIDTwo, "limit": 100})
 	secondMetricIDs := make(map[string]string)
 	for _, raw := range arrayField(t, secondCompanyRows, "metrics") {
 		row := raw.(map[string]any)
 		secondMetricIDs[stringField(t, row, "type_code")] = stringField(t, row, "metric_id")
 	}
+	sharedNewsFacts := callTool(t, mcpCtx, mcpSession, "get_facts", map[string]any{"news_id": testNewsID(1), "limit": 10})
+	sharedFactRows := arrayField(t, sharedNewsFacts, "facts")
+	if len(sharedFactRows) == 0 {
+		t.Fatal("shared company news has no persisted fact to link")
+	}
+	callTool(t, mcpCtx, mcpSession, "save_fact_company_links", map[string]any{
+		"company_id": companyIDTwo,
+		"links":      []any{map[string]any{"fact_id": stringField(t, sharedFactRows[0].(map[string]any), "fact_id"), "relevance": "shared market news", "confidence": 0.9}},
+	})
 	secondObservations := []any{
 		metricObservation(secondMetricIDs["ставка"], testNewsID(1), 2.0, 0.7),
 		metricObservation(secondMetricIDs["депозит"], testNewsID(1), 5.0, 0.7),
 		metricObservation(secondMetricIDs["будущее"], testNewsID(1), 11.0, nil),
 	}
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyIDTwo, "observations": secondObservations})
+	crossCompanyObservation := callToolRaw(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{
+		"company_id":   companyIDTwo,
+		"observations": []any{metricObservation(secondMetricIDs["ставка"], testNewsID(2), 99.0, 1.0)},
+	})
+	if !crossCompanyObservation.IsError {
+		t.Fatal("ESB accepted an observation that references news linked only to another company")
+	}
 	secondTotals := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": companyIDTwo, "period_from": periodFrom, "period_to": periodTo})
 	secondItems := arrayField(t, secondTotals, "items")
 	fullOrder := []string{"ставка", "депозит", "курс", "логистика", "цена", "спрос", "запас", "контрагент", "зарплата", "будущее"}
@@ -468,7 +498,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": []any{
 		map[string]any{"observation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "metric_id": metricIDs["ставка"], "news_id": testNewsID(1), "value": 4.0, "probability": 0.6, "source_fact_ids": []string{}},
 	}})
-	duplicateNewsTotal := callTool(t, mcpCtx, mcpSession, "calculate_metric_total", totalArgs)
+	duplicateNewsTotal := calculateOneMetric(t, mcpCtx, mcpSession, companyID, metricIDs["ставка"], periodFrom, periodTo)
 	if math.Abs(floatField(t, duplicateNewsTotal, "total_value")-1.75) > 0.000001 || len(arrayField(t, duplicateNewsTotal, "links")) != 3 {
 		t.Fatalf("multiple predictions for one news must contribute separately but link once: %#v", duplicateNewsTotal)
 	}
@@ -477,7 +507,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		"probability": "0.9", "metric_ids": []string{metricIDs["ставка"]}, "text": "The evidence suggests a moderate rate change.",
 	})
 	companyReport := callTool(t, mcpCtx, mcpSession, "get_company_report", map[string]any{"company_id": companyID, "period_from": "2026-09-01", "period_to": "2026-09-30"})
-	if len(arrayField(t, companyReport, "facts")) != 2 || len(arrayField(t, companyReport, "metrics")) != 8 || len(arrayField(t, companyReport, "totals")) != 8 || len(arrayField(t, companyReport, "analyses")) != 1 {
+	if len(arrayField(t, companyReport, "facts")) != 14 || len(arrayField(t, companyReport, "metrics")) != 8 || len(arrayField(t, companyReport, "totals")) != 8 || len(arrayField(t, companyReport, "analyses")) != 1 {
 		t.Fatalf("company report is missing ClickHouse or PostgreSQL data: %#v", companyReport)
 	}
 	var priceTotal map[string]any
@@ -492,7 +522,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("metric total did not return its PostgreSQL unit: %#v", priceTotal)
 	}
 	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
-	if len(arrayField(t, consultantContext, "facts")) != 2 || len(arrayField(t, consultantContext, "observations")) != 13 || len(arrayField(t, consultantContext, "totals")) == 0 {
+	if len(arrayField(t, consultantContext, "facts")) != 14 || len(arrayField(t, consultantContext, "observations")) != 13 || len(arrayField(t, consultantContext, "totals")) == 0 {
 		t.Fatalf("consultant context is incomplete: %#v", consultantContext)
 	}
 	for _, rawFact := range arrayField(t, consultantContext, "facts") {
@@ -1025,21 +1055,43 @@ func metricSettingsForCatalog() []any {
 
 func testNewsID(index int) string { return fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012x", index) }
 
-func saveNewsAt(t *testing.T, ctx context.Context, session *mcp.ClientSession, companyID, newsID, sourceID, publishedAt, sourceURL, materialKind string) {
+func testSourceID(index int) string { return fmt.Sprintf("bbbbbbbb-bbbb-4bbb-8bbb-%012x", index) }
+
+func saveNewsAt(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID, sourceID, publishedAt, sourceURL, materialKind string) {
 	t.Helper()
-	callTool(t, ctx, session, "save_news_and_facts", map[string]any{
+	result := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
 		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL, "company_id": companyID,
 		"material_kind": materialKind, "media_type": "text/html", "title": newsID,
-		"published_at": publishedAt, "news_text": "Metric vector news.", "facts": []any{},
+		"published_at": publishedAt, "news_text": "Metric vector news.", "facts": []any{map[string]any{
+			"fact_text": "Metric vector supports a company metric.", "category": "supporting", "entities": []string{"metric-vector"},
+			"evidence": "Metric vector news.", "occurred_at": nil, "confidence": 1.0,
+		}},
+	})
+	factIDs := stringArrayField(t, result, "fact_ids")
+	if len(factIDs) != 1 {
+		t.Fatalf("metric vector news returned %d fact IDs, want one", len(factIDs))
+	}
+	callTool(t, ctx, session, "save_fact_company_links", map[string]any{
+		"company_id": companyID, "links": []any{map[string]any{"fact_id": factIDs[0], "relevance": "supporting", "confidence": 1.0}},
 	})
 }
 
-func saveNewsWithoutTime(t *testing.T, ctx context.Context, session *mcp.ClientSession, companyID, newsID string) {
+func saveNewsWithoutTime(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID string) {
 	t.Helper()
-	callTool(t, ctx, session, "save_news_and_facts", map[string]any{
-		"news_id": newsID, "source_id": "source-without-time", "company_id": companyID,
+	result := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
+		"news_id": newsID, "source_id": testSourceID(100), "source_url": "https://example.test/news/without-time", "company_id": companyID,
 		"material_kind": "external_news", "media_type": "text/html", "title": newsID,
-		"news_text": "News without a publication time.", "facts": []any{},
+		"news_text": "News without a publication time.", "facts": []any{map[string]any{
+			"fact_text": "A company source supports an unknown publication date.", "category": "supporting", "entities": []string{"metric-vector"},
+			"evidence": "News without a publication time.", "occurred_at": nil, "confidence": 1.0,
+		}},
+	})
+	factIDs := stringArrayField(t, result, "fact_ids")
+	if len(factIDs) != 1 {
+		t.Fatalf("news without publication time returned %d fact IDs, want one", len(factIDs))
+	}
+	callTool(t, ctx, session, "save_fact_company_links", map[string]any{
+		"company_id": companyID, "links": []any{map[string]any{"fact_id": factIDs[0], "relevance": "supporting", "confidence": 1.0}},
 	})
 }
 
@@ -1061,14 +1113,14 @@ func postSerezha(t *testing.T, client *http.Client, baseURL, sourceID, newsID, m
 		serezhaPayload(sourceID, newsID, materialKind, mediaType, title, sourceURL, text), true, http.StatusAccepted, "")
 }
 
-func saveNewsFacts(t *testing.T, ctx context.Context, session *mcp.ClientSession, companyID, newsID, sourceID, materialKind, mediaType, title, sourceURL, text string) []string {
+func saveNewsFacts(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID, sourceID, materialKind, mediaType, title, sourceURL, text string) []string {
 	t.Helper()
 	result := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
 		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL, "company_id": companyID,
 		"material_kind": materialKind, "media_type": mediaType, "title": title,
 		"published_at": "2026-10-25T09:00:00Z", "news_text": text,
 		"facts": []any{map[string]any{"fact_text": text, "category": "market", "entities": []string{"manufacturing"},
-			"evidence": "source text", "occurred_at": "2026-10-25T09:00:00Z", "confidence": 0.9}},
+			"evidence": text, "occurred_at": "2026-10-25T09:00:00Z", "confidence": 0.9}},
 	})
 	ids := stringArrayField(t, result, "fact_ids")
 	if len(ids) != 1 {
@@ -1279,17 +1331,209 @@ func waitForFailedCall(t *testing.T, client *http.Client, baseURL, agent, callID
 	return response{}
 }
 
-func callTool(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) map[string]any {
+type mcpSessions struct {
+	sessions map[string]*mcp.ClientSession
+}
+
+func connectAgentMCPs(t *testing.T, ctx context.Context, baseURL string) *mcpSessions {
 	t.Helper()
-	result := callToolRaw(t, ctx, session, name, args)
+	sessions := &mcpSessions{sessions: make(map[string]*mcp.ClientSession, len(agentMCPKeys))}
+	for agent, key := range agentMCPKeys {
+		sessions.sessions[agent] = connectMCP(t, ctx, baseURL+"/mcp", key)
+	}
+	return sessions
+}
+
+func connectMCP(t *testing.T, ctx context.Context, endpoint, key string) *mcp.ClientSession {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "predictor-esb-e2e", Version: "1.0.0"}, nil)
+	httpClient := &http.Client{Transport: bearerTransport{key: key, base: http.DefaultTransport}}
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: endpoint, HTTPClient: httpClient, DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect to the MCP endpoint with configured test principal: %v", err)
+	}
+	return session
+}
+
+func (sessions *mcpSessions) close(t *testing.T) {
+	t.Helper()
+	for _, session := range sessions.sessions {
+		if err := session.Close(); err != nil {
+			t.Errorf("close MCP session: %v", err)
+		}
+	}
+}
+
+func assertMCPUnauthorized(t *testing.T, client *http.Client, baseURL, token string) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatal("create MCP authorization probe")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal("send MCP authorization probe")
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal("read MCP authorization response")
+	}
+	if response.StatusCode != http.StatusUnauthorized || (token != "" && strings.Contains(string(body), token)) || strings.Contains(string(body), "Bearer ") {
+		t.Fatalf("MCP authorization probe returned an unsafe response (status=%d)", response.StatusCode)
+	}
+}
+
+func assertMCPCallUnauthorized(t *testing.T, client *http.Client, baseURL, token string) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_company_profile","arguments":{"company_id":"11111111-1111-4111-8111-111111111111"}}}`))
+	if err != nil {
+		t.Fatal("create MCP call authorization probe")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal("send MCP call authorization probe")
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal("read MCP call authorization response")
+	}
+	if response.StatusCode != http.StatusUnauthorized || (token != "" && strings.Contains(string(body), token)) || strings.Contains(string(body), "Bearer ") {
+		t.Fatalf("MCP call authorization probe returned an unsafe response (status=%d)", response.StatusCode)
+	}
+}
+
+func assertAgentTools(t *testing.T, ctx context.Context, session *mcp.ClientSession, agent string, expected []string) {
+	t.Helper()
+	result, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools for %s: %v", agent, err)
+	}
+	got := make(map[string]struct{}, len(result.Tools))
+	for _, tool := range result.Tools {
+		got[tool.Name] = struct{}{}
+	}
+	if len(got) != len(expected) {
+		t.Fatalf("MCP role %s lists %d tools; want %d", agent, len(got), len(expected))
+	}
+	for _, name := range expected {
+		if _, ok := got[name]; !ok {
+			t.Errorf("MCP role %s is missing allowed tool %q", agent, name)
+		}
+	}
+}
+
+func assertAgentToolsThroughSpoofedQuery(t *testing.T, ctx context.Context, baseURL, agent, path string, expected []string) {
+	t.Helper()
+	session := connectMCP(t, ctx, baseURL+path, agentMCPKeys[agent])
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close spoofed-query MCP session: %v", err)
+		}
+	}()
+	assertAgentTools(t, ctx, session, agent, expected)
+}
+
+func assertForbiddenMCPCallWithoutList(t *testing.T, ctx context.Context, baseURL, token, name string, args map[string]any) {
+	t.Helper()
+	session := connectMCP(t, ctx, baseURL+"/mcp", token)
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close forbidden-call MCP session: %v", err)
+		}
+	}()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	if err == nil && (result == nil || !result.IsError) {
+		t.Fatalf("unlisted MCP tool %q was callable without a preceding tools/list", name)
+	}
+}
+
+func assertMCPRoleCannotReuseAnotherAgentsSession(t *testing.T, client *http.Client, baseURL, sessionID, token string) {
+	t.Helper()
+	if sessionID == "" {
+		t.Fatal("MCP session did not expose its server session ID")
+	}
+	payload := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save_company_profile_and_metrics","arguments":{"company_id":"11111111-1111-4111-8111-111111111111","profile_revision":1,"markdown":"synthetic","metrics":[]}}}`
+	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/mcp", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal("create MCP session isolation probe")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Mcp-Session-Id", sessionID)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal("send MCP session isolation probe")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("MCP session accepted a different agent principal (status=%d)", response.StatusCode)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal("read MCP session isolation response")
+	}
+	if strings.Contains(string(body), token) || strings.Contains(string(body), "Bearer ") {
+		t.Fatal("MCP session isolation response leaked authorization data")
+	}
+}
+
+var mcpToolOwners = map[string]string{
+	"save_news_and_facts": "serezha",
+	"get_company_profile": "kesha", "get_facts": "saveliy", "save_fact_company_links": "saveliy",
+	"save_company_profile_and_metrics": "valera", "get_company_metrics": "kesha",
+	"get_company_facts": "kesha", "save_metric_observations": "kesha",
+	"calculate_metric_total": "kesha", "calculate_all_metric_totals": "kesha",
+	"save_company_analysis": "kesha", "get_company_report": "kesha",
+	"get_consultant_context": "konstantin",
+}
+
+func callTool(t *testing.T, ctx context.Context, sessions *mcpSessions, name string, args map[string]any) map[string]any {
+	t.Helper()
+	result := callToolRaw(t, ctx, sessions, name, args)
 	if result.IsError {
 		t.Fatalf("MCP tool %s returned an error: %s", name, result.Content)
 	}
 	return structuredMap(t, result)
 }
 
-func callToolRaw(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
+func calculateOneMetric(t *testing.T, ctx context.Context, sessions *mcpSessions, companyID, metricID, periodFrom, periodTo string) map[string]any {
 	t.Helper()
+	totals := callTool(t, ctx, sessions, "calculate_all_metric_totals", map[string]any{
+		"company_id": companyID, "period_from": periodFrom, "period_to": periodTo,
+	})
+	if stringField(t, totals, "company_id") != companyID {
+		t.Fatalf("metric totals returned company %q, want %q", totals["company_id"], companyID)
+	}
+	for _, raw := range arrayField(t, totals, "items") {
+		item, ok := raw.(map[string]any)
+		if ok && stringField(t, item, "metric_id") == metricID {
+			return item
+		}
+	}
+	t.Fatalf("metric totals omitted metric_id %q", metricID)
+	return nil
+}
+
+func callToolRaw(t *testing.T, ctx context.Context, sessions *mcpSessions, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	agent, ok := mcpToolOwners[name]
+	if !ok || sessions.sessions[agent] == nil {
+		t.Fatalf("E2E tool %q has no configured agent principal", name)
+	}
+	session := sessions.sessions[agent]
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("call MCP tool %s: %v", name, err)

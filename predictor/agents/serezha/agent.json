@@ -8,6 +8,9 @@
     "source_id",
     "news_text"
   ],
+  "mcp_tools": [
+    "save_news_and_facts"
+  ],
   "context_policy": {
     "compress_after_messages": 0,
     "batch_messages": 0,

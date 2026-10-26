@@ -41,6 +41,7 @@ func testLimits() Limits {
 		ConsultantDefaultPageSize: 100, ConsultantMaxPageSize: 500,
 		CompanyReportDefaultWindow: 30 * 24 * time.Hour,
 		MaxFactsPerNews:            500, MaxFactCompanyLinks: 1000, MaxMetricObservations: 1000, MaxCompanyMetrics: 500,
+		MaxNewsTextBytes: 1 << 20,
 	}
 }
 
@@ -69,7 +70,7 @@ func TestCalculateMetricTotalPersistsCompanyOwnedSnapshot(t *testing.T) {
 }
 
 func TestSaveNewsAndFactsExplainsInvalidRequiredInput(t *testing.T) {
-	validNews := domain.News{ID: "news-1", SourceID: "source-1", Text: "Article text"}
+	validNews := domain.News{ID: "news-1", SourceID: "22222222-2222-4222-8222-222222222222", Text: "Article text"}
 	tests := []struct {
 		name       string
 		news       domain.News
@@ -79,7 +80,7 @@ func TestSaveNewsAndFactsExplainsInvalidRequiredInput(t *testing.T) {
 	}{
 		{
 			name:       "invalid news identifier",
-			news:       domain.News{ID: "news with spaces", SourceID: "source-1", Text: "Article text"},
+			news:       domain.News{ID: "news with spaces", SourceID: validNews.SourceID, Text: "Article text"},
 			limits:     testLimits(),
 			wantDetail: "news_id",
 		},

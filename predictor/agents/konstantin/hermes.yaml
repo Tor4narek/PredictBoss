@@ -21,9 +21,9 @@ mcp_servers:
   esb:
     url: ${ESB_MCP_URL}
     headers:
-      Authorization: "Bearer ${ESB_API_KEY}"
+      Authorization: "Bearer ${MCP_TOKEN_KONSTANTIN}"
     supports_parallel_tool_calls: false
     tools:
-      include: [get_company_profile, get_company_facts, get_company_metrics, get_consultant_context]
+      include: [get_company_profile, get_company_metrics, get_consultant_context]
       prompts: false
       resources: false

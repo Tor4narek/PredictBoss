@@ -115,6 +115,87 @@ func (r *Analytics) SaveNewsAndFacts(ctx context.Context, news domain.News, fact
 	return ids, nil
 }
 
+func (r *Analytics) NewsReferences(ctx context.Context, newsIDs []string) ([]domain.NewsReference, error) {
+	if len(newsIDs) == 0 {
+		return []domain.NewsReference{}, nil
+	}
+	query := fmt.Sprintf(`SELECT news_id AS id, source_id, source_url, material_kind
+FROM (SELECT * FROM %s.news FINAL)
+WHERE news_id IN (%s)
+FORMAT JSONEachRow`, r.table("news"), escapedList(newsIDs))
+	var rows []domain.NewsReference
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *Analytics) FactReferences(ctx context.Context, factIDs []string) ([]domain.FactReference, error) {
+	if len(factIDs) == 0 {
+		return []domain.FactReference{}, nil
+	}
+	query := fmt.Sprintf(`SELECT fact_id AS id, news_id, source_id, source_url
+FROM (SELECT * FROM %s.facts FINAL)
+WHERE fact_id IN (%s)
+FORMAT JSONEachRow`, r.table("facts"), escapedList(factIDs))
+	var rows []domain.FactReference
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *Analytics) CompanyFactIDs(ctx context.Context, companyID string, factIDs []string) ([]string, error) {
+	if len(factIDs) == 0 {
+		return []string{}, nil
+	}
+	query := fmt.Sprintf(`SELECT fact_id
+FROM (SELECT * FROM %s.fact_company FINAL)
+WHERE company_id = %s AND fact_id IN (%s)
+FORMAT JSONEachRow`, r.table("fact_company"), escape(companyID), escapedList(factIDs))
+	var rows []struct {
+		FactID string `json:"fact_id"`
+	}
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.FactID)
+	}
+	return ids, nil
+}
+
+func (r *Analytics) CompanyNewsIDs(ctx context.Context, companyID string, newsIDs []string) ([]string, error) {
+	if len(newsIDs) == 0 {
+		return []string{}, nil
+	}
+	query := fmt.Sprintf(`SELECT DISTINCT f.news_id
+FROM (SELECT * FROM %s.fact_company FINAL) AS links
+INNER JOIN (SELECT * FROM %s.facts FINAL) AS f ON links.fact_id = f.fact_id
+WHERE links.company_id = %s AND f.news_id IN (%s)
+FORMAT JSONEachRow`, r.table("fact_company"), r.table("facts"), escape(companyID), escapedList(newsIDs))
+	var rows []struct {
+		NewsID string `json:"news_id"`
+	}
+	if err := r.client.queryRows(ctx, query, &rows); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.NewsID)
+	}
+	return ids, nil
+}
+
+func escapedList(values []string) string {
+	parts := make([]string, len(values))
+	for index, value := range values {
+		parts[index] = escape(value)
+	}
+	return strings.Join(parts, ",")
+}
+
 // FinalizeNews verifies the completion marker, metadata, fact rows, and raw
 // content hash before allowing the PostgreSQL call to complete. Retention is a
 // separate operation, so text remains available until its configured age.

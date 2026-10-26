@@ -117,9 +117,14 @@
 | `ATLAS_TOKEN` | string | empty / unset | —; not validated | Optional Atlas token used by the ClickHouse Atlas driver. |
 | `CLICKHOUSE_PASSWORD` | string | required | —; not validated | ClickHouse account password. |
 | `DATABASE_URL` | string | required | —; not validated | PostgreSQL connection URL used only by ESB. |
-| `ESB_API_KEY` | string | required | —; not validated | Bearer key required by Domain and Hermes MCP clients. |
+| `ESB_API_KEY` | string | required | —; not validated | Bearer key for Domain HTTP and WebSocket integration; it does not authorize MCP tools. |
 | `HERMES_API_KEY` | string | required | —; not validated | Bearer key ESB uses for Hermes runtime calls. |
 | `LLM_API_KEY` | string | required | —; not validated | LLM provider key consumed by Hermes, never by ESB. |
+| `MCP_TOKEN_KESHA` | string | required | bytes; 32…256 | Agent-only Bearer token for the ESB MCP endpoint; unique and separate from integration keys. |
+| `MCP_TOKEN_KONSTANTIN` | string | required | bytes; 32…256 | Agent-only Bearer token for the ESB MCP endpoint; unique and separate from integration keys. |
+| `MCP_TOKEN_SAVELIY` | string | required | bytes; 32…256 | Agent-only Bearer token for the ESB MCP endpoint; unique and separate from integration keys. |
+| `MCP_TOKEN_SEREZHA` | string | required | bytes; 32…256 | Agent-only Bearer token for the ESB MCP endpoint; unique and separate from integration keys. |
+| `MCP_TOKEN_VALERA` | string | required | bytes; 32…256 | Agent-only Bearer token for the ESB MCP endpoint; unique and separate from integration keys. |
 | `MINIO_ROOT_PASSWORD` | string | placeholder в `predictor/example.env` | —; not validated | Local MinIO root password; replace for private deployments. |
 | `MINIO_ROOT_USER` | string | placeholder в `predictor/example.env` | —; not validated | Local MinIO root account. |
 | `POSTGRES_PASSWORD` | string | placeholder в `predictor/example.env` | —; not validated | Local Compose PostgreSQL password; replace for private deployments. |
@@ -149,7 +154,7 @@
 
 ## Настройки агентов
 
-У всех агентов общий `HERMES_MODEL_PROVIDER` и `LLM_API_KEY`. Модель и runtime-лимиты задаются в env отдельно для агента. Остальная структура и полномочия находятся в `predictor/agents/<type>/hermes.yaml`; роль и сжатие контекста — в `agent.json` и `skills/`.
+У всех агентов общий `HERMES_MODEL_PROVIDER` и `LLM_API_KEY`. Модель и runtime-лимиты задаются в env отдельно для агента. Для MCP задайте пять различных `MCP_TOKEN_<TYPE>`; ESB определяет роль по токену, а не по query-параметрам или аргументам модели. `ESB_API_KEY` предназначен для Domain HTTP/WebSocket и не даёт доступ к MCP. Ролевой allowlist MCP находится в `agent.json` и проверяется серверной политикой ESB; Hermes `tools.include` только повторяет этот allowlist. Остальная конфигурация находится в `predictor/agents/<type>/hermes.yaml`, роль — в `skills/`.
 
 `HERMES_<TYPE>_INSTANCES` задаёт runtime-пул в формате `id=state@url;id=state@url`; состояния: `available`, `draining`, `unavailable`. `AGENT_<TYPE>_MAX_CONCURRENT_RUNS` — лимит одновременных вызовов на один runtime. Все ESB-процессы должны использовать одинаковую конфигурацию пула. PostgreSQL сохраняет runtime каждого вызова и координирует резервирование слотов между ESB-репликами. Удаляйте runtime ID только после завершения закреплённых за ним вызовов. `HERMES_<TYPE>_URL` поддерживается для совместимости с одиночным runtime.
 

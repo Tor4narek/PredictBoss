@@ -83,6 +83,7 @@ func runESB() error {
 		CompanyReportDefaultWindow:  time.Duration(cfg.Pagination.CompanyReportDefaultWindowDays) * 24 * time.Hour,
 		MaxFactsPerNews:             cfg.Payload.MaxFactsPerNews, MaxFactCompanyLinks: cfg.Payload.MaxFactCompanyLinks,
 		MaxMetricObservations: cfg.Payload.MaxMetricObservations, MaxCompanyMetrics: cfg.Payload.MaxCompanyMetricsPerRequest,
+		MaxNewsTextBytes: cfg.Payload.MaxNewsTextBytes,
 	})
 	hermesClient, err := hermes.NewClient(cfg.Connections.HermesAPIKey, hermes.ClientConfig{
 		RequestTimeout: cfg.Hermes.RequestTimeout, MaxAttempts: cfg.Hermes.MaxAttempts,
@@ -200,8 +201,13 @@ func runESB() error {
 		WriteTimeout:  cfg.WebSocket.WriteTimeout,
 		OutgoingQueue: cfg.WebSocket.OutgoingQueue, ReplayLimit: cfg.WebSocket.ReplayLimit,
 	})
+	storageHandler, err := presentationmcp.NewStorageHandler(analyticsService, companyContextService,
+		cfg.Connections.AgentMCPTokens, cfg.AgentMCPTools)
+	if err != nil {
+		return fmt.Errorf("configure MCP agent authorization: %w", err)
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", presentationmcp.NewStorageHandler(analyticsService, companyContextService, cfg.Connections.ESBAPIKey))
+	mux.Handle("/mcp", storageHandler)
 	mux.Handle("/", api)
 	server := &http.Server{Addr: cfg.Connections.HTTPAddr, Handler: http.MaxBytesHandler(mux, cfg.HTTP.MaxJSONBodyBytes),
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout, IdleTimeout: cfg.HTTP.IdleTimeout}

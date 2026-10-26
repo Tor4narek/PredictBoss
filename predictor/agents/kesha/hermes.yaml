@@ -21,9 +21,9 @@ mcp_servers:
   esb:
     url: ${ESB_MCP_URL}
     headers:
-      Authorization: "Bearer ${ESB_API_KEY}"
+      Authorization: "Bearer ${MCP_TOKEN_KESHA}"
     supports_parallel_tool_calls: false
     tools:
-      include: [get_company_profile, get_company_facts, get_company_metrics, save_metric_observations, calculate_metric_total, calculate_all_metric_totals, save_company_analysis, get_company_report]
+      include: [get_company_profile, get_company_facts, get_company_metrics, save_metric_observations, calculate_all_metric_totals, save_company_analysis, get_company_report]
       prompts: false
       resources: false

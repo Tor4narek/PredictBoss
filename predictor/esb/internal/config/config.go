@@ -3,6 +3,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +42,7 @@ type Connections struct {
 	HTTPAddr       string
 	DatabaseURL    string
 	ESBAPIKey      string
+	AgentMCPTokens map[domain.AgentType]string
 	HermesAPIKey   string
 	ClickHouseURL  string
 	CHDatabase     string
@@ -134,16 +137,17 @@ type PayloadLimits struct {
 }
 
 type Config struct {
-	Connections Connections
-	HTTP        HTTP
-	Queue       Queue
-	Hermes      Hermes
-	ClickHouse  ClickHouse
-	WebSocket   WebSocket
-	Pagination  Pagination
-	Payload     PayloadLimits
-	Cleanup     Cleanup
-	Agents      []domain.Agent
+	Connections   Connections
+	HTTP          HTTP
+	Queue         Queue
+	Hermes        Hermes
+	ClickHouse    ClickHouse
+	WebSocket     WebSocket
+	Pagination    Pagination
+	Payload       PayloadLimits
+	Cleanup       Cleanup
+	Agents        []domain.Agent
+	AgentMCPTools map[domain.AgentType][]string
 }
 
 const (
@@ -158,6 +162,7 @@ const (
 	defaultKonstantinWindowDays    = 30
 	defaultKonstantinMaxWindowDays = 90
 	maxNewsRequestMetadataBytes    = int64(4096)
+	maxAgentMCPTokenBytes          = 256
 )
 
 var definitions = buildDefinitions()
@@ -166,7 +171,7 @@ func buildDefinitions() []Definition {
 	settings := []Definition{
 		stringDef("HTTP_ADDR", ":8081", "ESB listen address inside its network namespace.", "runtime", false),
 		stringDef("DATABASE_URL", "", "PostgreSQL connection URL used only by ESB.", "secret", true),
-		stringDef("ESB_API_KEY", "", "Bearer key required by Domain and Hermes MCP clients.", "secret", true),
+		stringDef("ESB_API_KEY", "", "Bearer key for Domain HTTP and WebSocket integration; it does not authorize MCP tools.", "secret", true),
 		stringDef("HERMES_API_KEY", "", "Bearer key ESB uses for Hermes runtime calls.", "secret", true),
 		stringDef("HERMES_MODEL_PROVIDER", "custom", "Shared Hermes model-provider identifier for all agents.", "hermes", false),
 		stringDef("HERMES_SEREZHA_URL", "", "Legacy single Serezha Hermes URL; use HERMES_SEREZHA_INSTANCES for a pool.", "runtime", false),
@@ -282,6 +287,13 @@ func buildDefinitions() []Definition {
 		stringDef("ESB_E2E_BASE_URL", "http://127.0.0.1:18081", "Test-only base URL for the ESB E2E suite.", "test", false),
 		stringDef("MOCK_PORT", "8090", "Test-only listening port for the mock Hermes runtime.", "test", false),
 	}
+	for _, agent := range []domain.AgentType{domain.AgentSerezha, domain.AgentSaveliy, domain.AgentValera, domain.AgentKesha, domain.AgentKonstantin} {
+		name := "MCP_TOKEN_" + strings.ToUpper(string(agent))
+		token := stringDef(name, "", "Agent-only Bearer token for the ESB MCP endpoint; unique and separate from integration keys.", "secret", true)
+		token.Range = "32…256"
+		token.Unit = "bytes"
+		settings = append(settings, token)
+	}
 	return append(settings, hermesAgentDefinitions()...)
 }
 
@@ -387,8 +399,37 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if cfg.Connections.ESBAPIKey, err = getString("ESB_API_KEY"); err != nil {
 		return Config{}, err
 	}
+	cfg.Connections.AgentMCPTokens = make(map[domain.AgentType]string, 5)
+	seenTokens := make(map[[32]byte]string, 6)
+	seenTokens[sha256.Sum256([]byte(cfg.Connections.ESBAPIKey))] = "ESB_API_KEY"
+	for _, agent := range []domain.AgentType{domain.AgentSerezha, domain.AgentSaveliy, domain.AgentValera, domain.AgentKesha, domain.AgentKonstantin} {
+		name := "MCP_TOKEN_" + strings.ToUpper(string(agent))
+		token, tokenErr := getString(name)
+		if tokenErr != nil {
+			return Config{}, tokenErr
+		}
+		if len(token) < 32 || len(token) > maxAgentMCPTokenBytes {
+			return Config{}, fmt.Errorf("%s must contain 32 to %d bytes", name, maxAgentMCPTokenBytes)
+		}
+		digest := sha256.Sum256([]byte(token))
+		if previous, exists := seenTokens[digest]; exists {
+			return Config{}, fmt.Errorf("%s must be distinct from %s", name, previous)
+		}
+		seenTokens[digest] = name
+		cfg.Connections.AgentMCPTokens[agent] = token
+	}
 	if cfg.Connections.HermesAPIKey, err = getString("HERMES_API_KEY"); err != nil {
 		return Config{}, err
+	}
+	if cfg.Connections.HermesAPIKey == cfg.Connections.ESBAPIKey {
+		return Config{}, errors.New("HERMES_API_KEY must be distinct from ESB_API_KEY")
+	}
+	hermesKeyDigest := sha256.Sum256([]byte(cfg.Connections.HermesAPIKey))
+	for agent, token := range cfg.Connections.AgentMCPTokens {
+		tokenDigest := sha256.Sum256([]byte(token))
+		if subtle.ConstantTimeCompare(hermesKeyDigest[:], tokenDigest[:]) == 1 {
+			return Config{}, fmt.Errorf("MCP_TOKEN_%s must be distinct from HERMES_API_KEY", strings.ToUpper(string(agent)))
+		}
 	}
 	if cfg.Connections.ClickHouseURL, err = getString("CLICKHOUSE_URL"); err != nil {
 		return Config{}, err
@@ -642,6 +683,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if root == "" {
 		root = "../agents"
 	}
+	cfg.AgentMCPTools = make(map[domain.AgentType][]string, 5)
 	for _, name := range []string{"serezha", "saveliy", "valera", "kesha", "konstantin"} {
 		definitionPath := filepath.Join(root, name, "agent.json")
 		data, readErr := os.ReadFile(definitionPath)
@@ -655,6 +697,11 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		if definition.Name != name || definition.ScopeField == "" || definition.SkillFile == "" || definition.RuntimeURLEnv == "" {
 			return Config{}, fmt.Errorf("agent definition %s is incomplete", definitionPath)
 		}
+		mcpTools, parseErr := parseAgentMCPTools(definition.MCPTools)
+		if parseErr != nil {
+			return Config{}, fmt.Errorf("agent definition %s: %w", definitionPath, parseErr)
+		}
+		cfg.AgentMCPTools[domain.AgentType(name)] = mcpTools
 		skillPath := filepath.Join(root, name, definition.SkillFile)
 		skill, err := os.ReadFile(skillPath)
 		if err != nil {
@@ -715,7 +762,34 @@ type agentFile struct {
 	RuntimeURLEnv       string             `json:"runtime_url_env"`
 	RuntimeInstancesEnv string             `json:"runtime_instances_env"`
 	RequiredFields      []string           `json:"required_fields"`
+	MCPTools            []string           `json:"mcp_tools"`
 	ContextPolicy       *contextPolicyFile `json:"context_policy"`
+}
+
+func parseAgentMCPTools(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("mcp_tools must list the agent's allowed ESB tools")
+	}
+	seen := make(map[string]struct{}, len(raw))
+	tools := make([]string, 0, len(raw))
+	for _, name := range raw {
+		name = strings.TrimSpace(name)
+		if name == "" || len(name) > 128 {
+			return nil, errors.New("mcp_tools contains an invalid tool name")
+		}
+		for _, char := range name {
+			if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' {
+				continue
+			}
+			return nil, errors.New("mcp_tools contains an invalid tool name")
+		}
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("mcp_tools contains duplicate tool %q", name)
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, name)
+	}
+	return tools, nil
 }
 
 func parseRuntimeInstances(raw string, agent domain.AgentType, maxConcurrentRuns int) ([]domain.RuntimeInstance, error) {

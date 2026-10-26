@@ -42,7 +42,7 @@ func RenderDocumentation() []byte {
 	document.WriteString("\n")
 	document.WriteString("Длительности используют единицы Go `ns`, `us`/`µs`, `ms`, `s`, `m`, `h` (день — `24h`). Для retention `0`, `0s` и `immediate` означают очистку после подтверждения операции, `never` — хранение без срока. Политики очистки выполняются при `CLEANUP_ENABLED=true`.\n\n")
 	document.WriteString("## Настройки агентов\n\n")
-	document.WriteString("У всех агентов общий `HERMES_MODEL_PROVIDER` и `LLM_API_KEY`. Модель и runtime-лимиты задаются в env отдельно для агента. Остальная структура и полномочия находятся в `predictor/agents/<type>/hermes.yaml`; роль и сжатие контекста — в `agent.json` и `skills/`.\n\n")
+	document.WriteString("У всех агентов общий `HERMES_MODEL_PROVIDER` и `LLM_API_KEY`. Модель и runtime-лимиты задаются в env отдельно для агента. Для MCP задайте пять различных `MCP_TOKEN_<TYPE>`; ESB определяет роль по токену, а не по query-параметрам или аргументам модели. `ESB_API_KEY` предназначен для Domain HTTP/WebSocket и не даёт доступ к MCP. Ролевой allowlist MCP находится в `agent.json` и проверяется серверной политикой ESB; Hermes `tools.include` только повторяет этот allowlist. Остальная конфигурация находится в `predictor/agents/<type>/hermes.yaml`, роль — в `skills/`.\n\n")
 	document.WriteString("`HERMES_<TYPE>_INSTANCES` задаёт runtime-пул в формате `id=state@url;id=state@url`; состояния: `available`, `draining`, `unavailable`. `AGENT_<TYPE>_MAX_CONCURRENT_RUNS` — лимит одновременных вызовов на один runtime. Все ESB-процессы должны использовать одинаковую конфигурацию пула. PostgreSQL сохраняет runtime каждого вызова и координирует резервирование слотов между ESB-репликами. Удаляйте runtime ID только после завершения закреплённых за ним вызовов. `HERMES_<TYPE>_URL` поддерживается для совместимости с одиночным runtime.\n\n")
 	document.WriteString("`context_policy.max_history_messages=0` отключает передачу истории модели. Хранение полной истории и резюме PostgreSQL задаётся независимо через `CLEANUP_MESSAGES_RETENTION_<TYPE>` и `CLEANUP_CONTEXT_SUMMARY_RETENTION`.\n")
 	return document.Bytes()
@@ -96,6 +96,16 @@ func exampleValue(setting Definition) string {
 		return "replace-with-a-random-esb-bearer-key"
 	case "HERMES_API_KEY":
 		return "replace-with-a-random-hermes-bearer-key"
+	case "MCP_TOKEN_SEREZHA":
+		return "replace-with-random-serezha-mcp-token-00000001"
+	case "MCP_TOKEN_SAVELIY":
+		return "replace-with-random-saveliy-mcp-token-00000002"
+	case "MCP_TOKEN_VALERA":
+		return "replace-with-random-valera-mcp-token-00000003"
+	case "MCP_TOKEN_KESHA":
+		return "replace-with-random-kesha-mcp-token-00000004"
+	case "MCP_TOKEN_KONSTANTIN":
+		return "replace-with-random-konstantin-mcp-token-00000005"
 	case "LLM_API_KEY":
 		return "replace-with-your-LLM-provider-key"
 	case "S3_BUCKET":

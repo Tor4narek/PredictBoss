@@ -84,6 +84,11 @@ jobs:
                 printf '%s\n' "$default_setting"
               fi
             done < <(grep -E '^(HERMES_MODEL_PROVIDER|AGENT_(KESHA|KONSTANTIN|SAVELIY|SEREZHA|VALERA)_(MODEL_ID|MAX_TURNS|REASONING_EFFORT|MAX_CONCURRENT_RUNS))=' predictor/example.env)
+            for token_name in MCP_TOKEN_KESHA MCP_TOKEN_KONSTANTIN MCP_TOKEN_SAVELIY MCP_TOKEN_SEREZHA MCP_TOKEN_VALERA; do
+              if ! grep -Eq "^${token_name}=.{32,}$" <<< "$PRODUCTION_ENV_FILE"; then
+                printf '%s=%s\n' "$token_name" "$(openssl rand -hex 32)"
+              fi
+            done
             printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY"
             printf 'DOMAIN_CSV_PATH=%s\n' "$csv_remote_path"
           } | ssh -i "$HOME/.ssh/id_ed25519" \
