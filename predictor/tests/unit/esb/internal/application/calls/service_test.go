@@ -91,12 +91,13 @@ func (completedRuntime) Status(context.Context, domain.Agent, string) (domain.Ru
 }
 
 type capturingRuntime struct {
+	input   string
 	key     string
 	history []domain.Message
 }
 
-func (r *capturingRuntime) Start(_ context.Context, _ domain.Agent, _ string, history []domain.Message, key string) (string, error) {
-	r.key, r.history = key, history
+func (r *capturingRuntime) Start(_ context.Context, _ domain.Agent, input string, history []domain.Message, key string) (string, error) {
+	r.input, r.key, r.history = input, key, history
 	return "run-2", nil
 }
 

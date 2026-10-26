@@ -9,6 +9,10 @@ x-real-hermes: &real-hermes
       condition: service_healthy
 
 services:
+  mock-runtime:
+    environment:
+      MOCK_SEREZHA_PERSIST: "1"
+
   esb:
     environment:
       HERMES_SAVELIY_INSTANCES: "saveliy-llm=available@http://hermes-saveliy-llm:8642"

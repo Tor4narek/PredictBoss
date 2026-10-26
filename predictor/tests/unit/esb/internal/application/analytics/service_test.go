@@ -55,17 +55,32 @@ func (r *metricSettingsFake) MetricForID(context.Context, string) (domain.Compan
 
 func TestCalculateMetricTotalPersistsCompanyOwnedSnapshot(t *testing.T) {
 	repository := &metricTotalRepositoryFake{}
+	companyID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	service := NewService(repository, &metricSettingsFake{
-		companyID: "company-1", metric: domain.CompanyMetric{Unit: "₽/месяц"},
+		companyID: companyID, metric: domain.CompanyMetric{Unit: "₽/месяц"},
 	}, testLimits())
 
 	metricID := "11111111-1111-4111-8111-111111111111"
-	total, err := service.CalculateMetricTotal(context.Background(), metricID, "2026-09-01", "2026-09-30")
+	total, err := service.CalculateMetricTotal(context.Background(), companyID, metricID, "2026-09-01", "2026-09-30")
 	if err != nil {
 		t.Fatalf("CalculateMetricTotal returned error: %v", err)
 	}
-	if total.CompanyID != "company-1" || total.Unit != "₽/месяц" || len(repository.saved) != 1 || repository.saved[0].MetricID != metricID {
+	if total.CompanyID != companyID || total.Unit != "₽/месяц" || len(repository.saved) != 1 || repository.saved[0].MetricID != metricID {
 		t.Fatalf("metric total was not persisted with its PostgreSQL owner: total=%#v saved=%#v", total, repository.saved)
+	}
+}
+
+func TestCalculateMetricTotalRejectsMetricOwnedByDifferentCompany(t *testing.T) {
+	repository := &metricTotalRepositoryFake{}
+	service := NewService(repository, &metricSettingsFake{
+		companyID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", metric: domain.CompanyMetric{Unit: "units"},
+	}, testLimits())
+	if _, err := service.CalculateMetricTotal(context.Background(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		"11111111-1111-4111-8111-111111111111", "2026-09-01", "2026-09-30"); !errors.Is(err, ErrInvalidAnalyticsInput) {
+		t.Fatalf("cross-company metric calculation error = %v, want ErrInvalidAnalyticsInput", err)
+	}
+	if len(repository.calculated) != 0 || len(repository.saved) != 0 {
+		t.Fatalf("cross-company metric triggered reads or writes: calculated=%v saved=%v", repository.calculated, repository.saved)
 	}
 }
 

@@ -51,6 +51,12 @@ services:
     environment:
       MOCK_PORT: "8090"
       MOCK_INSTANCE_ID: "primary"
+      ESB_MCP_URL: http://esb:8081/mcp
+      MCP_TOKEN_SEREZHA: test-only-serezha-mcp-token-000000000001
+      MCP_TOKEN_SAVELIY: test-only-saveliy-mcp-token-000000000002
+      MCP_TOKEN_VALERA: test-only-valera-mcp-token-000000000003
+      MCP_TOKEN_KESHA: test-only-kesha-mcp-token-000000000004
+      MCP_TOKEN_KONSTANTIN: test-only-konstantin-mcp-token-000000000005
     ports:
       - "18090:8090"
     volumes:
@@ -67,6 +73,12 @@ services:
     environment:
       MOCK_PORT: "8091"
       MOCK_INSTANCE_ID: "secondary"
+      ESB_MCP_URL: http://esb:8081/mcp
+      MCP_TOKEN_SEREZHA: test-only-serezha-mcp-token-000000000001
+      MCP_TOKEN_SAVELIY: test-only-saveliy-mcp-token-000000000002
+      MCP_TOKEN_VALERA: test-only-valera-mcp-token-000000000003
+      MCP_TOKEN_KESHA: test-only-kesha-mcp-token-000000000004
+      MCP_TOKEN_KONSTANTIN: test-only-konstantin-mcp-token-000000000005
     ports:
       - "18091:8091"
     volumes:
@@ -98,6 +110,7 @@ services:
       HERMES_KONSTANTIN_URL: http://mock-runtime:8090
       HERMES_SAVELIY_INSTANCES: "saveliy-primary=available@http://mock-runtime:8090;saveliy-secondary=available@http://mock-runtime-secondary:8091"
       AGENT_SAVELIY_MAX_CONCURRENT_RUNS: "2"
+      AGENT_KESHA_MAX_CONCURRENT_RUNS: "2"
       HERMES_POLL_INTERVAL: 50ms
       CLEANUP_ENABLED: ${E2E_CLEANUP_ENABLED:-false}
       CLEANUP_STATUS_CHECK_INTERVAL: ${E2E_CLEANUP_STATUS_INTERVAL:-1h}

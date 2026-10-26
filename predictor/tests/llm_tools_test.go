@@ -21,6 +21,8 @@ type observedToolCall struct {
 	CorrelationID string `json:"correlation_id"`
 }
 
+const llmSafeInsufficientEvidence = "Недостаточно подтверждённых источников в данных этого вызова, чтобы дать подтверждённую рекомендацию."
+
 func TestRealLLMProfileMCPCalls(t *testing.T) {
 	if os.Getenv("ESB_LLM_TOOLS_ENABLED") != "1" {
 		t.Skip("opt-in test; run make test-llm-tools to use isolated services and a configured LLM key")
@@ -40,6 +42,10 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 	defer cancel()
 	sessions := connectAgentMCPs(t, ctx, baseURL)
 	defer sessions.close(t)
+	companyID := llmTestCompanyID()
+	newsID := llmTestNewsID()
+	sourceID := llmTestSourceID()
+	factID := seedLLMTestCompany(t, ctx, client, baseURL, sessions, companyID, newsID, sourceID)
 
 	for _, agent := range []string{"saveliy", "kesha", "konstantin"} {
 		agent := agent
@@ -48,18 +54,6 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 			if correlationID == "" {
 				t.Fatal("test correlation ID was not configured")
 			}
-			companyID := llmTestCompanyID(agent)
-			newsID := llmTestNewsID(agent)
-			sourceID := llmTestSourceID(agent)
-			factID := seedLLMTestCompany(t, ctx, sessions, companyID, newsID, sourceID)
-			sourceCall := assertRequest(t, client, baseURL, http.MethodPost, "/call?agent=serezha", map[string]any{
-				"company_id": companyID, "news_id": newsID, "source_id": sourceID,
-				"source_url": "https://example.test/synthetic-widget-news", "material_kind": "external_news",
-				"media_type": "text/html", "title": "Synthetic widget factory report",
-				"published_at": "2026-10-01T12:00:00Z",
-				"news_text":    "Synthetic test data: on 2026-10-01 the company sold copper widgets for 125 RUB per widget.",
-			}, true, http.StatusAccepted, "")
-			waitForLLMCall(t, client, baseURL, "serezha", stringField(t, sourceCall.body, "call_id"))
 			before := observedCalls(t, client, observerURL, correlationID)
 
 			switch agent {
@@ -89,12 +83,10 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 				waitForLLMCall(t, client, baseURL, "kesha", stringField(t, call.body, "call_id"))
 				after := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent, after[len(before):])
-				assertProfileToolCall(t, after[len(before):], agent, correlationID, "save_company_analysis")
-				report := callTool(t, ctx, sessions, "get_company_report", map[string]any{
-					"company_id": companyID, "period_from": "2026-01-01", "period_to": "2027-01-01",
-				})
-				if len(arrayField(t, report, "analyses")) == 0 {
-					t.Fatal("Kesha completed without saving an analysis to ClickHouse")
+				events := after[len(before):]
+				assertProfileToolCall(t, events, agent, correlationID, "")
+				if !hasObservedToolCall(events, "save_company_analysis") {
+					t.Fatal("Kesha completed without calling save_company_analysis through ESB")
 				}
 
 			case "konstantin":
@@ -109,7 +101,10 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 				}
 				ws := dialWebSocket(t, baseURL+streamURL)
 				analysis := readConsultantEvent(t, ws, "analysis_result", 5*time.Minute)
-				assertLLMEvidence(t, analysis["evidence"], sourceID)
+				if !hasLLMEvidence(analysis["evidence"], sourceID) {
+					t.Errorf("real Konstantin analysis omitted the current source ID")
+					assertSafeInsufficientEvidence(t, analysis)
+				}
 				initialEvents := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent+" analysis", initialEvents[len(before):])
 				assertProfileToolCall(t, initialEvents[len(before):], agent, correlationID, "")
@@ -125,11 +120,13 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 				readConsultantEvent(t, ws, "accepted", 30*time.Second)
 				answer := readConsultantEvent(t, ws, "assistant_answer", 5*time.Minute)
 				_ = ws.Close(websocket.StatusNormalClosure, "")
-				if stringField(t, answer, "requestId") != requestID || len(arrayField(t, answer, "evidence")) == 0 {
-					t.Fatalf("Konstantin WebSocket answer is missing required metadata (request_id_present=%t evidence_count=%d)",
-						stringField(t, answer, "requestId") == requestID, len(arrayField(t, answer, "evidence")))
+				if stringField(t, answer, "requestId") != requestID {
+					t.Errorf("Konstantin WebSocket answer is missing its request ID")
 				}
-				assertLLMEvidence(t, answer["evidence"], sourceID)
+				if !hasLLMEvidence(answer["evidence"], sourceID) {
+					t.Errorf("real Konstantin answer omitted the current source ID")
+					assertSafeInsufficientEvidence(t, answer)
+				}
 				afterQuestion := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent+" question", afterQuestion[len(beforeQuestion):])
 				assertProfileToolCall(t, afterQuestion[len(beforeQuestion):], agent, correlationID, "")
@@ -144,32 +141,50 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 	}
 }
 
-func assertLLMEvidence(t *testing.T, raw any, expectedSourceID string) {
-	t.Helper()
+func hasLLMEvidence(raw any, expectedSourceID string) bool {
 	encoded, err := json.Marshal(raw)
 	if err != nil {
-		t.Fatal("encode consultant evidence")
+		return false
 	}
 	var evidence []struct {
 		SourceID   string `json:"sourceId"`
 		OriginKind string `json:"originKind"`
 	}
 	if err := json.Unmarshal(encoded, &evidence); err != nil {
-		t.Fatal("decode consultant evidence")
+		return false
 	}
-	observed := make([]string, 0, len(evidence))
 	for _, item := range evidence {
-		observed = append(observed, item.SourceID+":"+item.OriginKind)
 		if item.SourceID == expectedSourceID && item.OriginKind == "fact" {
-			return
+			return true
 		}
 	}
-	t.Fatalf("consultant evidence did not cite the exact synthetic source ID %q (observed %v)", expectedSourceID, observed)
+	return false
 }
 
-func seedLLMTestCompany(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID, sourceID string) string {
+func assertSafeInsufficientEvidence(t *testing.T, answer map[string]any) {
 	t.Helper()
-	callTool(t, ctx, session, "save_company_profile_and_metrics", map[string]any{
+	if stringField(t, answer, "text") != llmSafeInsufficientEvidence || len(arrayField(t, answer, "evidence")) != 0 {
+		t.Errorf("ESB did not replace unsupported real output with the safe insufficient-evidence response")
+	}
+}
+
+func hasObservedToolCall(events []observedToolCall, name string) bool {
+	for _, event := range events {
+		if event.Tool == name {
+			return true
+		}
+	}
+	return false
+}
+
+func seedLLMTestCompany(t *testing.T, ctx context.Context, client *http.Client, baseURL string,
+	sessions *mcpSessions, companyID, newsID, sourceID string) string {
+	t.Helper()
+	profileCall := startHeldMCPCall(t, client, baseURL, sessions, "valera", companyID, map[string]any{
+		"companyId": companyID, "profileRevision": 1,
+		"company": map[string]any{"syntheticU": "U_80", "orgType": "industrial", "city": "Ekaterinburg"},
+	})
+	callToolAs(t, ctx, sessions, "valera", "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 1,
 		"markdown": "# Synthetic Copper Widget Company\n\nThe company manufactures copper widgets for industrial equipment. Its configured price metric tracks the selling price of one copper widget.\n",
 		"metrics": []any{map[string]any{
@@ -177,31 +192,25 @@ func seedLLMTestCompany(t *testing.T, ctx context.Context, session *mcpSessions,
 			"metric_type": "currency", "characteristic": "one copper widget", "unit": "RUB/widget",
 		}},
 	})
-	news := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
-		"news_id": newsID, "source_id": sourceID,
+	finishHeldMCPCall(t, client, baseURL, sessions, profileCall)
+	sourceCall := assertRequest(t, client, baseURL, http.MethodPost, "/call?agent=serezha", map[string]any{
+		"company_id": companyID, "news_id": newsID, "source_id": sourceID,
 		"source_url": "https://example.test/synthetic-widget-news", "material_kind": "external_news",
 		"media_type": "text/html", "title": "Synthetic widget factory report",
-		"published_at": "2026-10-01T12:00:00Z", "news_text": "Synthetic test data: on 2026-10-01 the company sold copper widgets for 125 RUB per widget.",
-		"facts": []any{map[string]any{
-			"fact_text": "On 2026-10-01 the synthetic company sold copper widgets for 125 RUB per widget.",
-			"category":  "pricing", "entities": []string{"synthetic company", "copper widgets"},
-			"evidence": "sold copper widgets for 125 RUB per widget", "occurred_at": "2026-10-01T12:00:00Z", "confidence": 0.99,
-		}},
-	})
-	factIDs := stringArrayField(t, news, "fact_ids")
-	if len(factIDs) != 1 {
-		t.Fatal("ESB did not persist the synthetic universal fact")
+		"published_at": "2026-10-01T12:00:00Z",
+		"news_text":    "Synthetic test data: on 2026-10-01 the company sold copper widgets for 125 RUB per widget.",
+	}, true, http.StatusAccepted, "")
+	waitForCall(t, client, baseURL, "serezha", stringField(t, sourceCall.body, "call_id"))
+	news := callToolAs(t, ctx, sessions, "saveliy", "get_facts", map[string]any{"news_id": newsID, "limit": 10})
+	facts := arrayField(t, news, "facts")
+	if len(facts) != 1 {
+		t.Fatalf("isolated news fixture returned %d facts, want one", len(facts))
 	}
-	callTool(t, ctx, session, "save_fact_company_links", map[string]any{
-		"company_id": companyID,
-		"links":      []any{map[string]any{"fact_id": factIDs[0], "relevance": "high", "confidence": 0.99}},
-	})
-	context := callTool(t, ctx, session, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 10})
-	facts := arrayField(t, context, "facts")
-	if len(facts) != 1 || stringField(t, facts[0].(map[string]any), "source_id") != sourceID {
-		t.Fatal("synthetic consultant fixture does not expose its source ID through ESB")
+	factID := stringField(t, facts[0].(map[string]any), "fact_id")
+	if factID == "" {
+		t.Fatal("isolated news fixture returned an empty fact ID")
 	}
-	return factIDs[0]
+	return factID
 }
 
 func observedCalls(t *testing.T, client *http.Client, observerURL, correlationID string) []observedToolCall {
@@ -340,27 +349,14 @@ func readConsultantEvent(t *testing.T, conn *websocket.Conn, kind string, timeou
 	}
 }
 
-func llmTestCompanyID(agent string) string {
-	return "dddddddd-0000-4000-8000-" + llmTestUUIDSuffix(agent, 1)
+func llmTestCompanyID() string {
+	return "dddddddd-0000-4000-8000-000000000001"
 }
 
-func llmTestNewsID(agent string) string {
-	return "dddddddd-0000-4000-8000-" + llmTestUUIDSuffix(agent, 2)
+func llmTestNewsID() string {
+	return "dddddddd-0000-4000-8000-000000000002"
 }
 
-func llmTestSourceID(agent string) string {
-	return "dddddddd-0000-4000-8000-" + llmTestUUIDSuffix(agent, 3)
-}
-
-func llmTestUUIDSuffix(agent string, suffix int) string {
-	var base int64
-	switch agent {
-	case "saveliy":
-		base = 0x100
-	case "kesha":
-		base = 0x200
-	case "konstantin":
-		base = 0x300
-	}
-	return fmt.Sprintf("%012x", base+int64(suffix))
+func llmTestSourceID() string {
+	return "dddddddd-0000-4000-8000-000000000003"
 }

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,27 +22,32 @@ import (
 )
 
 const (
-	apiKey           = "test-esb-api-key"
-	serezhaMCPKey    = "test-only-serezha-mcp-token-000000000001"
-	saveliyMCPKey    = "test-only-saveliy-mcp-token-000000000002"
-	valeraMCPKey     = "test-only-valera-mcp-token-000000000003"
-	keshaMCPKey      = "test-only-kesha-mcp-token-000000000004"
-	konstantinMCPKey = "test-only-konstantin-mcp-token-000000000005"
-	companyID        = "11111111-1111-4111-8111-111111111111"
-	companyIDTwo     = "19717000-0000-4000-8000-000000000001"
-	concurrentID     = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-	newsSourceID     = "22222222-2222-4222-8222-222222222222"
-	bankSourceID     = "33333333-3333-4333-8333-333333333333"
-	newsID           = "55555555-5555-4555-8555-555555555555"
-	bankNewsID       = "66666666-6666-4666-8666-666666666666"
-	partialNewsID    = "abababab-abab-4bab-8bab-abababababab"
-	partialSourceID  = "acacacac-acac-4cac-8cac-acacacacacac"
+	apiKey                 = "test-esb-api-key"
+	serezhaMCPKey          = "test-only-serezha-mcp-token-000000000001"
+	saveliyMCPKey          = "test-only-saveliy-mcp-token-000000000002"
+	valeraMCPKey           = "test-only-valera-mcp-token-000000000003"
+	keshaMCPKey            = "test-only-kesha-mcp-token-000000000004"
+	konstantinMCPKey       = "test-only-konstantin-mcp-token-000000000005"
+	companyID              = "11111111-1111-4111-8111-111111111111"
+	companyIDTwo           = "19717000-0000-4000-8000-000000000001"
+	failedProfileCompanyID = "19717000-0000-4000-8000-000000000002"
+	concurrentID           = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	newsSourceID           = "22222222-2222-4222-8222-222222222222"
+	bankSourceID           = "33333333-3333-4333-8333-333333333333"
+	newsID                 = "55555555-5555-4555-8555-555555555555"
+	bankNewsID             = "66666666-6666-4666-8666-666666666666"
+	partialNewsID          = "abababab-abab-4bab-8bab-abababababab"
+	partialSourceID        = "acacacac-acac-4cac-8cac-acacacacacac"
+	foreignSourceID        = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	unavailableSourceID    = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef"
 )
 
 var agentMCPKeys = map[string]string{
 	"serezha": serezhaMCPKey, "saveliy": saveliyMCPKey, "valera": valeraMCPKey,
 	"kesha": keshaMCPKey, "konstantin": konstantinMCPKey,
 }
+
+var mcpContextSequence atomic.Uint64
 
 type response struct {
 	status int
@@ -171,14 +177,15 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	waitForCall(t, httpClient, baseURL, "kesha", concurrentCallID)
 
 	// Valera profile call: enqueue, read its status, atomically persist profile+metrics over MCP.
-	profilePayload := valeraPayload(1)
+	profilePayload := valeraPayloadForCompany(failedProfileCompanyID, 1)
 	valera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", profilePayload, true, http.StatusAccepted, "")
 	valeraCallID := stringField(t, valera.body, "call_id")
 	valeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", valeraCallID)
 	if stringField(t, valeraFailure.body, "error") != "company_profile_not_synced" {
 		t.Fatalf("Valera completed without saving its profile but returned a different error: %#v", valeraFailure.body)
 	}
-	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusConflict, "profile_update_pending")
+	assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": failedProfileCompanyID}, true, http.StatusConflict, "profile_update_pending")
+	valeraProfileCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "valera", companyID, valeraPayload(1))
 	metric := metricSetting()
 	profileMarkdown := "# Example company\n\nA manufacturer with a growing domestic market.\n"
 	vectorMetrics := metricSettingsForVector()
@@ -204,6 +211,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if !changedProfile.IsError {
 		t.Fatal("MCP accepted a conflicting profile payload at the same revision")
 	}
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, valeraProfileCall)
+	keshaCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "kesha", companyID, map[string]any{"company_id": companyID})
 	profile := callTool(t, mcpCtx, mcpSession, "get_company_profile", map[string]any{"company_id": companyID})
 	if !strings.Contains(stringField(t, profile, "markdown"), "Example company") {
 		t.Fatal("S3-compatible profile read did not return the saved Markdown")
@@ -269,6 +278,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	for _, factID := range factIDs {
 		links = append(links, map[string]any{"fact_id": factID, "relevance": "high", "confidence": "0.95"})
 	}
+	saveliyCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "saveliy", companyID,
+		map[string]any{"company_id": companyID, "news_id": newsID})
 	callTool(t, mcpCtx, mcpSession, "save_fact_company_links", map[string]any{"company_id": companyID, "links": links})
 	facts := callTool(t, mcpCtx, mcpSession, "get_facts", map[string]any{"news_id": newsID, "limit": 100})
 	newsFactRows := arrayField(t, facts, "facts")
@@ -364,10 +375,10 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		{testNewsID(12), "2026-10-02T00:00:00Z", "https://example.test/news/N12", "external_news"},
 	}
 	for i, item := range vectorNews {
-		saveNewsAt(t, mcpCtx, mcpSession, companyID, item.id, testSourceID(i+1), item.at, item.url, item.kind)
+		saveNewsAt(t, httpClient, baseURL, mcpCtx, mcpSession, companyID, item.id, testSourceID(i+1), item.at, item.url, item.kind)
 	}
 	newsWithoutTimeID := testNewsID(11)
-	saveNewsWithoutTime(t, mcpCtx, mcpSession, companyID, newsWithoutTimeID)
+	saveNewsWithoutTime(t, httpClient, baseURL, mcpCtx, mcpSession, companyID, newsWithoutTimeID)
 	observations := []any{
 		metricObservation(metricIDs["ставка"], testNewsID(1), 2.0, 0.8),
 		metricObservation(metricIDs["ставка"], testNewsID(2), 1.0, 0.6),
@@ -438,16 +449,27 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if len(arrayField(t, reversed, "items")) != 8 || arrayField(t, reversed, "items")[0].(map[string]any)["total_value"] != nil {
 		t.Fatalf("reversed period should retain configured rows with empty totals: %#v", reversed)
 	}
-	noSettings := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "period_from": periodFrom, "period_to": periodTo})
+	emptyMetricsCompanyID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	emptyMetricsCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "kesha", emptyMetricsCompanyID,
+		map[string]any{"company_id": emptyMetricsCompanyID})
+	noSettings := callTool(t, mcpCtx, mcpSession, "calculate_all_metric_totals", map[string]any{"company_id": emptyMetricsCompanyID, "period_from": periodFrom, "period_to": periodTo})
 	if len(arrayField(t, noSettings, "items")) != 0 {
 		t.Fatalf("company without metric rows should return an empty list: %#v", noSettings)
 	}
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, emptyMetricsCall)
 	secondCompanyMetrics := metricSettingsForCatalog()
+	valeraOtherCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "valera", companyIDTwo,
+		valeraPayloadForCompany(companyIDTwo, 1))
 	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyIDTwo, "profile_revision": 1, "markdown": "# Second synthetic company\n",
 		"metrics": secondCompanyMetrics,
 	})
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, valeraOtherCompanyCall)
+	keshaOtherCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "kesha", companyIDTwo,
+		map[string]any{"company_id": companyIDTwo})
 	secondCompanyRows := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyIDTwo, "limit": 100})
+	assertMCPCompanyContextIsolation(t, mcpCtx, mcpSession.sessions["kesha"], companyID, companyIDTwo,
+		mcpSession.companyContext(t, "kesha", companyID), mcpSession.companyContext(t, "kesha", companyIDTwo))
 	secondMetricIDs := make(map[string]string)
 	for _, raw := range arrayField(t, secondCompanyRows, "metrics") {
 		row := raw.(map[string]any)
@@ -458,10 +480,13 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if len(sharedFactRows) == 0 {
 		t.Fatal("shared company news has no persisted fact to link")
 	}
+	saveliyOtherCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "saveliy", companyIDTwo,
+		map[string]any{"company_id": companyIDTwo, "news_id": testNewsID(1)})
 	callTool(t, mcpCtx, mcpSession, "save_fact_company_links", map[string]any{
 		"company_id": companyIDTwo,
 		"links":      []any{map[string]any{"fact_id": stringField(t, sharedFactRows[0].(map[string]any), "fact_id"), "relevance": "shared market news", "confidence": 0.9}},
 	})
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, saveliyOtherCompanyCall)
 	secondObservations := []any{
 		metricObservation(secondMetricIDs["ставка"], testNewsID(1), 2.0, 0.7),
 		metricObservation(secondMetricIDs["депозит"], testNewsID(1), 5.0, 0.7),
@@ -493,6 +518,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if floatField(t, secondItems[9].(map[string]any), "total_value") != 11 || secondItems[9].(map[string]any)["total_probability"] != nil || intField(t, secondItems[9].(map[string]any), "probability_count") != 0 {
 		t.Fatalf("known values with no known probability must still average, but return null probability: %#v", secondItems[9])
 	}
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, keshaOtherCompanyCall)
 	// A second prediction on one news row contributes to the arithmetic mean,
 	// while its news appears only once in the links array.
 	callTool(t, mcpCtx, mcpSession, "save_metric_observations", map[string]any{"company_id": companyID, "observations": []any{
@@ -521,21 +547,21 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if priceTotal == nil || stringField(t, priceTotal, "unit") != "₽/шт." {
 		t.Fatalf("metric total did not return its PostgreSQL unit: %#v", priceTotal)
 	}
-	consultantContext := callTool(t, mcpCtx, mcpSession, "get_consultant_context", map[string]any{"company_id": companyID, "limit": 100})
-	if len(arrayField(t, consultantContext, "facts")) != 14 || len(arrayField(t, consultantContext, "observations")) != 13 || len(arrayField(t, consultantContext, "totals")) == 0 {
-		t.Fatalf("consultant context is incomplete: %#v", consultantContext)
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, keshaCompanyCall)
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, saveliyCompanyCall)
+	foreignSource := postSerezhaForCompany(t, httpClient, baseURL, companyIDTwo, foreignSourceID,
+		"foreign-company-source", "external_news", "text/html", "Other company source",
+		"https://example.test/news/foreign-company", "Synthetic source owned by another company.")
+	foreignFailure := waitForFailedCall(t, httpClient, baseURL, "serezha", stringField(t, foreignSource.body, "call_id"))
+	if stringField(t, foreignFailure.body, "error") != "news_persistence_unconfirmed" {
+		t.Fatalf("unpersisted foreign source call failed for an unexpected reason: %#v", foreignFailure.body)
 	}
-	for _, rawFact := range arrayField(t, consultantContext, "facts") {
-		fact, ok := rawFact.(map[string]any)
-		if !ok || stringField(t, fact, "fact_id") == "" || !validSources[stringField(t, fact, "source_id")] {
-			t.Fatalf("consultant context lost a fact or source ID after joins: %#v", rawFact)
-		}
-	}
-	for _, rawObservation := range arrayField(t, consultantContext, "observations") {
-		observation, ok := rawObservation.(map[string]any)
-		if !ok || stringField(t, observation, "news_id") == "" || stringField(t, observation, "source_id") == "" {
-			t.Fatalf("consultant context lost observation source metadata after joins: %#v", rawObservation)
-		}
+	unavailableSource := postSerezhaForCompany(t, httpClient, baseURL, companyID, unavailableSourceID,
+		"unavailable-company-source", "external_news", "text/html", "Unavailable source",
+		"https://example.test/news/unavailable", "Synthetic source not present in consultant context.")
+	unavailableFailure := waitForFailedCall(t, httpClient, baseURL, "serezha", stringField(t, unavailableSource.body, "call_id"))
+	if stringField(t, unavailableFailure.body, "error") != "news_persistence_unconfirmed" {
+		t.Fatalf("unpersisted company source call failed for an unexpected reason: %#v", unavailableFailure.body)
 	}
 
 	// Exercise the ordinary asynchronous calls and call-status GET for each remaining HTTP agent.
@@ -566,6 +592,7 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("GET /call did not return the full saved analysis: %#v", analysisStatus.body)
 	}
 	assertEvidence(t, analysisStatus.body["evidence"], newsSourceID, bankSourceID)
+	assertMockConsultantCall(t, httpClient, "http://127.0.0.1:18090", analysisID, companyID, 14, 13)
 
 	streamURL := baseURL + stringField(t, analysisStatus.body, "streamUrl")
 	ws := dialWebSocket(t, streamURL)
@@ -578,18 +605,9 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	questionRequestID := "77777777-7777-4777-8777-777777777777"
 	question := map[string]any{"kind": "question", "requestId": questionRequestID, "companyId": companyID,
 		"conversationId": conversationID, "analysisId": analysisID, "text": "Why is this news relevant?"}
-	writeFrame(t, ws, question)
-	accepted := readFrame(t, ws)
-	if stringField(t, accepted, "kind") != "accepted" || stringField(t, accepted, "requestId") != questionRequestID {
-		t.Fatalf("WebSocket did not acknowledge question: %#v", accepted)
-	}
-	answer := readFrame(t, ws)
-	if stringField(t, answer, "kind") != "assistant_answer" || stringField(t, answer, "requestId") != questionRequestID {
-		t.Fatalf("WebSocket did not return a complete answer: %#v", answer)
-	}
+	answer := sendQuestion(t, ws, question)
 	answerMessageID := stringField(t, answer, "messageId")
 	assertEvidence(t, answer["evidence"], newsSourceID, bankSourceID)
-	_ = ws.Close(websocket.StatusNormalClosure, "")
 
 	// GET /call returns paginated company-scoped chat history from PostgreSQL.
 	historyFrom := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
@@ -643,6 +661,31 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("idempotent retry returned a different message: %#v", duplicateAnswer)
 	}
 	_ = duplicateWS.Close(websocket.StatusNormalClosure, "")
+	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
+		"text": "Unconfirmed empty-evidence response", "evidence": []any{},
+	})
+	emptyEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777778",
+		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Give a recommendation without sources."})
+	assertInsufficientEvidence(t, emptyEvidence)
+	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
+		"text": "Unconfirmed invented-source response", "evidence": []any{map[string]any{"sourceId": "12345678-1234-4123-8123-123456789abc", "originKind": "fact"}},
+	})
+	inventedEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777779",
+		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite a made-up source."})
+	assertInsufficientEvidence(t, inventedEvidence)
+	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
+		"text": "Unconfirmed foreign-source response", "evidence": []any{map[string]any{"sourceId": foreignSourceID, "originKind": "fact"}},
+	})
+	foreignEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777780",
+		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite another company's source."})
+	assertInsufficientEvidence(t, foreignEvidence)
+	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
+		"text": "Unconfirmed unavailable-source response", "evidence": []any{map[string]any{"sourceId": unavailableSourceID, "originKind": "fact"}},
+	})
+	unavailableEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777781",
+		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite a source absent from this context."})
+	assertInsufficientEvidence(t, unavailableEvidence)
+	_ = ws.Close(websocket.StatusNormalClosure, "")
 
 	// New source and profile revisions independently invalidate saved analysis.
 	partialText := "Partial source text remains until its facts are confirmed."
@@ -665,7 +708,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	if got := clickHouseCount(t, "SELECT count() FROM news_content FINAL WHERE news_id = '"+partialNewsID+"'"); got != 1 {
 		t.Fatalf("confirmed retry text rows = %d, want 1 until retention expires", got)
 	}
-	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(answerMessageID))
+	lastEvidenceMessageID := stringField(t, unavailableEvidence, "messageId")
+	staleQuestionWS := dialWebSocket(t, streamURL+"&afterMessageId="+url.QueryEscape(lastEvidenceMessageID))
 	writeFrame(t, staleQuestionWS, map[string]any{"kind": "question", "requestId": "88888888-8888-4888-8888-888888888888",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Use the stale analysis"})
 	staleError := readFrame(t, staleQuestionWS)
@@ -682,22 +726,24 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	}
 	_ = newSourceWS.Close(websocket.StatusNormalClosure, "")
 
-	updatedProfilePayload := valeraPayload(2)
+	updatedProfilePayload := valeraPayloadForCompany(failedProfileCompanyID, 2)
 	updatedValera := assertRequest(t, httpClient, baseURL, http.MethodPost, "/call?agent=valera", updatedProfilePayload, true, http.StatusAccepted, "")
 	updatedValeraFailure := waitForFailedCall(t, httpClient, baseURL, "valera", stringField(t, updatedValera.body, "call_id"))
 	if stringField(t, updatedValeraFailure.body, "error") != "company_profile_not_synced" {
 		t.Fatalf("second Valera call completed without saving its profile but returned a different error: %#v", updatedValeraFailure.body)
 	}
 	updatedProfileMarkdown := "# Example company\n\nUpdated company context at revision two.\n"
+	updatedProfileCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "valera", companyID, valeraPayload(2))
 	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 2, "markdown": updatedProfileMarkdown,
 		"metrics": []any{metric},
 	})
-	metricsAfterReplacement := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
+	metricsAfterReplacement := callToolAs(t, mcpCtx, mcpSession, "valera", "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
 	updatedMetrics := arrayField(t, metricsAfterReplacement, "metrics")
 	if len(updatedMetrics) != 1 || stringField(t, updatedMetrics[0].(map[string]any), "type_code") != "ставка" || stringField(t, updatedMetrics[0].(map[string]any), "metric_id") == "" {
 		t.Fatalf("Valera snapshot left a stale metric in PostgreSQL: %#v", updatedMetrics)
 	}
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, updatedProfileCall)
 	profileStaleStatus := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin", map[string]any{"companyId": companyID}, true, http.StatusAccepted, "")
 	profileRevisionURL := baseURL + stringField(t, profileStaleStatus.body, "streamUrl")
 	profileRevisionWS := dialWebSocket(t, profileRevisionURL)
@@ -715,14 +761,16 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	}
 	_ = badCursorWS.Close(websocket.StatusNormalClosure, "")
 
+	emptyProfileCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "valera", companyID, valeraPayloadForCompany(companyID, 3))
 	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
 		"company_id": companyID, "profile_revision": 3, "markdown": updatedProfileMarkdown,
 		"metrics": []any{},
 	})
-	emptySnapshot := callTool(t, mcpCtx, mcpSession, "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
+	emptySnapshot := callToolAs(t, mcpCtx, mcpSession, "valera", "get_company_metrics", map[string]any{"company_id": companyID, "limit": 100})
 	if len(arrayField(t, emptySnapshot, "metrics")) != 0 {
 		t.Fatalf("empty Valera snapshot did not remove all metric settings: %#v", emptySnapshot)
 	}
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, emptyProfileCall)
 
 	// Force Kesha beyond its 40-message model-context limit. PostgreSQL keeps
 	// the full conversation while Hermes receives a stored summary and recent
@@ -848,6 +896,14 @@ type mockRunRequest struct {
 	runID    string
 }
 
+type heldMCPCall struct {
+	agent     string
+	companyID string
+	callID    string
+	run       mockRunRequest
+	token     string
+}
+
 type heldCall struct {
 	callID string
 	body   map[string]any
@@ -881,6 +937,93 @@ func startHeldSaveliyCall(t *testing.T, client *http.Client, baseURL, key, compa
 		t.Fatalf("held Saveliy call returned %d, want 202: %s", response.StatusCode, data)
 	}
 	return heldCall{callID: stringField(t, result, "call_id"), body: result}
+}
+
+func startHeldMCPCall(t *testing.T, client *http.Client, baseURL string, sessions *mcpSessions,
+	agent, companyID string, input map[string]any) heldMCPCall {
+	t.Helper()
+	if agent == "valera" {
+		queueMockRunStatus(t, client, "http://127.0.0.1:18090", companyID, "running")
+	} else {
+		input["mock_status"] = "running"
+	}
+	call := assertRequest(t, client, baseURL, http.MethodPost, "/call?agent="+url.QueryEscape(agent), input, true, http.StatusAccepted, "")
+	callID := stringField(t, call.body, "call_id")
+	run := waitForMockRequest(t, client, e2eMockURLs(), callID)
+	token := mockRunInputString(t, client, run, "call_context")
+	if token == "" {
+		t.Fatalf("Hermes mock input did not contain a signed MCP context for %s call", agent)
+	}
+	sessions.setCompanyContext(agent, companyID, token)
+	return heldMCPCall{agent: agent, companyID: companyID, callID: callID, run: run, token: token}
+}
+
+func finishHeldMCPCall(t *testing.T, client *http.Client, baseURL string, sessions *mcpSessions, held heldMCPCall) {
+	t.Helper()
+	completeMockRun(t, client, held.run.baseURL, held.run.runID)
+	waitForCall(t, client, baseURL, held.agent, held.callID)
+	if sessions.contexts[held.agent][held.companyID] == held.token {
+		delete(sessions.contexts[held.agent], held.companyID)
+	}
+}
+
+func e2eMockURLs() []string {
+	primary := strings.TrimRight(os.Getenv("ESB_E2E_MOCK_PRIMARY_URL"), "/")
+	if primary == "" {
+		primary = "http://127.0.0.1:18090"
+	}
+	secondary := strings.TrimRight(os.Getenv("ESB_E2E_MOCK_SECONDARY_URL"), "/")
+	if secondary == "" {
+		secondary = "http://127.0.0.1:18091"
+	}
+	return []string{primary, secondary}
+}
+
+func queueMockRunStatus(t *testing.T, client *http.Client, mockURL, companyID, status string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"company_id": companyID, "status": status})
+	if err != nil {
+		t.Fatalf("encode mock run status: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodPost, mockURL+"/test/next-status", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create mock run status request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("queue mock run status: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("queue mock run status returned %d", response.StatusCode)
+	}
+}
+
+func mockRunInputString(t *testing.T, client *http.Client, run mockRunRequest, key string) string {
+	t.Helper()
+	response, err := client.Get(run.baseURL + "/test/runs")
+	if err != nil {
+		t.Fatalf("read Hermes mock run input: %v", err)
+	}
+	defer response.Body.Close()
+	var result struct {
+		Runs []struct {
+			RunID string         `json:"run_id"`
+			Input map[string]any `json:"input"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode Hermes mock run inputs: %v", err)
+	}
+	for _, item := range result.Runs {
+		if item.RunID == run.runID {
+			value, _ := item.Input[key].(string)
+			return value
+		}
+	}
+	t.Fatalf("Hermes mock did not retain the requested run input")
+	return ""
 }
 
 func responseBody(t *testing.T, status int, data []byte) map[string]any {
@@ -1003,8 +1146,12 @@ func completeMockRun(t *testing.T, client *http.Client, baseURL, runID string) {
 }
 
 func valeraPayload(revision int) map[string]any {
+	return valeraPayloadForCompany(companyID, revision)
+}
+
+func valeraPayloadForCompany(company string, revision int) map[string]any {
 	return map[string]any{
-		"companyId": companyID, "profileRevision": revision,
+		"companyId": company, "profileRevision": revision,
 		"company": map[string]any{"syntheticU": "U_80", "orgType": "КОММ_ОРГ", "city": "Екатеринбург", "revenueCompany": 1423218135},
 	}
 }
@@ -1057,7 +1204,8 @@ func testNewsID(index int) string { return fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-
 
 func testSourceID(index int) string { return fmt.Sprintf("bbbbbbbb-bbbb-4bbb-8bbb-%012x", index) }
 
-func saveNewsAt(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID, sourceID, publishedAt, sourceURL, materialKind string) {
+func saveNewsAt(t *testing.T, client *http.Client, baseURL string, ctx context.Context, session *mcpSessions,
+	companyID, newsID, sourceID, publishedAt, sourceURL, materialKind string) {
 	t.Helper()
 	result := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
 		"news_id": newsID, "source_id": sourceID, "source_url": sourceURL, "company_id": companyID,
@@ -1074,9 +1222,24 @@ func saveNewsAt(t *testing.T, ctx context.Context, session *mcpSessions, company
 	callTool(t, ctx, session, "save_fact_company_links", map[string]any{
 		"company_id": companyID, "links": []any{map[string]any{"fact_id": factIDs[0], "relevance": "supporting", "confidence": 1.0}},
 	})
+	registryURL := sourceURL
+	if registryURL == "" {
+		registryURL = "https://example.test/registry/" + newsID
+	}
+	publishedAtValue := publishedAt
+	registered := postSerezhaForCompanyAt(t, client, baseURL, companyID, sourceID, newsID, materialKind,
+		"text/html", newsID, registryURL, "Metric vector news.", &publishedAtValue)
+	if sourceURL == "" {
+		failed := waitForFailedCall(t, client, baseURL, "serezha", stringField(t, registered.body, "call_id"))
+		if stringField(t, failed.body, "error") != "news_persistence_unconfirmed" {
+			t.Fatalf("source registration with omitted URL failed for an unexpected reason: %#v", failed.body)
+		}
+	} else {
+		waitForCall(t, client, baseURL, "serezha", stringField(t, registered.body, "call_id"))
+	}
 }
 
-func saveNewsWithoutTime(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID string) {
+func saveNewsWithoutTime(t *testing.T, client *http.Client, baseURL string, ctx context.Context, session *mcpSessions, companyID, newsID string) {
 	t.Helper()
 	result := callTool(t, ctx, session, "save_news_and_facts", map[string]any{
 		"news_id": newsID, "source_id": testSourceID(100), "source_url": "https://example.test/news/without-time", "company_id": companyID,
@@ -1093,6 +1256,9 @@ func saveNewsWithoutTime(t *testing.T, ctx context.Context, session *mcpSessions
 	callTool(t, ctx, session, "save_fact_company_links", map[string]any{
 		"company_id": companyID, "links": []any{map[string]any{"fact_id": factIDs[0], "relevance": "supporting", "confidence": 1.0}},
 	})
+	registered := postSerezhaForCompanyAt(t, client, baseURL, companyID, testSourceID(100), newsID,
+		"external_news", "text/html", newsID, "https://example.test/news/without-time", "News without a publication time.", nil)
+	waitForCall(t, client, baseURL, "serezha", stringField(t, registered.body, "call_id"))
 }
 
 func metricObservation(metricID, newsID string, value, probability any) map[string]any {
@@ -1100,17 +1266,39 @@ func metricObservation(metricID, newsID string, value, probability any) map[stri
 }
 
 func serezhaPayload(sourceID, newsID, materialKind, mediaType, title, sourceURL, text string) map[string]any {
+	return serezhaPayloadForCompany(companyID, sourceID, newsID, materialKind, mediaType, title, sourceURL, text)
+}
+
+func serezhaPayloadForCompany(company, sourceID, newsID, materialKind, mediaType, title, sourceURL, text string) map[string]any {
 	return map[string]any{
-		"news_id": newsID, "source_id": sourceID, "company_id": companyID,
+		"news_id": newsID, "source_id": sourceID, "company_id": company,
 		"material_kind": materialKind, "media_type": mediaType, "title": title,
 		"source_url": sourceURL, "published_at": "2026-10-25T09:00:00Z", "news_text": text,
 	}
 }
 
 func postSerezha(t *testing.T, client *http.Client, baseURL, sourceID, newsID, materialKind, mediaType, title, sourceURL, text string) response {
+	return postSerezhaForCompany(t, client, baseURL, companyID, sourceID, newsID, materialKind, mediaType, title, sourceURL, text)
+}
+
+func postSerezhaForCompany(t *testing.T, client *http.Client, baseURL, company, sourceID, newsID,
+	materialKind, mediaType, title, sourceURL, text string) response {
+	publishedAt := "2026-10-25T09:00:00Z"
+	return postSerezhaForCompanyAt(t, client, baseURL, company, sourceID, newsID, materialKind, mediaType,
+		title, sourceURL, text, &publishedAt)
+}
+
+func postSerezhaForCompanyAt(t *testing.T, client *http.Client, baseURL, company, sourceID, newsID,
+	materialKind, mediaType, title, sourceURL, text string, publishedAt *string) response {
 	t.Helper()
+	payload := serezhaPayloadForCompany(company, sourceID, newsID, materialKind, mediaType, title, sourceURL, text)
+	if publishedAt == nil {
+		delete(payload, "published_at")
+	} else {
+		payload["published_at"] = *publishedAt
+	}
 	return assertRequest(t, client, baseURL, http.MethodPost, "/call?agent=serezha",
-		serezhaPayload(sourceID, newsID, materialKind, mediaType, title, sourceURL, text), true, http.StatusAccepted, "")
+		payload, true, http.StatusAccepted, "")
 }
 
 func saveNewsFacts(t *testing.T, ctx context.Context, session *mcpSessions, companyID, newsID, sourceID, materialKind, mediaType, title, sourceURL, text string) []string {
@@ -1331,17 +1519,121 @@ func waitForFailedCall(t *testing.T, client *http.Client, baseURL, agent, callID
 	return response{}
 }
 
+func sendQuestion(t *testing.T, connection *websocket.Conn, question map[string]any) map[string]any {
+	t.Helper()
+	requestID, _ := question["requestId"].(string)
+	writeFrame(t, connection, question)
+	accepted := readFrame(t, connection)
+	if stringField(t, accepted, "kind") != "accepted" || stringField(t, accepted, "requestId") != requestID {
+		t.Fatalf("WebSocket did not acknowledge question %q", requestID)
+	}
+	answer := readFrame(t, connection)
+	if stringField(t, answer, "kind") != "assistant_answer" || stringField(t, answer, "requestId") != requestID {
+		t.Fatalf("WebSocket did not return an answer for question %q", requestID)
+	}
+	return answer
+}
+
+func assertInsufficientEvidence(t *testing.T, answer map[string]any) {
+	t.Helper()
+	if got := stringField(t, answer, "text"); got != "Недостаточно подтверждённых источников в данных этого вызова, чтобы дать подтверждённую рекомендацию." {
+		t.Fatalf("invalid model evidence was returned as a recommendation: %q", got)
+	}
+	if evidence := arrayField(t, answer, "evidence"); len(evidence) != 0 {
+		t.Fatalf("safe insufficient-evidence response retained citations: %#v", evidence)
+	}
+}
+
+func queueMockNextOutput(t *testing.T, client *http.Client, mockURL, companyID, requestKind string, output map[string]any) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"company_id": companyID, "request_kind": requestKind, "output": output})
+	if err != nil {
+		t.Fatalf("encode synthetic Hermes output fixture: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodPost, mockURL+"/test/next-output", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create synthetic Hermes output fixture request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("queue synthetic Hermes output fixture: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("queue synthetic Hermes output fixture returned %d", response.StatusCode)
+	}
+}
+
+func assertMockConsultantCall(t *testing.T, client *http.Client, mockURL, requestID, companyID string, facts, observations int) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		response, err := client.Get(mockURL + "/test/tool-calls")
+		if err != nil {
+			t.Fatalf("read mock Hermes tool-call summary: %v", err)
+		}
+		var result struct {
+			Calls []struct {
+				RequestID        string `json:"request_id"`
+				CompanyID        string `json:"company_id"`
+				Tool             string `json:"tool"`
+				FactCount        int    `json:"fact_count"`
+				ObservationCount int    `json:"observation_count"`
+			} `json:"calls"`
+		}
+		decodeErr := json.NewDecoder(response.Body).Decode(&result)
+		response.Body.Close()
+		if decodeErr != nil {
+			t.Fatalf("decode mock Hermes tool-call summary: %v", decodeErr)
+		}
+		for _, call := range result.Calls {
+			if call.RequestID != requestID {
+				continue
+			}
+			if call.CompanyID != companyID || call.Tool != "get_consultant_context" || call.FactCount != facts || call.ObservationCount != observations {
+				t.Fatalf("mock Hermes consultant tool call had unexpected scope or result counts: %#v", call)
+			}
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("mock Hermes did not call get_consultant_context for this request")
+		case <-ticker.C:
+		}
+	}
+}
+
 type mcpSessions struct {
 	sessions map[string]*mcp.ClientSession
+	contexts map[string]map[string]string
 }
 
 func connectAgentMCPs(t *testing.T, ctx context.Context, baseURL string) *mcpSessions {
 	t.Helper()
-	sessions := &mcpSessions{sessions: make(map[string]*mcp.ClientSession, len(agentMCPKeys))}
+	sessions := &mcpSessions{sessions: make(map[string]*mcp.ClientSession, len(agentMCPKeys)),
+		contexts: make(map[string]map[string]string, len(agentMCPKeys))}
 	for agent, key := range agentMCPKeys {
 		sessions.sessions[agent] = connectMCP(t, ctx, baseURL+"/mcp", key)
+		sessions.contexts[agent] = make(map[string]string)
 	}
 	return sessions
+}
+
+func (sessions *mcpSessions) setCompanyContext(agent, companyID, token string) {
+	sessions.contexts[agent][companyID] = token
+}
+
+func (sessions *mcpSessions) companyContext(t *testing.T, agent, companyID string) string {
+	t.Helper()
+	token := sessions.contexts[agent][companyID]
+	if token == "" {
+		t.Fatalf("no active signed MCP call context is registered for agent %s and the requested company", agent)
+	}
+	return token
 }
 
 func connectMCP(t *testing.T, ctx context.Context, endpoint, key string) *mcp.ClientSession {
@@ -1509,6 +1801,15 @@ func callTool(t *testing.T, ctx context.Context, sessions *mcpSessions, name str
 	return structuredMap(t, result)
 }
 
+func callToolAs(t *testing.T, ctx context.Context, sessions *mcpSessions, agent, name string, args map[string]any) map[string]any {
+	t.Helper()
+	result := callToolRawAs(t, ctx, sessions, agent, name, args)
+	if result.IsError {
+		t.Fatalf("MCP tool %s returned an error: %s", name, result.Content)
+	}
+	return structuredMap(t, result)
+}
+
 func calculateOneMetric(t *testing.T, ctx context.Context, sessions *mcpSessions, companyID, metricID, periodFrom, periodTo string) map[string]any {
 	t.Helper()
 	totals := callTool(t, ctx, sessions, "calculate_all_metric_totals", map[string]any{
@@ -1530,10 +1831,108 @@ func calculateOneMetric(t *testing.T, ctx context.Context, sessions *mcpSessions
 func callToolRaw(t *testing.T, ctx context.Context, sessions *mcpSessions, name string, args map[string]any) *mcp.CallToolResult {
 	t.Helper()
 	agent, ok := mcpToolOwners[name]
-	if !ok || sessions.sessions[agent] == nil {
+	if !ok {
 		t.Fatalf("E2E tool %q has no configured agent principal", name)
 	}
-	session := sessions.sessions[agent]
+	return callToolRawAs(t, ctx, sessions, agent, name, args)
+}
+
+func callToolRawAs(t *testing.T, ctx context.Context, sessions *mcpSessions, agent, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	if sessions.sessions[agent] == nil {
+		t.Fatalf("E2E tool %q has no configured %s principal", name, agent)
+	}
+	arguments := cloneArguments(args)
+	if companyID, ok := arguments["company_id"].(string); ok {
+		if token := sessions.contexts[agent][companyID]; token != "" {
+			arguments["call_context"] = token
+		}
+	}
+	return invokeMCPTool(t, ctx, sessions.sessions[agent], name, arguments)
+}
+
+func callToolRawWithContext(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any, token string) *mcp.CallToolResult {
+	t.Helper()
+	arguments := cloneArguments(args)
+	if token != "" {
+		arguments["call_context"] = token
+	}
+	return invokeMCPTool(t, ctx, session, name, arguments)
+}
+
+func callToolRawWithoutContext(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	arguments := cloneArguments(args)
+	arguments["call_context"] = ""
+	return invokeMCPTool(t, ctx, session, name, arguments)
+}
+
+func assertMCPCompanyContextIsolation(t *testing.T, ctx context.Context, session *mcp.ClientSession,
+	companyA, companyB, tokenA, tokenB string) {
+	t.Helper()
+	for _, test := range []struct {
+		companyID string
+		token     string
+	}{{companyA, tokenA}, {companyB, tokenB}} {
+		result := callToolRawWithContext(t, ctx, session, "get_company_profile",
+			map[string]any{"company_id": test.companyID}, test.token)
+		if result.IsError {
+			t.Fatalf("company-scoped MCP profile read failed for its active call: %s", result.Content)
+		}
+		profile := structuredMap(t, result)
+		if stringField(t, profile, "company_id") != test.companyID {
+			t.Fatalf("MCP session returned company %q for call scoped to %q", profile["company_id"], test.companyID)
+		}
+	}
+	if result := callToolRawWithContext(t, ctx, session, "get_company_profile",
+		map[string]any{"company_id": companyB}, tokenA); !result.IsError {
+		t.Fatal("MCP accepted a company_id substitution against the signed call context")
+	}
+	if result := callToolRawWithoutContext(t, ctx, session, "get_company_profile",
+		map[string]any{"company_id": companyA}); !result.IsError {
+		t.Fatal("MCP allowed a company profile read without a verified call context")
+	}
+
+	type readResult struct {
+		companyID string
+		result    *mcp.CallToolResult
+		err       error
+	}
+	results := make(chan readResult, 2)
+	for _, test := range []struct {
+		companyID string
+		token     string
+	}{{companyA, tokenA}, {companyB, tokenB}} {
+		test := test
+		go func() {
+			result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "get_company_profile", Arguments: map[string]any{
+				"company_id": test.companyID, "call_context": test.token,
+			}})
+			results <- readResult{companyID: test.companyID, result: result, err: err}
+		}()
+	}
+	for range 2 {
+		read := <-results
+		if read.err != nil || read.result == nil || read.result.IsError {
+			t.Fatalf("parallel MCP read failed for a scoped company (error=%v)", read.err)
+		}
+		profile := structuredMap(t, read.result)
+		if got := stringField(t, profile, "company_id"); got != read.companyID {
+			t.Fatalf("parallel MCP read returned company %q for call scoped to %q", got, read.companyID)
+		}
+	}
+}
+
+func cloneArguments(args map[string]any) map[string]any {
+	arguments := make(map[string]any, len(args)+1)
+	for key, value := range args {
+		arguments[key] = value
+	}
+	return arguments
+}
+
+func invokeMCPTool(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("call MCP tool %s: %v", name, err)

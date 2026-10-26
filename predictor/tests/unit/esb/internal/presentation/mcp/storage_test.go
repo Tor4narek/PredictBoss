@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/predictboss/predictor/esb/internal/application/companycontext"
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
@@ -26,7 +27,7 @@ func TestStorageHandlerBindsMcpSessionToAgent(t *testing.T) {
 	for agent, tools := range agentTools {
 		declaredTools[agent] = tools
 	}
-	handler, err := NewStorageHandler(nil, nil, tokens, declaredTools)
+	handler, err := NewStorageHandler(nil, nil, testMCPAuthorizer{}, tokens, declaredTools)
 	if err != nil {
 		t.Fatal("construct role-filtered MCP handler")
 	}
@@ -81,6 +82,108 @@ func TestStorageHandlerBindsMcpSessionToAgent(t *testing.T) {
 	if strings.Contains(string(responseBody), tokens[domain.AgentValera]) || strings.Contains(string(responseBody), "Bearer ") {
 		t.Fatal("MCP role escalation response leaked authorization data")
 	}
+}
+
+func TestCompanyProfileReadsCompanyFromVerifiedContext(t *testing.T) {
+	tokens := testAgentTokens()
+	declaredTools := make(map[domain.AgentType][]string, len(agentTools))
+	for agent, tools := range agentTools {
+		declaredTools[agent] = tools
+	}
+	profiles := &testMCPProfileRepository{}
+	companyID := "11111111-1111-4111-8111-111111111111"
+	profilesService := companycontext.NewService(profiles, nil, companycontext.Limits{})
+	handler, err := NewStorageHandler(nil, profilesService, fixedMCPCallAuthorizer{value: domain.MCPCallContext{
+		Agent: domain.AgentSaveliy, CallID: "active-call", CompanyID: companyID,
+	}}, tokens, declaredTools)
+	if err != nil {
+		t.Fatal("construct call-scoped MCP handler")
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-context-test", Version: "1"}, nil)
+	httpClient := &http.Client{Transport: testBearerTransport{token: tokens[domain.AgentSaveliy]}}
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: server.URL, HTTPClient: httpClient, DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatal("initialize MCP session")
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close MCP session: %v", err)
+		}
+	})
+
+	_, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "get_company_profile",
+		Arguments: map[string]any{
+			"call_context": "signed-for-current-call",
+			"company_id":   "22222222-2222-4222-8222-222222222222",
+		},
+	})
+	if err != nil {
+		t.Fatalf("read profile without repeating company ID: %v", err)
+	}
+	if profiles.companyID != companyID {
+		t.Fatalf("profile repository received company %q; want the verified call company", profiles.companyID)
+	}
+}
+
+func testAgentTokens() map[domain.AgentType]string {
+	return map[domain.AgentType]string{
+		domain.AgentSerezha:    "unit-test-serezha-token-00000000000000001",
+		domain.AgentSaveliy:    "unit-test-saveliy-token-00000000000000002",
+		domain.AgentValera:     "unit-test-valera-token-00000000000000003",
+		domain.AgentKesha:      "unit-test-kesha-token-00000000000000004",
+		domain.AgentKonstantin: "unit-test-konstantin-token-00000000000000005",
+	}
+}
+
+type testMCPProfileRepository struct {
+	companyID string
+}
+
+type fixedMCPCallAuthorizer struct {
+	value domain.MCPCallContext
+}
+
+func (authorizer fixedMCPCallAuthorizer) AuthorizeMCPCompany(context.Context, domain.AgentType, string, string) (domain.MCPCallContext, error) {
+	return authorizer.value, nil
+}
+
+func (fixedMCPCallAuthorizer) RecordMCPCallSources(context.Context, domain.MCPCallContext, []string) error {
+	return nil
+}
+
+func (repository *testMCPProfileRepository) Get(_ context.Context, companyID string) (string, string, error) {
+	repository.companyID = companyID
+	return "synthetic profile", companyID + ".md", nil
+}
+
+func (repository *testMCPProfileRepository) Save(_ context.Context, companyID, _ string) (string, error) {
+	repository.companyID = companyID
+	return companyID + ".md", nil
+}
+
+type testMCPAuthorizer struct {
+	companyID string
+}
+
+func (authorizer testMCPAuthorizer) AuthorizeMCPCompany(_ context.Context, agent domain.AgentType, token, requestedCompanyID string) (domain.MCPCallContext, error) {
+	if authorizer.companyID != "" {
+		if requestedCompanyID != "" && !strings.EqualFold(requestedCompanyID, authorizer.companyID) {
+			return domain.MCPCallContext{}, domain.ErrConflict
+		}
+		return domain.MCPCallContext{Agent: agent, CallID: token, CompanyID: authorizer.companyID}, nil
+	}
+	return domain.MCPCallContext{Agent: agent, CallID: token, CompanyID: requestedCompanyID}, nil
+}
+
+func (testMCPAuthorizer) RecordMCPCallSources(context.Context, domain.MCPCallContext, []string) error {
+	return nil
 }
 
 type testBearerTransport struct {
