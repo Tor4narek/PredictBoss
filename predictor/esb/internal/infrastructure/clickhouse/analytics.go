@@ -134,7 +134,13 @@ func (r *Analytics) FinalizeNews(ctx context.Context, expected domain.News, cont
 		return fmt.Errorf("news metadata is not confirmed")
 	}
 	var factCounts []countRow
-	query := fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.facts FINAL WHERE news_id = %s) FORMAT JSONEachRow`, r.table("facts"), escape(expected.ID))
+	query := fmt.Sprintf(`SELECT toUInt32(count()) AS count
+FROM (
+    SELECT *
+    FROM %s.facts FINAL
+    WHERE news_id = %s
+)
+FORMAT JSONEachRow`, r.table("facts"), escape(expected.ID))
 	if err := r.client.queryRows(ctx, query, &factCounts); err != nil {
 		return err
 	}
@@ -146,13 +152,27 @@ func (r *Analytics) FinalizeNews(ctx context.Context, expected domain.News, cont
 		return fmt.Errorf("news facts are not confirmed")
 	}
 	var contentCounts []countRow
-	contentQuery := fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.news_content FINAL WHERE news_id = %s AND content_hash = %s) FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID), escape(contentHash))
+	contentQuery := fmt.Sprintf(`SELECT toUInt32(count()) AS count
+FROM (
+    SELECT *
+    FROM %s.news_content FINAL
+    WHERE news_id = %s
+      AND content_hash = %s
+)
+FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID), escape(contentHash))
 	if err := r.client.queryRows(ctx, contentQuery, &contentCounts); err != nil {
 		return err
 	}
 	if len(contentCounts) == 0 || contentCounts[0].Count == 0 {
 		var remaining []countRow
-		if err := r.client.queryRows(ctx, fmt.Sprintf(`SELECT toUInt32(count()) AS count FROM (SELECT * FROM %s.news_content FINAL WHERE news_id = %s) FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID)), &remaining); err != nil {
+		remainingQuery := fmt.Sprintf(`SELECT toUInt32(count()) AS count
+FROM (
+    SELECT *
+    FROM %s.news_content FINAL
+    WHERE news_id = %s
+)
+FORMAT JSONEachRow`, r.table("news_content"), escape(expected.ID))
+		if err := r.client.queryRows(ctx, remainingQuery, &remaining); err != nil {
 			return err
 		}
 		if len(remaining) > 0 && remaining[0].Count > 0 {
@@ -167,7 +187,11 @@ func (r *Analytics) FinalizeNews(ctx context.Context, expected domain.News, cont
 
 func (r *Analytics) newsProcessing(ctx context.Context, newsID string) (newsProcessingRow, bool, error) {
 	var rows []newsProcessingRow
-	query := fmt.Sprintf(`SELECT news_id, source_id, content_hash, fact_count FROM %s.news_processing FINAL WHERE news_id = %s LIMIT 1 FORMAT JSONEachRow`, r.table("news_processing"), escape(newsID))
+	query := fmt.Sprintf(`SELECT news_id, source_id, content_hash, fact_count
+FROM %s.news_processing FINAL
+WHERE news_id = %s
+LIMIT 1
+FORMAT JSONEachRow`, r.table("news_processing"), escape(newsID))
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return newsProcessingRow{}, false, err
 	}
@@ -179,8 +203,18 @@ func (r *Analytics) newsProcessing(ctx context.Context, newsID string) (newsProc
 
 func (r *Analytics) newsMetadata(ctx context.Context, newsID string) (newsMetadataRow, bool, error) {
 	var rows []newsMetadataRow
-	query := fmt.Sprintf(`SELECT news_id, source_id, source_url, material_kind, media_type, title,
-ifNull(toString(published_at), '') AS published_at FROM %s.news FINAL WHERE news_id = %s LIMIT 1 FORMAT JSONEachRow`, r.table("news"), escape(newsID))
+	query := fmt.Sprintf(`SELECT
+    news_id,
+    source_id,
+    source_url,
+    material_kind,
+    media_type,
+    title,
+    ifNull(toString(published_at), '') AS published_at
+FROM %s.news FINAL
+WHERE news_id = %s
+LIMIT 1
+FORMAT JSONEachRow`, r.table("news"), escape(newsID))
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return newsMetadataRow{}, false, err
 	}
@@ -273,7 +307,11 @@ INNER JOIN (SELECT * FROM %s.fact_company FINAL WHERE company_id = %s) AS m
 			"ifNull(published_at, inserted_at) < parseDateTime64BestEffort("+to+", 3, 'UTC')")
 	}
 	if len(newsConditions) > 0 {
-		conditions = append(conditions, fmt.Sprintf("f.news_id IN (SELECT news_id FROM %s.news FINAL WHERE %s)", r.table("news"), strings.Join(newsConditions, " AND ")))
+		conditions = append(conditions, fmt.Sprintf(`f.news_id IN (
+    SELECT news_id
+    FROM %s.news FINAL
+    WHERE %s
+)`, r.table("news"), strings.Join(newsConditions, " AND ")))
 	}
 	if filter.BeforeFactID != "" {
 		conditions = append(conditions, "f.fact_id < toUUID("+escape(filter.BeforeFactID)+")")
@@ -303,13 +341,33 @@ type factCompanyRow struct {
 }
 
 func (r *Analytics) CompanyFacts(ctx context.Context, companyID string, limit int) ([]domain.CompanyFact, error) {
-	query := fmt.Sprintf(`SELECT f.fact_id AS fact_id, f.news_id AS news_id, f.source_id AS source_id, f.source_url AS source_url,
-ifNull(n.material_kind, 'external_news') AS material_kind, f.fact_text AS fact_text, f.category AS category,
-f.entities AS entities, f.evidence AS evidence, f.occurred_at AS occurred_at, f.confidence AS confidence,
-m.relevance AS relevance, m.confidence AS match_confidence
-FROM (SELECT * FROM %s.fact_company FINAL) AS m INNER JOIN (SELECT * FROM %s.facts FINAL) AS f ON m.fact_id = f.fact_id
+	query := fmt.Sprintf(`SELECT
+    f.fact_id AS fact_id,
+    f.news_id AS news_id,
+    f.source_id AS source_id,
+    f.source_url AS source_url,
+    ifNull(n.material_kind, 'external_news') AS material_kind,
+    f.fact_text AS fact_text,
+    f.category AS category,
+    f.entities AS entities,
+    f.evidence AS evidence,
+    f.occurred_at AS occurred_at,
+    f.confidence AS confidence,
+    m.relevance AS relevance,
+    m.confidence AS match_confidence
+FROM (SELECT * FROM %s.fact_company FINAL) AS m
+INNER JOIN (SELECT * FROM %s.facts FINAL) AS f ON m.fact_id = f.fact_id
 LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON f.news_id = n.news_id
-WHERE m.company_id = %s ORDER BY m.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("fact_company"), r.table("facts"), r.table("news"), escape(companyID), limit)
+WHERE m.company_id = %s
+ORDER BY m.inserted_at DESC
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("fact_company"),
+		r.table("facts"),
+		r.table("news"),
+		escape(companyID),
+		limit,
+	)
 	var rows []domain.CompanyFact
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return nil, err
@@ -453,8 +511,19 @@ func (r *Analytics) CompanyReport(ctx context.Context, companyID, from, to strin
 		return domain.CompanyReport{}, err
 	}
 	analysisQuery := fmt.Sprintf(`SELECT company_id, period_from, period_to, probability, metric_ids, analysis_text
-FROM %s.company_analyses FINAL WHERE company_id = %s AND period_from >= toDate(%s) AND period_to <= toDate(%s)
-ORDER BY generated_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("company_analyses"), escape(companyID), escape(from), escape(to), r.companyReportAnalysisLimit)
+FROM %s.company_analyses FINAL
+WHERE company_id = %s
+  AND period_from >= toDate(%s)
+  AND period_to <= toDate(%s)
+ORDER BY generated_at DESC
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("company_analyses"),
+		escape(companyID),
+		escape(from),
+		escape(to),
+		r.companyReportAnalysisLimit,
+	)
 	var analysisRows []analysisResult
 	if err := r.client.queryRows(ctx, analysisQuery, &analysisRows); err != nil {
 		return domain.CompanyReport{}, err
@@ -471,14 +540,28 @@ func (r *Analytics) ConsultantContext(ctx context.Context, companyID string, lim
 	if err != nil {
 		return domain.ConsultantContext{}, err
 	}
-	query := fmt.Sprintf(`SELECT mo.observation_id AS observation_id, mo.company_id AS company_id,
-mo.metric_id AS metric_id, mo.news_id AS news_id,
-if(empty(ifNull(n.source_id, '')), mo.news_id, ifNull(n.source_id, '')) AS source_id, ifNull(n.source_url, '') AS source_url,
-if(empty(ifNull(n.material_kind, '')), 'external_news', ifNull(n.material_kind, '')) AS material_kind,
-mo.value AS value, mo.probability AS probability,
-mo.source_fact_ids AS source_fact_ids FROM (SELECT * FROM %s.metric_observations FINAL) AS mo
+	query := fmt.Sprintf(`SELECT
+    mo.observation_id AS observation_id,
+    mo.company_id AS company_id,
+    mo.metric_id AS metric_id,
+    mo.news_id AS news_id,
+    if(empty(ifNull(n.source_id, '')), mo.news_id, ifNull(n.source_id, '')) AS source_id,
+    ifNull(n.source_url, '') AS source_url,
+    if(empty(ifNull(n.material_kind, '')), 'external_news', ifNull(n.material_kind, '')) AS material_kind,
+    mo.value AS value,
+    mo.probability AS probability,
+    mo.source_fact_ids AS source_fact_ids
+FROM (SELECT * FROM %s.metric_observations FINAL) AS mo
 LEFT JOIN (SELECT * FROM %s.news FINAL) AS n ON mo.news_id = n.news_id
-WHERE mo.company_id = %s ORDER BY mo.inserted_at DESC LIMIT %d FORMAT JSONEachRow`, r.table("metric_observations"), r.table("news"), escape(companyID), limit)
+WHERE mo.company_id = %s
+ORDER BY mo.inserted_at DESC
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("metric_observations"),
+		r.table("news"),
+		escape(companyID),
+		limit,
+	)
 	var observations []domain.MetricObservation
 	if err := r.client.queryRows(ctx, query, &observations); err != nil {
 		return domain.ConsultantContext{}, err

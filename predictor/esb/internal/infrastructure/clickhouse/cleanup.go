@@ -83,13 +83,34 @@ func (r *Analytics) Prune(ctx context.Context, policy domain.AnalyticsRetention,
 
 func (r *Analytics) pruneProcessedNewsText(ctx context.Context, cutoff time.Time, limit int) (int, error) {
 	query := fmt.Sprintf(`SELECT c.news_id AS id
-FROM (SELECT news_id, content_hash FROM %s.news_content FINAL) c
-INNER JOIN (SELECT news_id, source_id, content_hash, fact_count, processed_at FROM %s.news_processing FINAL) p USING (news_id)
-INNER JOIN (SELECT news_id, source_id FROM %s.news FINAL) n USING (news_id)
-LEFT JOIN (SELECT news_id, count() AS fact_count FROM %s.facts FINAL GROUP BY news_id) f USING (news_id)
-WHERE c.content_hash = p.content_hash AND p.source_id = n.source_id
- AND ifNull(f.fact_count, 0) = p.fact_count AND p.processed_at <= %s
-ORDER BY p.processed_at, c.news_id LIMIT %d FORMAT JSONEachRow`, r.table("news_content"), r.table("news_processing"), r.table("news"), r.table("facts"), chTime(cutoff), limit)
+FROM (SELECT news_id, content_hash FROM %s.news_content FINAL) AS c
+INNER JOIN (
+    SELECT news_id, source_id, content_hash, fact_count, processed_at
+    FROM %s.news_processing FINAL
+) AS p USING (news_id)
+INNER JOIN (
+    SELECT news_id, source_id
+    FROM %s.news FINAL
+) AS n USING (news_id)
+LEFT JOIN (
+    SELECT news_id, count() AS fact_count
+    FROM %s.facts FINAL
+    GROUP BY news_id
+) AS f USING (news_id)
+WHERE c.content_hash = p.content_hash
+  AND p.source_id = n.source_id
+  AND ifNull(f.fact_count, 0) = p.fact_count
+  AND p.processed_at <= %s
+ORDER BY p.processed_at, c.news_id
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("news_content"),
+		r.table("news_processing"),
+		r.table("news"),
+		r.table("facts"),
+		chTime(cutoff),
+		limit,
+	)
 	ids, err := r.selectCleanupIDs(ctx, query)
 	if err != nil || len(ids) == 0 {
 		return 0, err
@@ -102,10 +123,24 @@ func (r *Analytics) pruneUnprocessedNewsText(ctx context.Context, cutoff time.Ti
 		return 0, nil
 	}
 	idList := sqlStringList(terminalNewsIDs)
-	query := fmt.Sprintf(`SELECT c.news_id AS id FROM (SELECT * FROM %s.news_content FINAL) c
-LEFT JOIN (SELECT news_id FROM %s.news_processing FINAL) p USING (news_id)
-WHERE c.inserted_at <= %s AND p.news_id = '' AND c.news_id IN (%s)
-ORDER BY c.inserted_at, c.news_id LIMIT %d FORMAT JSONEachRow`, r.table("news_content"), r.table("news_processing"), chTime(cutoff), idList, limit)
+	query := fmt.Sprintf(`SELECT c.news_id AS id
+FROM (SELECT * FROM %s.news_content FINAL) AS c
+LEFT JOIN (
+    SELECT news_id
+    FROM %s.news_processing FINAL
+) AS p USING (news_id)
+WHERE c.inserted_at <= %s
+  AND p.news_id = ''
+  AND c.news_id IN (%s)
+ORDER BY c.inserted_at, c.news_id
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("news_content"),
+		r.table("news_processing"),
+		chTime(cutoff),
+		idList,
+		limit,
+	)
 	ids, err := r.selectCleanupIDs(ctx, query)
 	if err != nil || len(ids) == 0 {
 		return 0, err
@@ -114,12 +149,22 @@ ORDER BY c.inserted_at, c.news_id LIMIT %d FORMAT JSONEachRow`, r.table("news_co
 }
 
 func (r *Analytics) pruneNewsMetadata(ctx context.Context, cutoff time.Time, limit int) (int, error) {
-	query := fmt.Sprintf(`SELECT n.news_id AS id FROM (SELECT * FROM %s.news FINAL) n
+	query := fmt.Sprintf(`SELECT n.news_id AS id
+FROM (SELECT * FROM %s.news FINAL) AS n
 WHERE n.inserted_at <= %s
- AND n.news_id NOT IN (SELECT news_id FROM %s.news_content FINAL)
- AND n.news_id NOT IN (SELECT news_id FROM %s.facts FINAL)
- AND n.news_id NOT IN (SELECT news_id FROM %s.metric_observations FINAL)
-ORDER BY n.inserted_at, n.news_id LIMIT %d FORMAT JSONEachRow`, r.table("news"), chTime(cutoff), r.table("news_content"), r.table("facts"), r.table("metric_observations"), limit)
+  AND n.news_id NOT IN (SELECT news_id FROM %s.news_content FINAL)
+  AND n.news_id NOT IN (SELECT news_id FROM %s.facts FINAL)
+  AND n.news_id NOT IN (SELECT news_id FROM %s.metric_observations FINAL)
+ORDER BY n.inserted_at, n.news_id
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("news"),
+		chTime(cutoff),
+		r.table("news_content"),
+		r.table("facts"),
+		r.table("metric_observations"),
+		limit,
+	)
 	ids, err := r.selectCleanupIDs(ctx, query)
 	if err != nil || len(ids) == 0 {
 		return 0, err
@@ -128,12 +173,22 @@ ORDER BY n.inserted_at, n.news_id LIMIT %d FORMAT JSONEachRow`, r.table("news"),
 }
 
 func (r *Analytics) pruneNewsMarker(ctx context.Context, cutoff time.Time, limit int) (int, error) {
-	query := fmt.Sprintf(`SELECT p.news_id AS id FROM (SELECT * FROM %s.news_processing FINAL) p
+	query := fmt.Sprintf(`SELECT p.news_id AS id
+FROM (SELECT * FROM %s.news_processing FINAL) AS p
 WHERE p.processed_at <= %s
- AND p.news_id NOT IN (SELECT news_id FROM %s.news_content FINAL)
- AND p.news_id NOT IN (SELECT news_id FROM %s.facts FINAL)
- AND p.news_id NOT IN (SELECT news_id FROM %s.metric_observations FINAL)
-ORDER BY p.processed_at, p.news_id LIMIT %d FORMAT JSONEachRow`, r.table("news_processing"), chTime(cutoff), r.table("news_content"), r.table("facts"), r.table("metric_observations"), limit)
+  AND p.news_id NOT IN (SELECT news_id FROM %s.news_content FINAL)
+  AND p.news_id NOT IN (SELECT news_id FROM %s.facts FINAL)
+  AND p.news_id NOT IN (SELECT news_id FROM %s.metric_observations FINAL)
+ORDER BY p.processed_at, p.news_id
+LIMIT %d
+FORMAT JSONEachRow`,
+		r.table("news_processing"),
+		chTime(cutoff),
+		r.table("news_content"),
+		r.table("facts"),
+		r.table("metric_observations"),
+		limit,
+	)
 	ids, err := r.selectCleanupIDs(ctx, query)
 	if err != nil || len(ids) == 0 {
 		return 0, err
@@ -157,8 +212,12 @@ ORDER BY f.inserted_at, f.fact_id LIMIT %d FORMAT JSONEachRow`,
 
 func (r *Analytics) pruneFactCompany(ctx context.Context, cutoff time.Time, limit int) (int, error) {
 	var rows []cleanupCompanyFactRow
-	query := fmt.Sprintf(`SELECT company_id, toString(fact_id) AS fact_id FROM (SELECT * FROM %s.fact_company FINAL)
-WHERE inserted_at <= %s ORDER BY inserted_at, company_id, fact_id LIMIT %d FORMAT JSONEachRow`, r.table("fact_company"), chTime(cutoff), limit)
+	query := fmt.Sprintf(`SELECT company_id, toString(fact_id) AS fact_id
+FROM (SELECT * FROM %s.fact_company FINAL)
+WHERE inserted_at <= %s
+ORDER BY inserted_at, company_id, fact_id
+LIMIT %d
+FORMAT JSONEachRow`, r.table("fact_company"), chTime(cutoff), limit)
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return 0, err
 	}
@@ -171,8 +230,12 @@ WHERE inserted_at <= %s ORDER BY inserted_at, company_id, fact_id LIMIT %d FORMA
 
 func (r *Analytics) pruneMetricObservations(ctx context.Context, cutoff time.Time, limit int) (int, error) {
 	var rows []cleanupObservationRow
-	query := fmt.Sprintf(`SELECT metric_id, toString(observation_id) AS observation_id FROM (SELECT * FROM %s.metric_observations FINAL)
-WHERE inserted_at <= %s ORDER BY inserted_at, metric_id, observation_id LIMIT %d FORMAT JSONEachRow`, r.table("metric_observations"), chTime(cutoff), limit)
+	query := fmt.Sprintf(`SELECT metric_id, toString(observation_id) AS observation_id
+FROM (SELECT * FROM %s.metric_observations FINAL)
+WHERE inserted_at <= %s
+ORDER BY inserted_at, metric_id, observation_id
+LIMIT %d
+FORMAT JSONEachRow`, r.table("metric_observations"), chTime(cutoff), limit)
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return 0, err
 	}
@@ -187,8 +250,11 @@ func (r *Analytics) pruneMetricTotals(ctx context.Context, cutoff time.Time, lim
 	var rows []cleanupMetricTotalRow
 	query := fmt.Sprintf(`SELECT company_id, metric_id,
  toUnixTimestamp64Milli(period_from) AS period_from_ms, toUnixTimestamp64Milli(period_to) AS period_to_ms
-FROM (SELECT * FROM %s.metric_totals FINAL) WHERE generated_at <= %s
-ORDER BY generated_at, company_id, metric_id, period_from, period_to LIMIT %d FORMAT JSONEachRow`, r.table("metric_totals"), chTime(cutoff), limit)
+FROM (SELECT * FROM %s.metric_totals FINAL)
+WHERE generated_at <= %s
+ORDER BY generated_at, company_id, metric_id, period_from, period_to
+LIMIT %d
+FORMAT JSONEachRow`, r.table("metric_totals"), chTime(cutoff), limit)
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return 0, err
 	}
@@ -209,8 +275,12 @@ ORDER BY generated_at, company_id, metric_id, period_from, period_to LIMIT %d FO
 
 func (r *Analytics) pruneCompanyAnalyses(ctx context.Context, cutoff time.Time, limit int) (int, error) {
 	var rows []cleanupAnalysisRow
-	query := fmt.Sprintf(`SELECT company_id, toString(analysis_id) AS analysis_id FROM (SELECT * FROM %s.company_analyses FINAL)
-WHERE generated_at <= %s ORDER BY generated_at, company_id, analysis_id LIMIT %d FORMAT JSONEachRow`, r.table("company_analyses"), chTime(cutoff), limit)
+	query := fmt.Sprintf(`SELECT company_id, toString(analysis_id) AS analysis_id
+FROM (SELECT * FROM %s.company_analyses FINAL)
+WHERE generated_at <= %s
+ORDER BY generated_at, company_id, analysis_id
+LIMIT %d
+FORMAT JSONEachRow`, r.table("company_analyses"), chTime(cutoff), limit)
 	if err := r.client.queryRows(ctx, query, &rows); err != nil {
 		return 0, err
 	}
@@ -252,12 +322,17 @@ func (r *Analytics) deleteTuples(ctx context.Context, table, columns string, tup
 }
 
 func (r *Analytics) deleteAndVerify(ctx context.Context, table, where string, count int) (int, error) {
-	query := fmt.Sprintf("ALTER TABLE %s.%s DELETE WHERE %s SETTINGS mutations_sync = 2", r.table(table), table, where)
+	query := fmt.Sprintf(`ALTER TABLE %s.%s
+DELETE WHERE %s
+SETTINGS mutations_sync = 2`, r.table(table), table, where)
 	if _, err := r.client.Query(ctx, query); err != nil {
 		return 0, err
 	}
 	var remaining []countRow
-	verify := fmt.Sprintf(`SELECT count() AS count FROM (SELECT * FROM %s.%s FINAL) WHERE %s FORMAT JSONEachRow`, r.table(table), table, where)
+	verify := fmt.Sprintf(`SELECT count() AS count
+FROM (SELECT * FROM %s.%s FINAL)
+WHERE %s
+FORMAT JSONEachRow`, r.table(table), table, where)
 	if err := r.client.queryRows(ctx, verify, &remaining); err != nil {
 		return 0, err
 	}

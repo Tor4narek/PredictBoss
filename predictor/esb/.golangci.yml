@@ -12,6 +12,13 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - nilerr
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
 
   settings:
     errcheck:
