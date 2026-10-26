@@ -514,6 +514,7 @@
                   "type": "string"
                 },
                 "text": {
+                  "description": "Saved user-facing answer text only; never internal reasoning or model metadata.",
                   "type": "string"
                 }
               },
@@ -713,6 +714,7 @@
                   "type": "string"
                 },
                 "text": {
+                  "description": "Saved user-facing answer text only; never internal reasoning or model metadata.",
                   "type": "string"
                 }
               },

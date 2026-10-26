@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
-import { Clock3 } from 'lucide-react'
+import { Clock3, Square } from 'lucide-react'
 import { useNavigate } from 'react-router'
-import { useChat, useSendMessage } from '../../api/hooks'
+import { isAnalysisCommand } from '../../api'
+import { useCancelMessage, useChat, useSendMessage } from '../../api/hooks'
 import { formatLongDateTime } from '../../lib/format'
 import { Badge, Button, Composer, ErrorState, LoadingState, Panel } from '../../ui'
 import {
@@ -16,11 +17,16 @@ import styles from './ChatPage.module.css'
 export function ChatPage() {
   const chat = useChat()
   const send = useSendMessage()
+  const cancel = useCancelMessage()
   const navigate = useNavigate()
   const listEnd = useRef<HTMLDivElement>(null)
 
   const messages = chat.data?.messages ?? []
   const lastAnalysisAt = chat.data?.lastAnalysisAt ?? null
+  const pendingQuestion = send.variables && !isAnalysisCommand(send.variables.text) ? send.variables : null
+  const cancelAlreadyCompleted = cancel.isSuccess && cancel.variables?.requestId === pendingQuestion?.requestId
+  const canCancelQuestion = send.isPending && pendingQuestion !== null &&
+    Boolean(chat.data?.conversationId) && !cancelAlreadyCompleted
 
   // Новое сообщение — прокручиваем вниз.
   useEffect(() => {
@@ -91,9 +97,9 @@ export function ChatPage() {
             {send.isPending && (
               <>
                 <UserMessageView
-                  message={{ text: send.variables, createdAt: new Date(send.submittedAt).toISOString() }}
+                  message={{ text: send.variables.text, createdAt: new Date(send.submittedAt).toISOString() }}
                 />
-                <TypingMessage />
+                <TypingMessage label={cancel.isPending ? 'Останавливаем запрос…' : undefined} />
               </>
             )}
             <div ref={listEnd} />
@@ -118,11 +124,38 @@ export function ChatPage() {
                 Сообщение не отправлено: {send.error.message}
               </p>
             )}
-            <Composer
-              placeholder="Введите вопрос или фразу для анализа"
-              loading={send.isPending}
-              onSubmit={(text) => send.mutate(text)}
-            />
+            {cancel.isError && (
+              <p className={styles.sendError} role="alert">
+                Не удалось остановить запрос: {cancel.error.message}
+              </p>
+            )}
+            {cancel.isSuccess && cancel.data.status === 'cancelled' && (
+              <p className={styles.cancelStatus} role="status">Запрос остановлен.</p>
+            )}
+            <div className={styles.composerRow}>
+              <Composer
+                placeholder="Введите вопрос или фразу для анализа"
+                loading={send.isPending}
+                disabled={send.isPending || chat.data.processing}
+                onSubmit={(text) => {
+                  cancel.reset()
+                  send.mutate({ text, requestId: crypto.randomUUID() })
+                }}
+              />
+              {canCancelQuestion && (
+                <Button
+                  variant="secondary"
+                  loading={cancel.isPending}
+                  icon={<Square size={14} aria-hidden="true" />}
+                  onClick={() => cancel.mutate({
+                    requestId: pendingQuestion.requestId,
+                    conversationId: chat.data.conversationId!,
+                  })}
+                >
+                  {cancel.isPending ? 'Останавливаем…' : 'Остановить'}
+                </Button>
+              )}
+            </div>
           </div>
         </>
       )}

@@ -429,7 +429,7 @@ type ConsultantEvent struct {
 	ConversationID string               `json:"conversationId"`
 	AnalysisID     string               `json:"analysisId"`
 	MessageID      string               `json:"messageId"`
-	Text           string               `json:"text"`
+	Text           string               `json:"text" jsonschema:"Final user-facing answer text only; never internal reasoning or model metadata."`
 	Evidence       []ConsultantEvidence `json:"evidence"`
 	CreatedAt      time.Time            `json:"createdAt"`
 }
@@ -442,7 +442,7 @@ type ConsultantHistoryMessage struct {
 	CompanyID      string               `json:"companyId"`
 	ConversationID string               `json:"conversationId"`
 	AnalysisID     string               `json:"analysisId"`
-	Text           string               `json:"text"`
+	Text           string               `json:"text" jsonschema:"Saved user-facing answer text only; never internal reasoning or model metadata."`
 	Evidence       []ConsultantEvidence `json:"evidence"`
 	CreatedAt      time.Time            `json:"createdAt"`
 }

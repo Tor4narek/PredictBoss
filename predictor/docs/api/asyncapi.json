@@ -71,7 +71,7 @@
           ]
         },
         "operationId": "receiveKonstantinEvents",
-        "summary": "Receive one complete answer or cancellation lifecycle events; no token deltas are emitted."
+        "summary": "Receive one complete final answer in text, or cancellation lifecycle events. Internal reasoning and token deltas are not emitted."
       }
     }
   },
@@ -403,6 +403,7 @@
             "type": "integer"
           },
           "text": {
+            "description": "Final user-facing answer text only; never internal reasoning or model metadata.",
             "type": "string"
           }
         },
@@ -510,7 +511,7 @@
     }
   },
   "info": {
-    "description": "The only WebSocket API in ESB. Questions are answered with one saved assistant_answer message. The client may cancel one request by requestId.",
+    "description": "The only WebSocket API in ESB. Questions are answered with one saved assistant_answer message containing only final user-facing text and verified evidence; internal reasoning and token deltas are never emitted. The client may cancel one request by requestId.",
     "title": "Predictor ESB Konstantin WebSocket",
     "version": "0.3.0"
   },

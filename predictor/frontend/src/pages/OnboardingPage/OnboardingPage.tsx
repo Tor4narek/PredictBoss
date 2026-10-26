@@ -72,7 +72,10 @@ function OnboardingWizard({ initialProfile }: { initialProfile: Parameters<typeo
       setStep(2)
       return
     }
-    sendMessage.mutate('Запусти анализ', { onSuccess: () => navigate('/chat') })
+    sendMessage.mutate(
+      { text: 'Запусти анализ', requestId: crypto.randomUUID() },
+      { onSuccess: () => navigate('/chat') },
+    )
   }
 
   const nextLabel = step === 2 ? 'Запустить анализ' : 'Продолжить'

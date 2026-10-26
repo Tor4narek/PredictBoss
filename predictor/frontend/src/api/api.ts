@@ -32,5 +32,13 @@ export type Api = {
 
   getChat(): Promise<ChatState>
   /** Отправляет вопрос. Возвращает обновлённый диалог с ответом Константина. */
-  sendMessage(text: string): Promise<ChatState>
+  sendMessage(text: string, requestId: string): Promise<ChatState>
+  /** Останавливает конкретный вопрос; компания определяется сервером из сессии пользователя. */
+  cancelMessage(requestId: string, conversationId: string): Promise<CancelChatResult>
+}
+
+export type CancelChatResult = { status: 'cancelled' | 'completed' }
+
+export function isAnalysisCommand(text: string) {
+  return /\b(запусти|начни|обнови|проведи)\s+анализ\b|\bпроанализируй\b/i.test(text)
 }

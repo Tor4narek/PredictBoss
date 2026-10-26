@@ -948,6 +948,7 @@ type consultantResponse struct {
 }
 
 const insufficientEvidenceAnswer = "Недостаточно подтверждённых источников в данных этого вызова, чтобы дать подтверждённую рекомендацию."
+const unavailableAnswer = "Не удалось подготовить итоговый ответ по данным этого вызова. Попробуйте повторить запрос."
 
 func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationID string, inputJSON []byte, output string) (string, error) {
 	var input konstantinInput
@@ -959,8 +960,10 @@ func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationI
 		return "", err
 	}
 	response := consultantResponse{Text: konstantinAssistantText(output), Evidence: callSources}
-	if response.Text == "" || len(callSources) == 0 {
+	if len(callSources) == 0 {
 		response.Text = insufficientEvidenceAnswer
+	} else if response.Text == "" {
+		response.Text = unavailableAnswer
 	}
 	kind := "analysis_result"
 	if input.RequestKind == "question" {
@@ -1010,15 +1013,14 @@ func konstantinAssistantText(output string) string {
 	}
 	var result assistantOutput
 	if err := json.Unmarshal([]byte(candidate), &result); err == nil {
-		if text := strings.TrimSpace(result.Text); text != "" {
-			return text
+		if result.Text != "" {
+			return strings.TrimSpace(result.Text)
 		}
 		return strings.TrimSpace(result.Answer)
 	}
-	var text string
-	if err := json.Unmarshal([]byte(candidate), &text); err == nil {
-		return strings.TrimSpace(text)
-	}
+	// Do not treat malformed JSON as user-facing text. A plain response, however,
+	// is still the model's final answer and is normalized into the public `text`
+	// field by the caller. Structured reasoning fields are never copied.
 	if strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[") {
 		return ""
 	}

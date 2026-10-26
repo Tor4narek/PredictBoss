@@ -169,6 +169,8 @@ export type ChatState = {
   hasSources: boolean
   hasProfile: boolean
   processing: boolean
+  /** Чат компании в ESB; нужен для безопасной отмены конкретного вопроса. */
+  conversationId: string | null
   messages: ChatMessage[]
 }
 

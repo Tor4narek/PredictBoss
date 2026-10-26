@@ -144,7 +144,16 @@ export function useChat() {
 export function useSendMessage() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (text: string) => api.sendMessage(text),
+    mutationFn: ({ text, requestId }: { text: string; requestId: string }) => api.sendMessage(text, requestId),
     onSuccess: (chat) => client.setQueryData(queryKeys.chat, chat),
+  })
+}
+
+export function useCancelMessage() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ requestId, conversationId }: { requestId: string; conversationId: string }) =>
+      api.cancelMessage(requestId, conversationId),
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.chat }),
   })
 }

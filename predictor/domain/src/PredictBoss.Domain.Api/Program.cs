@@ -319,6 +319,9 @@ api.MapPost("/chat/messages", async (ChatMessageRequest request, ClaimsPrincipal
     var text = request.Text?.Trim();
     if (string.IsNullOrWhiteSpace(text) || Encoding.UTF8.GetByteCount(text) > 1_000_000)
         return Error(400, "invalid_message");
+    var requestId = request.RequestId;
+    if (string.IsNullOrWhiteSpace(requestId)) requestId = Guid.NewGuid().ToString("D");
+    else if (!Guid.TryParse(requestId, out _)) return Error(400, "invalid_request_id");
     var company = await OwnedCompany(db, principal, ct);
     if (company is null) return Error(409, "company_profile_required");
     try
@@ -332,9 +335,24 @@ api.MapPost("/chat/messages", async (ChatMessageRequest request, ClaimsPrincipal
         var analysisId = ReadString(snapshot, "analysisId");
         if (!Guid.TryParse(conversationId, out _) || !Guid.TryParse(analysisId, out _))
             return Error(502, "invalid_esb_chat_response");
-        await esb.Ask(company.Id, conversationId!, analysisId!, text, ct);
+        await esb.Ask(company.Id, conversationId!, analysisId!, requestId, text, ct);
         var updated = await esb.GetOrStartAnalysis(company.Id, waitForProfile: false, ct);
         return Results.Ok(await ChatResponse(db, company, updated, ct));
+    }
+    catch (EsbChatException e) { return Error(e.StatusCode, e.Code); }
+});
+
+api.MapPost("/chat/cancel", async (CancelChatRequest request, ClaimsPrincipal principal,
+    DomainDbContext db, EsbChatClient esb, CancellationToken ct) =>
+{
+    if (!Guid.TryParse(request.RequestId, out _) || !Guid.TryParse(request.ConversationId, out _))
+        return Error(400, "invalid_cancel_request");
+    var company = await OwnedCompany(db, principal, ct);
+    if (company is null) return Error(409, "company_profile_required");
+    try
+    {
+        var disposition = await esb.CancelQuestion(company.Id, request.ConversationId, request.RequestId, ct);
+        return Results.Ok(new { requestId = request.RequestId, status = disposition });
     }
     catch (EsbChatException e) { return Error(e.StatusCode, e.Code); }
 });
@@ -450,7 +468,15 @@ static DateTime? ParseDateBoundary(string? raw, bool endOfDay)
 }
 
 static object EmptyChat(bool hasProfile, bool hasSources = false, bool processing = false)
-    => new { lastAnalysisAt = (DateTime?)null, hasSources, hasProfile, processing, messages = Array.Empty<object>() };
+    => new
+    {
+        lastAnalysisAt = (DateTime?)null,
+        hasSources,
+        hasProfile,
+        processing,
+        conversationId = (string?)null,
+        messages = Array.Empty<object>()
+    };
 
 static async Task<object> ChatResponse(DomainDbContext db, Company company, JsonElement snapshot, CancellationToken ct)
 {
@@ -508,6 +534,7 @@ static async Task<object> ChatResponse(DomainDbContext db, Company company, Json
         hasSources,
         hasProfile = true,
         processing = ReadString(snapshot, "status") == "processing",
+        conversationId = ReadString(snapshot, "conversationId"),
         messages
     };
 }
@@ -550,5 +577,6 @@ public sealed record OneTimeLinkRequest(string Url, string MaterialKind);
 public sealed record SourcePatch(bool Enabled);
 public sealed record RegisterRequest(string Login, string Password, string? DisplayName);
 public sealed record LoginRequest(string Login, string Password);
-public sealed record ChatMessageRequest(string Text);
+public sealed record ChatMessageRequest(string Text, string? RequestId = null);
+public sealed record CancelChatRequest(string RequestId, string ConversationId);
 public sealed record EsbEvidence(string SourceId, string OriginKind);

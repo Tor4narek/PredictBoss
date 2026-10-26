@@ -121,8 +121,10 @@ export function validateProfile(values: ProfileFormValues): {
   revenue?: string
 } {
   const input = toProfileInput(values)
-  const { orgType: _orgType, ...userProvidedFields } = input
-  if (Object.values(userProvidedFields).every((value) => value === null)) {
+  const userProvidedValues = Object.entries(input)
+    .filter(([field]) => field !== 'orgType')
+    .map(([, value]) => value)
+  if (userProvidedValues.every((value) => value === null)) {
     return { form: 'Заполните хотя бы одно поле — без данных анализ невозможен.' }
   }
   if (input.mainOkvedCode && !/^\d{2}(\.\d{1,2}){0,2}$/.test(input.mainOkvedCode)) {

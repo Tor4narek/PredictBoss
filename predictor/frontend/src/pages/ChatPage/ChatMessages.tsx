@@ -88,13 +88,13 @@ export function UserMessageView({ message }: { message: Pick<UserMessage, 'text'
 }
 
 /** Константин готовит ответ. */
-export function TypingMessage() {
+export function TypingMessage({ label = 'Константин готовит ответ…' }: { label?: string }) {
   return (
     <article className={styles.message} aria-live="polite">
       <AnalystHeader />
       <div className={cx(styles.bubble, styles.typing)}>
         <Spinner size={16} />
-        <span>Константин готовит ответ…</span>
+        <span>{label}</span>
       </div>
     </article>
   )

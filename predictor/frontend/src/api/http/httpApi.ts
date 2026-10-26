@@ -1,4 +1,4 @@
-import type { Api } from '../api'
+import { isAnalysisCommand, type Api } from '../api'
 import { API_URL } from '../config'
 import type { ChatState, CompanyProfile, Material, MaterialsPage, Source } from '../types'
 import { ApiError } from '../types'
@@ -256,10 +256,12 @@ export const httpApi: Api = {
   },
 
   getChat: () => request<ChatState>('GET', '/api/v1/chat'),
-  sendMessage: (text) => {
-    const analysisCommand = /\b(запусти|начни|обнови|проведи)\s+анализ\b|\bпроанализируй\b/i.test(text)
+  sendMessage: (text, requestId) => {
+    const analysisCommand = isAnalysisCommand(text)
     return analysisCommand
       ? request<ChatState>('POST', '/api/v1/chat/analysis', {})
-      : request<ChatState>('POST', '/api/v1/chat/messages', { text })
+      : request<ChatState>('POST', '/api/v1/chat/messages', { text, requestId })
   },
+  cancelMessage: (requestId, conversationId) =>
+    request('POST', '/api/v1/chat/cancel', { requestId, conversationId }),
 }

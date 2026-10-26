@@ -7,6 +7,8 @@ using System.Text.Json;
 
 public sealed class EsbChatClient
 {
+    private const int CancelRequestAttempts = 6;
+    private static readonly TimeSpan CancelRequestRetryDelay = TimeSpan.FromMilliseconds(100);
     private readonly HttpClient http;
     private readonly string baseUrl;
     private readonly string apiKey;
@@ -50,45 +52,114 @@ public sealed class EsbChatClient
     }
 
     public async Task<JsonElement> Ask(Guid companyId, string conversationId, string analysisId,
-        string text, CancellationToken ct)
+        string requestId, string text, CancellationToken ct)
     {
-        var streamUri = new UriBuilder(baseUrl)
-        {
-            Scheme = baseUrl.StartsWith("https:", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws",
-            Path = "/stream",
-            Query = $"companyId={companyId:D}&conversationId={Uri.EscapeDataString(conversationId)}"
-        }.Uri;
-        using var socket = new ClientWebSocket();
-        socket.Options.SetRequestHeader("Authorization", $"Bearer {apiKey}");
-        await socket.ConnectAsync(streamUri, ct);
+        using var socket = await ConnectStream(companyId, conversationId, null, ct);
 
-        var requestId = Guid.NewGuid().ToString("D");
         var outgoing = JsonSerializer.SerializeToUtf8Bytes(new
         {
             kind = "question", requestId, companyId, conversationId, analysisId, text
         });
         await socket.SendAsync(outgoing, WebSocketMessageType.Text, true, ct);
 
-        var buffer = new byte[16 * 1024];
-        using var response = new MemoryStream();
         while (socket.State == WebSocketState.Open)
         {
+            var root = await ReceiveFrame(socket, ct);
+            var kind = String(root, "kind");
+            if (kind is "accepted" or "cancel_requested") continue;
+            var responseRequestId = String(root, "requestId");
+            if (responseRequestId is not null && responseRequestId != requestId) continue;
+            if (kind == "error")
+                throw new EsbChatException(409, String(root, "error") ?? "esb_error", root.GetRawText());
+            if (kind is "assistant_answer" or "assistant_cancelled")
+                return root.Clone();
+        }
+        throw new EsbChatException(504, "assistant_response_failed", "ESB closed the chat stream before answering.");
+    }
+
+    public async Task<string> CancelQuestion(Guid companyId, string conversationId, string requestId,
+        CancellationToken ct)
+    {
+        using var socket = await ConnectStream(companyId, conversationId, requestId, ct);
+        var outgoing = JsonSerializer.SerializeToUtf8Bytes(new { kind = "cancel", requestId });
+
+        for (var attempt = 0; attempt < CancelRequestAttempts; attempt++)
+        {
+            await socket.SendAsync(outgoing, WebSocketMessageType.Text, true, ct);
+            var notFound = false;
+            while (socket.State == WebSocketState.Open)
+            {
+                var frame = await ReceiveFrame(socket, ct);
+                var responseRequestId = String(frame, "requestId");
+                if (responseRequestId is not null && responseRequestId != requestId) continue;
+
+                var kind = String(frame, "kind");
+                if (kind == "assistant_cancelled") return "cancelled";
+                if (kind is "assistant_answer" or "analysis_result") return "completed";
+                if (kind == "cancel_requested") continue;
+                if (kind == "cancel_failed")
+                    throw new EsbChatException(409, "cancel_failed", frame.GetRawText());
+                if (kind != "error") continue;
+
+                var code = String(frame, "error") ?? "esb_error";
+                if (code == "request_not_found")
+                {
+                    notFound = true;
+                    break;
+                }
+                throw new EsbChatException(409, code, frame.GetRawText());
+            }
+
+            if (!notFound || attempt + 1 == CancelRequestAttempts) break;
+            await Task.Delay(CancelRequestRetryDelay, ct);
+        }
+
+        throw new EsbChatException(404, "request_not_found", "The Konstantin request was not found.");
+    }
+
+    private async Task<ClientWebSocket> ConnectStream(Guid companyId, string conversationId, string? requestId,
+        CancellationToken ct)
+    {
+        var query = $"companyId={Uri.EscapeDataString(companyId.ToString("D"))}" +
+                    $"&conversationId={Uri.EscapeDataString(conversationId)}";
+        if (!string.IsNullOrWhiteSpace(requestId)) query += $"&requestId={Uri.EscapeDataString(requestId)}";
+        var streamUri = new UriBuilder(baseUrl)
+        {
+            Scheme = baseUrl.StartsWith("https:", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws",
+            Path = "/stream",
+            Query = query
+        }.Uri;
+        var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {apiKey}");
+        try
+        {
+            await socket.ConnectAsync(streamUri, ct);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    private static async Task<JsonElement> ReceiveFrame(ClientWebSocket socket, CancellationToken ct)
+    {
+        var buffer = new byte[16 * 1024];
+        using var response = new MemoryStream();
+        while (true)
+        {
             var frame = await socket.ReceiveAsync(buffer, ct);
-            if (frame.MessageType == WebSocketMessageType.Close) break;
+            if (frame.MessageType == WebSocketMessageType.Close)
+                throw new EsbChatException(504, "assistant_response_failed", "ESB closed the chat stream before answering.");
+            if (frame.MessageType != WebSocketMessageType.Text)
+                throw new EsbChatException(502, "invalid_esb_chat_response", "ESB returned a non-text chat frame.");
             response.Write(buffer, 0, frame.Count);
             if (!frame.EndOfMessage) continue;
 
             using var document = JsonDocument.Parse(response.ToArray());
-            response.SetLength(0);
-            var root = document.RootElement;
-            var kind = String(root, "kind");
-            if (kind == "accepted") continue;
-            if (kind == "error")
-                throw new EsbChatException(409, String(root, "error") ?? "esb_error", root.GetRawText());
-            if (kind == "assistant_answer" && String(root, "requestId") == requestId)
-                return root.Clone();
+            return document.RootElement.Clone();
         }
-        throw new EsbChatException(504, "assistant_response_failed", "ESB closed the chat stream before answering.");
     }
 
     private static string ErrorCode(string body)

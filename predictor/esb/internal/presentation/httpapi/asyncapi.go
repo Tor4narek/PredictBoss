@@ -46,7 +46,7 @@ func GenerateAsyncAPISpec() ([]byte, error) {
 		"info": map[string]any{
 			"title":       "Predictor ESB Konstantin WebSocket",
 			"version":     apiVersion,
-			"description": "The only WebSocket API in ESB. Questions are answered with one saved assistant_answer message. The client may cancel one request by requestId.",
+			"description": "The only WebSocket API in ESB. Questions are answered with one saved assistant_answer message containing only final user-facing text and verified evidence; internal reasoning and token deltas are never emitted. The client may cancel one request by requestId.",
 		},
 		"servers": map[string]any{
 			"local": map[string]any{"url": "localhost:8081", "protocol": "ws", "description": "Send Authorization: Bearer $ESB_API_KEY during the handshake."},
@@ -70,7 +70,7 @@ func GenerateAsyncAPISpec() ([]byte, error) {
 				},
 				"subscribe": map[string]any{
 					"operationId": "receiveKonstantinEvents",
-					"summary":     "Receive one complete answer or cancellation lifecycle events; no token deltas are emitted.",
+					"summary":     "Receive one complete final answer in text, or cancellation lifecycle events. Internal reasoning and token deltas are not emitted.",
 					"message": map[string]any{"oneOf": []any{
 						map[string]any{"$ref": "#/components/messages/ConsultantEvent"},
 						map[string]any{"$ref": "#/components/messages/Accepted"},
