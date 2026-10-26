@@ -10,6 +10,7 @@
     "compress_after_messages": 40,
     "batch_messages": 100,
     "summary_max_bytes": 12000,
-    "summary_storage": "postgres"
+    "summary_storage": "postgres",
+    "max_history_messages": 40
   }
 }

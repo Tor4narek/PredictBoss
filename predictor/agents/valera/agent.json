@@ -11,6 +11,7 @@
     "compress_after_messages": 0,
     "batch_messages": 0,
     "summary_max_bytes": 0,
-    "summary_storage": ""
+    "summary_storage": "",
+    "max_history_messages": 0
   }
 }

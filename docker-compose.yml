@@ -5,11 +5,9 @@ x-hermes-common: &hermes-common
   restart: unless-stopped
   command: ["gateway", "run"]
   environment: &hermes-env
-    API_SERVER_ENABLED: "true"
-    API_SERVER_HOST: 0.0.0.0
-    API_SERVER_PORT: 8642
     API_SERVER_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
     HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
+    HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
     ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
     LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
   networks:
@@ -76,7 +74,7 @@ services:
       - predictor-storage
 
   atlas-postgres:
-    image: arigaio/atlas:latest
+    image: ${ATLAS_IMAGE:?Set ATLAS_IMAGE in predictor/.env}
     container_name: predictor-atlas-postgres
     profiles: ["migrations"]
     working_dir: /migrations
@@ -93,7 +91,7 @@ services:
       - predictor-storage
 
   atlas-clickhouse:
-    image: arigaio/atlas:latest
+    image: ${ATLAS_IMAGE:?Set ATLAS_IMAGE in predictor/.env}
     container_name: predictor-atlas-clickhouse
     profiles: ["migrations"]
     working_dir: /migrations
@@ -116,6 +114,12 @@ services:
       - hermes-serezha-data:/opt/data
       - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/serezha/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_SEREZHA_MODEL_ID: ${AGENT_SEREZHA_MODEL_ID:?Set AGENT_SEREZHA_MODEL_ID in predictor/.env}
+      AGENT_SEREZHA_MAX_TURNS: ${AGENT_SEREZHA_MAX_TURNS:?Set AGENT_SEREZHA_MAX_TURNS in predictor/.env}
+      AGENT_SEREZHA_REASONING_EFFORT: ${AGENT_SEREZHA_REASONING_EFFORT:?Set AGENT_SEREZHA_REASONING_EFFORT in predictor/.env}
+      AGENT_SEREZHA_MAX_CONCURRENT_RUNS: ${AGENT_SEREZHA_MAX_CONCURRENT_RUNS:?Set AGENT_SEREZHA_MAX_CONCURRENT_RUNS in predictor/.env}
 
   hermes-saveliy:
     <<: *hermes-common
@@ -124,6 +128,12 @@ services:
       - hermes-saveliy-data:/opt/data
       - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/saveliy/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_SAVELIY_MODEL_ID: ${AGENT_SAVELIY_MODEL_ID:?Set AGENT_SAVELIY_MODEL_ID in predictor/.env}
+      AGENT_SAVELIY_MAX_TURNS: ${AGENT_SAVELIY_MAX_TURNS:?Set AGENT_SAVELIY_MAX_TURNS in predictor/.env}
+      AGENT_SAVELIY_REASONING_EFFORT: ${AGENT_SAVELIY_REASONING_EFFORT:?Set AGENT_SAVELIY_REASONING_EFFORT in predictor/.env}
+      AGENT_SAVELIY_MAX_CONCURRENT_RUNS: ${AGENT_SAVELIY_MAX_CONCURRENT_RUNS:?Set AGENT_SAVELIY_MAX_CONCURRENT_RUNS in predictor/.env}
 
   hermes-valera:
     <<: *hermes-common
@@ -132,6 +142,12 @@ services:
       - hermes-valera-data:/opt/data
       - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/valera/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_VALERA_MODEL_ID: ${AGENT_VALERA_MODEL_ID:?Set AGENT_VALERA_MODEL_ID in predictor/.env}
+      AGENT_VALERA_MAX_TURNS: ${AGENT_VALERA_MAX_TURNS:?Set AGENT_VALERA_MAX_TURNS in predictor/.env}
+      AGENT_VALERA_REASONING_EFFORT: ${AGENT_VALERA_REASONING_EFFORT:?Set AGENT_VALERA_REASONING_EFFORT in predictor/.env}
+      AGENT_VALERA_MAX_CONCURRENT_RUNS: ${AGENT_VALERA_MAX_CONCURRENT_RUNS:?Set AGENT_VALERA_MAX_CONCURRENT_RUNS in predictor/.env}
 
   hermes-kesha:
     <<: *hermes-common
@@ -140,6 +156,12 @@ services:
       - hermes-kesha-data:/opt/data
       - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/kesha/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_KESHA_MODEL_ID: ${AGENT_KESHA_MODEL_ID:?Set AGENT_KESHA_MODEL_ID in predictor/.env}
+      AGENT_KESHA_MAX_TURNS: ${AGENT_KESHA_MAX_TURNS:?Set AGENT_KESHA_MAX_TURNS in predictor/.env}
+      AGENT_KESHA_REASONING_EFFORT: ${AGENT_KESHA_REASONING_EFFORT:?Set AGENT_KESHA_REASONING_EFFORT in predictor/.env}
+      AGENT_KESHA_MAX_CONCURRENT_RUNS: ${AGENT_KESHA_MAX_CONCURRENT_RUNS:?Set AGENT_KESHA_MAX_CONCURRENT_RUNS in predictor/.env}
 
   hermes-konstantin:
     <<: *hermes-common
@@ -148,6 +170,12 @@ services:
       - hermes-konstantin-data:/opt/data
       - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
       - ./predictor/agents/konstantin/skills:/opt/skills:ro
+    environment:
+      <<: *hermes-env
+      AGENT_KONSTANTIN_MODEL_ID: ${AGENT_KONSTANTIN_MODEL_ID:?Set AGENT_KONSTANTIN_MODEL_ID in predictor/.env}
+      AGENT_KONSTANTIN_MAX_TURNS: ${AGENT_KONSTANTIN_MAX_TURNS:?Set AGENT_KONSTANTIN_MAX_TURNS in predictor/.env}
+      AGENT_KONSTANTIN_REASONING_EFFORT: ${AGENT_KONSTANTIN_REASONING_EFFORT:?Set AGENT_KONSTANTIN_REASONING_EFFORT in predictor/.env}
+      AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS: ${AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS:?Set AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS in predictor/.env}
 
   esb:
     image: predictor-esb:local
@@ -159,8 +187,8 @@ services:
     environment:
       HTTP_ADDR: ${HTTP_ADDR:-:8081}
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable}
-      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in .env}
-      HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in .env}
+      ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
+      HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
       HERMES_SEREZHA_URL: ${HERMES_SEREZHA_URL:-http://hermes-serezha:8642}
       HERMES_SAVELIY_URL: ${HERMES_SAVELIY_URL:-http://hermes-saveliy:8642}
       HERMES_VALERA_URL: ${HERMES_VALERA_URL:-http://hermes-valera:8642}
@@ -199,19 +227,14 @@ services:
       HERMES_RETRY_MAX_ATTEMPTS: ${HERMES_RETRY_MAX_ATTEMPTS:-5}
       HERMES_RETRY_BASE_DELAY: ${HERMES_RETRY_BASE_DELAY:-1s}
       HERMES_MAX_RESPONSE_BYTES: ${HERMES_MAX_RESPONSE_BYTES:-1048576}
-      AGENT_SEREZHA_MAX_HISTORY_MESSAGES: ${AGENT_SEREZHA_MAX_HISTORY_MESSAGES:-40}
-      AGENT_SAVELIY_MAX_HISTORY_MESSAGES: ${AGENT_SAVELIY_MAX_HISTORY_MESSAGES:-40}
-      AGENT_VALERA_MAX_HISTORY_MESSAGES: ${AGENT_VALERA_MAX_HISTORY_MESSAGES:-0}
-      AGENT_KESHA_MAX_HISTORY_MESSAGES: ${AGENT_KESHA_MAX_HISTORY_MESSAGES:-40}
-      AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES: ${AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES:-80}
       AGENTS_DIR: ${AGENTS_DIR:-/app/agents}
       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-predictor}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in predictor/.env}
       CLICKHOUSE_REQUEST_TIMEOUT: ${CLICKHOUSE_REQUEST_TIMEOUT:-45s}
       CLICKHOUSE_MAX_RESPONSE_BYTES: ${CLICKHOUSE_MAX_RESPONSE_BYTES:-4194304}
-      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in predictor/.env}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_ENDPOINT: ${S3_ENDPOINT:-}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}

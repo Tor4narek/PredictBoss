@@ -162,11 +162,12 @@ const (
 var definitions = buildDefinitions()
 
 func buildDefinitions() []Definition {
-	return []Definition{
+	settings := []Definition{
 		stringDef("HTTP_ADDR", ":8081", "ESB listen address inside its network namespace.", "runtime", false),
 		stringDef("DATABASE_URL", "", "PostgreSQL connection URL used only by ESB.", "secret", true),
 		stringDef("ESB_API_KEY", "", "Bearer key required by Domain and Hermes MCP clients.", "secret", true),
 		stringDef("HERMES_API_KEY", "", "Bearer key ESB uses for Hermes runtime calls.", "secret", true),
+		stringDef("HERMES_MODEL_PROVIDER", "custom", "Shared Hermes model-provider identifier for all agents.", "hermes", false),
 		stringDef("HERMES_SEREZHA_URL", "", "Serezha Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
 		stringDef("HERMES_SAVELIY_URL", "", "Saveliy Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
 		stringDef("HERMES_VALERA_URL", "", "Valera Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
@@ -219,11 +220,6 @@ func buildDefinitions() []Definition {
 		boolDef("S3_FORCE_PATH_STYLE", false, "Use path-style S3 URLs; typically enabled for MinIO.", "storage"),
 		boolDef("S3_CREATE_BUCKET", false, "Create the configured S3 bucket during ESB startup when missing.", "storage"),
 		stringDef("AGENTS_DIR", "../agents", "Directory containing agent.json, skills, and Hermes configuration.", "runtime", false),
-		intDef("AGENT_SEREZHA_MAX_HISTORY_MESSAGES", 40, 0, 10000, "messages", "Maximum prior messages passed to Serezha's Hermes run; zero disables history.", "agent-context"),
-		intDef("AGENT_SAVELIY_MAX_HISTORY_MESSAGES", 40, 0, 10000, "messages", "Maximum prior messages passed to Saveliy's Hermes run; zero disables history.", "agent-context"),
-		intDef("AGENT_VALERA_MAX_HISTORY_MESSAGES", 0, 0, 10000, "messages", "Maximum prior messages passed to Valera's Hermes run; zero disables history.", "agent-context"),
-		intDef("AGENT_KESHA_MAX_HISTORY_MESSAGES", 40, 0, 10000, "messages", "Maximum prior messages passed to Kesha's Hermes run; zero disables history.", "agent-context"),
-		intDef("AGENT_KONSTANTIN_MAX_HISTORY_MESSAGES", 80, 0, 10000, "messages", "Maximum prior messages passed to Konstantin's Hermes run; zero disables history.", "agent-context"),
 		intDef("FACTS_DEFAULT_PAGE_SIZE", defaultFactsPageSize, 1, 100000, "facts", "Number of facts returned when a facts query omits limit.", "runtime"),
 		intDef("FACTS_MAX_PAGE_SIZE", defaultFactsMaxPageSize, 1, 100000, "facts", "Maximum facts returned by one paged facts query.", "runtime"),
 		intDef("FACTS_MAX_PERIOD_DAYS", 90, 1, 3650, "days", "Maximum allowed time span for a filtered facts query.", "runtime"),
@@ -271,6 +267,7 @@ func buildDefinitions() []Definition {
 		durationDef("ESB_HEALTHCHECK_TIMEOUT", 3*time.Second, time.Millisecond, time.Hour, "duration", "ESB container healthcheck command timeout in Compose.", "compose"),
 		intDef("ESB_HEALTHCHECK_RETRIES", 20, 1, 100, "retries", "Consecutive ESB healthcheck failures before the container is unhealthy.", "compose"),
 		stringDef("MINIO_IMAGE", "dappros/minio:RELEASE.2025-09-07T16-13-09Z", "Image used for the local S3-compatible MinIO service.", "compose", false),
+		stringDef("ATLAS_IMAGE", "arigaio/atlas:latest", "Image used to run PostgreSQL and ClickHouse migrations.", "compose", false),
 		stringDef("MINIO_ROOT_USER", "predictor-local", "Local MinIO root account.", "secret", false),
 		stringDef("MINIO_ROOT_PASSWORD", "local-minio-password-change-me", "Local MinIO root password; replace for private deployments.", "secret", false),
 		stringDef("LLM_API_KEY", "", "LLM provider key consumed by Hermes, never by ESB.", "secret", true),
@@ -281,6 +278,37 @@ func buildDefinitions() []Definition {
 		stringDef("ESB_E2E_BASE_URL", "http://127.0.0.1:18081", "Test-only base URL for the ESB E2E suite.", "test", false),
 		stringDef("MOCK_PORT", "8090", "Test-only listening port for the mock Hermes runtime.", "test", false),
 	}
+	return append(settings, hermesAgentDefinitions()...)
+}
+
+func hermesAgentDefinitions() []Definition {
+	type agentDefaults struct {
+		agent      string
+		model      string
+		maxTurns   int64
+		reasoning  string
+		concurrent int64
+	}
+
+	defaults := []agentDefaults{
+		{agent: "SEREZHA", model: "google/gemma-4-26b-a4b-it", maxTurns: 8, reasoning: "low"},
+		{agent: "SAVELIY", model: "google/gemma-4-26b-a4b-it", maxTurns: 8, reasoning: "low"},
+		{agent: "VALERA", model: "google/gemma-4-26b-a4b-it", maxTurns: 10, reasoning: "low"},
+		{agent: "KESHA", model: "google/gemma-4-26b-a4b-it", maxTurns: 12, reasoning: "low"},
+		{agent: "KONSTANTIN", model: "google/gemma-4-26b-a4b-it", maxTurns: 12, reasoning: "low"},
+	}
+
+	settings := make([]Definition, 0, len(defaults)*6)
+	for _, agent := range defaults {
+		prefix := "AGENT_" + agent.agent + "_"
+		settings = append(settings,
+			stringDef(prefix+"MODEL_ID", agent.model, agent.agent+" model identifier sent to the configured provider.", "hermes-agent", false),
+			intDef(prefix+"MAX_TURNS", agent.maxTurns, 1, 1000, "turns", agent.agent+" Hermes maximum turns per run.", "hermes-agent"),
+			stringDef(prefix+"REASONING_EFFORT", agent.reasoning, agent.agent+" Hermes reasoning-effort setting supported by its model/provider.", "hermes-agent", false),
+			intDef(prefix+"MAX_CONCURRENT_RUNS", agent.concurrent, 0, 100000, "runs", agent.agent+" Hermes concurrent-run limit; zero disables the gateway cap.", "hermes-agent"),
+		)
+	}
+	return settings
 }
 
 func stringDef(name, fallback, purpose, category string, required bool) Definition {
@@ -635,13 +663,13 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		if strings.TrimSpace(runtimeURL) == "" {
 			return Config{}, fmt.Errorf("%s is required", definition.RuntimeURLEnv)
 		}
-		historyLimit, err := intValue(lookup, "AGENT_"+strings.ToUpper(name)+"_MAX_HISTORY_MESSAGES")
-		if err != nil {
-			return Config{}, err
-		}
 		policy, err := parseContextPolicy(definition.ContextPolicy)
 		if err != nil {
 			return Config{}, fmt.Errorf("agent definition %s: %w", definitionPath, err)
+		}
+		historyLimit := 0
+		if definition.ContextPolicy != nil {
+			historyLimit = definition.ContextPolicy.MaxHistoryMessages
 		}
 		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField,
 			RequiredFields: definition.RequiredFields, MaxHistory: historyLimit,
@@ -660,6 +688,7 @@ type agentFile struct {
 }
 
 type contextPolicyFile struct {
+	MaxHistoryMessages    int    `json:"max_history_messages"`
 	CompressAfterMessages int    `json:"compress_after_messages"`
 	BatchMessages         int    `json:"batch_messages"`
 	SummaryMaxBytes       int    `json:"summary_max_bytes"`
@@ -670,8 +699,8 @@ func parseContextPolicy(raw *contextPolicyFile) (domain.ContextPolicy, error) {
 	if raw == nil {
 		return domain.ContextPolicy{}, nil
 	}
-	if raw.CompressAfterMessages < 0 || raw.BatchMessages < 0 || raw.SummaryMaxBytes < 0 {
-		return domain.ContextPolicy{}, errors.New("context policy values cannot be negative")
+	if raw.MaxHistoryMessages < 0 || raw.MaxHistoryMessages > 10000 || raw.CompressAfterMessages < 0 || raw.BatchMessages < 0 || raw.SummaryMaxBytes < 0 {
+		return domain.ContextPolicy{}, errors.New("context policy values are outside supported bounds")
 	}
 	if raw.CompressAfterMessages == 0 {
 		if raw.BatchMessages != 0 || raw.SummaryMaxBytes != 0 || raw.SummaryStorage != "" {
