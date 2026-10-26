@@ -1,7 +1,7 @@
 model:
   provider: ${HERMES_MODEL_PROVIDER}
   default: ${AGENT_KONSTANTIN_MODEL_ID}
-  base_url: https://changellenge.up.railway.app/v1
+  base_url: https://api.alfahack-gateway26.ru/v1
   key_env: LLM_API_KEY
 platform_toolsets:
   api_server: [mcp-esb]
