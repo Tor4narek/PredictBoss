@@ -104,7 +104,7 @@ type consultantReadyResponse struct {
 	AnalysisID                 string                            `json:"analysisId" jsonschema:"Current analysis ID."`
 	MessageID                  string                            `json:"messageId" jsonschema:"Persisted analysis message ID."`
 	Text                       string                            `json:"text" jsonschema:"Analysis text."`
-	Evidence                   []domain.ConsultantEvidence       `json:"evidence" jsonschema:"Source evidence for the analysis."`
+	Evidence                   []domain.ConsultantEvidence       `json:"evidence" jsonschema:"Publication metadata verified by ESB from MCP results for this call."`
 	CreatedAt                  time.Time                         `json:"createdAt" jsonschema:"Analysis creation time."`
 	StreamURL                  string                            `json:"streamUrl" jsonschema:"WebSocket subscription URL."`
 	History                    []domain.ConsultantHistoryMessage `json:"history" jsonschema:"Bounded page of this company's chat history."`

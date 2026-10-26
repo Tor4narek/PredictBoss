@@ -199,7 +199,7 @@ func buildDefinitions() []Definition {
 		durationDef("CLEANUP_RUNNING_STALE_AFTER", 30*time.Minute, time.Millisecond, 365*24*time.Hour, "duration", "Minimum age before cleanup independently checks the Hermes status of an active call.", "cleanup"),
 		intDef("CLEANUP_ACTIVE_MAX_RETRIES", 1, 0, 32767, "retries", "Maximum cleanup retries for calls Hermes confirms failed or interrupted; active or uncertain runs are never retried.", "cleanup"),
 		retentionDef("CLEANUP_CALL_PAYLOAD_RETENTION", "2160h", "Age before large request and output fields of terminal calls are cleared; Serezha retry payloads stay available until processing succeeds."),
-		retentionDef("CLEANUP_CALL_RECORD_RETENTION", "2160h", "Age before terminal call rows are deleted when safe or reduced to idempotency and history tombstones."),
+		retentionDef("CLEANUP_CALL_RECORD_RETENTION", "2160h", "Age before terminal call rows are deleted or compacted; expired temporary Konstantin source snapshots are also removed."),
 		retentionDef("CLEANUP_CONTEXT_SUMMARY_RETENTION", "never", "Independent retention for compacted agent context summaries."),
 		retentionDef("CLEANUP_MESSAGES_RETENTION_SEREZHA", "never", "Retention for Serezha conversation messages."),
 		retentionDef("CLEANUP_MESSAGES_RETENTION_SAVELIY", "never", "Retention for Saveliy conversation messages."),

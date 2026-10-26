@@ -110,8 +110,15 @@ CREATE INDEX company_news_sources_company_revision_idx
 
 CREATE TABLE konstantin_call_sources (
     call_id UUID NOT NULL REFERENCES agent_calls(call_id) ON DELETE CASCADE,
-    source_id UUID NOT NULL REFERENCES company_news_sources(source_id),
-    PRIMARY KEY (call_id, source_id)
+    company_id UUID NOT NULL,
+    source_id UUID NOT NULL,
+    news_id TEXT NOT NULL,
+    source_url TEXT NOT NULL DEFAULT '',
+    material_kind TEXT NOT NULL CHECK (material_kind IN ('external_news', 'alpha_analysis')),
+    title TEXT NOT NULL DEFAULT '',
+    published_at TEXT,
+    PRIMARY KEY (call_id, news_id),
+    UNIQUE (call_id, source_id)
 );
 
 CREATE TABLE konstantin_messages (

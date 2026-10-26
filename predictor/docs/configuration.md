@@ -95,7 +95,7 @@
 | `CLEANUP_ACTIVE_MAX_RETRIES` | integer | 1 | retries; 0…32767 | Maximum cleanup retries for calls Hermes confirms failed or interrupted; active or uncertain runs are never retried. |
 | `CLEANUP_BATCH_SIZE` | integer | 500 | rows; 1…10000 | Maximum candidate rows handled per cleanup category in one pass. |
 | `CLEANUP_CALL_PAYLOAD_RETENTION` | duration \| immediate \| never | 2160h | duration; 0 \| immediate \| positive Go duration \| never | Age before large request and output fields of terminal calls are cleared; Serezha retry payloads stay available until processing succeeds. |
-| `CLEANUP_CALL_RECORD_RETENTION` | duration \| immediate \| never | 2160h | duration; 0 \| immediate \| positive Go duration \| never | Age before terminal call rows are deleted when safe or reduced to idempotency and history tombstones. |
+| `CLEANUP_CALL_RECORD_RETENTION` | duration \| immediate \| never | 2160h | duration; 0 \| immediate \| positive Go duration \| never | Age before terminal call rows are deleted or compacted; expired temporary Konstantin source snapshots are also removed. |
 | `CLEANUP_COMPANY_ANALYSES_RETENTION` | duration \| immediate \| never | never | duration; 0 \| immediate \| positive Go duration \| never | Retention for generated company analysis text. |
 | `CLEANUP_CONTEXT_SUMMARY_RETENTION` | duration \| immediate \| never | never | duration; 0 \| immediate \| positive Go duration \| never | Independent retention for compacted agent context summaries. |
 | `CLEANUP_ENABLED` | bool | true | —; true \| false | Enable ESB stale-call recovery and retention cleanup loops, including immediate cleanup after terminal calls. |

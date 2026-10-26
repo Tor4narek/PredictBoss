@@ -342,15 +342,35 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "materialKind": {
+                  "type": "string"
+                },
+                "newsId": {
+                  "type": "string"
+                },
                 "originKind": {
                   "type": "string"
                 },
+                "publishedAt": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
                 "sourceId": {
+                  "type": "string"
+                },
+                "sourceUrl": {
+                  "type": "string"
+                },
+                "title": {
                   "type": "string"
                 }
               },
               "required": [
                 "sourceId",
+                "newsId",
+                "materialKind",
                 "originKind"
               ],
               "type": "object"

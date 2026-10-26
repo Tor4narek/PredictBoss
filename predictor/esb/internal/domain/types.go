@@ -181,7 +181,7 @@ type MCPCallContextSigner interface {
 // company against the authoritative call record.
 type MCPCompanyCallAuthorizer interface {
 	AuthorizeMCPCompany(context.Context, AgentType, string, string) (MCPCallContext, error)
-	RecordMCPCallSources(context.Context, MCPCallContext, []string) error
+	RecordMCPCallSources(context.Context, MCPCallContext, []ConsultantSource) error
 }
 
 type CompanyProfileSyncState struct {
@@ -230,6 +230,8 @@ type Fact struct {
 	SourceID     string   `json:"source_id"`
 	SourceURL    string   `json:"source_url"`
 	MaterialKind string   `json:"material_kind,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	PublishedAt  *string  `json:"published_at,omitempty"`
 	Text         string   `json:"fact_text"`
 	Category     string   `json:"category"`
 	Entities     []string `json:"entities"`
@@ -332,6 +334,8 @@ type MetricObservation struct {
 	SourceID      string   `json:"source_id,omitempty"`
 	SourceURL     string   `json:"source_url,omitempty"`
 	MaterialKind  string   `json:"material_kind,omitempty"`
+	Title         string   `json:"title,omitempty"`
+	PublishedAt   *string  `json:"published_at,omitempty"`
 	Value         *float64 `json:"value"`
 	Probability   *float64 `json:"probability"`
 	SourceFactIDs []string `json:"source_fact_ids"`
@@ -394,8 +398,24 @@ type CompanyReport struct {
 }
 
 type ConsultantEvidence struct {
-	SourceID   string `json:"sourceId"`
-	OriginKind string `json:"originKind"`
+	SourceID     string  `json:"sourceId"`
+	NewsID       string  `json:"newsId"`
+	SourceURL    string  `json:"sourceUrl,omitempty"`
+	MaterialKind string  `json:"materialKind"`
+	Title        string  `json:"title,omitempty"`
+	PublishedAt  *string `json:"publishedAt,omitempty"`
+	OriginKind   string  `json:"originKind"`
+}
+
+// ConsultantSource captures one publication returned by a company-scoped MCP
+// analytics read. The call-scoped registry uses it to enrich the final answer.
+type ConsultantSource struct {
+	SourceID     string  `json:"source_id"`
+	NewsID       string  `json:"news_id"`
+	SourceURL    string  `json:"source_url,omitempty"`
+	MaterialKind string  `json:"material_kind"`
+	Title        string  `json:"title,omitempty"`
+	PublishedAt  *string `json:"published_at,omitempty"`
 }
 
 type ConsultantEvent struct {
@@ -484,7 +504,7 @@ type CallRepository interface {
 	KonstantinHistory(context.Context, string, time.Time, time.Time, string, int) (ConsultantHistoryPage, error)
 	AnalysisReady(context.Context, string, string) (bool, error)
 	RecordSource(context.Context, CompanySource) (bool, error)
-	RecordKonstantinCallSources(context.Context, string, string, []string) error
+	RecordKonstantinCallSources(context.Context, string, string, []ConsultantSource) error
 	SourceRevision(context.Context, string) (int64, error)
 	ProfileRevision(context.Context, string) (int64, error)
 }

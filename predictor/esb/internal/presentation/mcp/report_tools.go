@@ -3,6 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -40,7 +43,7 @@ func registerReportTools(server *mcp.Server, allowed map[string]struct{}, servic
 		return nil, report, nil
 	})
 
-	addTool(server, allowed, &mcp.Tool{Name: "get_consultant_context", Description: "Read linked facts and observations from ClickHouse and recalculate configured company metric totals through ESB. Results include source IDs; totals use news publication times across stored history. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, domain.ConsultantContext, error) {
+	addTool(server, allowed, &mcp.Tool{Name: "get_consultant_context", Description: "Read linked facts and observations from ClickHouse and recalculate configured company metric totals through ESB. The ESB records publication metadata returned here for this signed call and adds verified sources to the final response. Totals use news publication times across stored history. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, domain.ConsultantContext, error) {
 		callContext, err := authorizeMCPCompany(ctx, authorizer, agent, input.CallContext, input.CompanyID)
 		if err != nil {
 			return nil, domain.ConsultantContext{}, err
@@ -53,32 +56,106 @@ func registerReportTools(server *mcp.Server, allowed map[string]struct{}, servic
 		if err != nil {
 			return nil, domain.ConsultantContext{}, err
 		}
-		if err := authorizer.RecordMCPCallSources(ctx, callContext, consultantContextSourceIDs(result)); err != nil {
+		if err := authorizer.RecordMCPCallSources(ctx, callContext, consultantContextSources(result)); err != nil {
 			return nil, domain.ConsultantContext{}, err
 		}
 		return nil, result, nil
 	})
 }
 
-func consultantContextSourceIDs(value domain.ConsultantContext) []string {
-	seen := make(map[string]struct{}, len(value.Facts)+len(value.Observations))
-	var sourceIDs []string
-	add := func(sourceID string) {
-		sourceID = strings.ToLower(strings.TrimSpace(sourceID))
-		if sourceID == "" {
+var consultantSourceIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func consultantContextSources(value domain.ConsultantContext) []domain.ConsultantSource {
+	byNewsID := make(map[string]domain.ConsultantSource, len(value.Facts)+len(value.Observations))
+	newsBySourceID := make(map[string]string, len(value.Facts)+len(value.Observations))
+	conflictedNews := make(map[string]struct{})
+	conflictedSourceIDs := make(map[string]struct{})
+	add := func(source domain.ConsultantSource) {
+		source.SourceID = strings.ToLower(strings.TrimSpace(source.SourceID))
+		source.NewsID = strings.TrimSpace(source.NewsID)
+		source.SourceURL = strings.TrimSpace(source.SourceURL)
+		source.MaterialKind = strings.TrimSpace(source.MaterialKind)
+		source.Title = strings.TrimSpace(source.Title)
+		if source.PublishedAt != nil {
+			publishedAt := strings.TrimSpace(*source.PublishedAt)
+			if publishedAt == "" {
+				source.PublishedAt = nil
+			} else {
+				source.PublishedAt = &publishedAt
+			}
+		}
+		if !validConsultantSource(source) {
 			return
 		}
-		if _, exists := seen[sourceID]; exists {
+		if previousNewsID, exists := newsBySourceID[source.SourceID]; exists && previousNewsID != source.NewsID {
+			conflictedSourceIDs[source.SourceID] = struct{}{}
+			delete(byNewsID, previousNewsID)
+			delete(byNewsID, source.NewsID)
+			conflictedNews[previousNewsID] = struct{}{}
+			conflictedNews[source.NewsID] = struct{}{}
 			return
 		}
-		seen[sourceID] = struct{}{}
-		sourceIDs = append(sourceIDs, sourceID)
+		newsBySourceID[source.SourceID] = source.NewsID
+		if _, conflicted := conflictedSourceIDs[source.SourceID]; conflicted {
+			return
+		}
+		if _, conflicted := conflictedNews[source.NewsID]; conflicted {
+			return
+		}
+		if previous, exists := byNewsID[source.NewsID]; exists {
+			if sameConsultantSource(previous, source) {
+				return
+			}
+			delete(byNewsID, source.NewsID)
+			conflictedNews[source.NewsID] = struct{}{}
+			return
+		}
+		byNewsID[source.NewsID] = source
 	}
 	for _, fact := range value.Facts {
-		add(fact.SourceID)
+		add(domain.ConsultantSource{SourceID: fact.SourceID, NewsID: fact.NewsID, SourceURL: fact.SourceURL,
+			MaterialKind: fact.MaterialKind, Title: fact.Title, PublishedAt: fact.PublishedAt})
 	}
 	for _, observation := range value.Observations {
-		add(observation.SourceID)
+		add(domain.ConsultantSource{SourceID: observation.SourceID, NewsID: observation.NewsID,
+			SourceURL: observation.SourceURL, MaterialKind: observation.MaterialKind,
+			Title: observation.Title, PublishedAt: observation.PublishedAt})
 	}
-	return sourceIDs
+	sources := make([]domain.ConsultantSource, 0, len(byNewsID))
+	for _, source := range byNewsID {
+		sources = append(sources, source)
+	}
+	sort.Slice(sources, func(left, right int) bool {
+		if sources[left].NewsID == sources[right].NewsID {
+			return sources[left].SourceID < sources[right].SourceID
+		}
+		return sources[left].NewsID < sources[right].NewsID
+	})
+	return sources
+}
+
+func validConsultantSource(source domain.ConsultantSource) bool {
+	if !consultantSourceIDPattern.MatchString(source.SourceID) || source.NewsID == "" || len(source.NewsID) > 512 {
+		return false
+	}
+	if source.MaterialKind != "external_news" && source.MaterialKind != "alpha_analysis" {
+		return false
+	}
+	if source.SourceURL == "" {
+		return true
+	}
+	parsed, err := url.Parse(source.SourceURL)
+	return err == nil && parsed.IsAbs() && parsed.Host != "" && parsed.User == nil &&
+		(parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+func sameConsultantSource(left, right domain.ConsultantSource) bool {
+	if left.SourceID != right.SourceID || left.NewsID != right.NewsID || left.SourceURL != right.SourceURL ||
+		left.MaterialKind != right.MaterialKind || left.Title != right.Title {
+		return false
+	}
+	if left.PublishedAt == nil || right.PublishedAt == nil {
+		return left.PublishedAt == nil && right.PublishedAt == nil
+	}
+	return *left.PublishedAt == *right.PublishedAt
 }

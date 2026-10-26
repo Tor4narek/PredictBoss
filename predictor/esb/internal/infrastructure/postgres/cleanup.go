@@ -116,6 +116,19 @@ func (r *Calls) PruneCallRecords(ctx context.Context, before time.Time, limit in
 	if limit <= 0 {
 		return 0, nil
 	}
+	sourceResult, err := r.pool.Exec(ctx, `WITH candidates AS (
+ SELECT cs.call_id, cs.news_id FROM konstantin_call_sources cs
+ JOIN agent_calls c USING (call_id)
+ WHERE c.created_at < $1 AND c.status IN ('completed','failed','cancelled','interrupted')
+ ORDER BY c.created_at, cs.call_id, cs.news_id
+ LIMIT $2 FOR UPDATE OF cs SKIP LOCKED
+)
+DELETE FROM konstantin_call_sources cs USING candidates x
+WHERE cs.call_id = x.call_id AND cs.news_id = x.news_id`, before, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune expired Konstantin source snapshots: %w", err)
+	}
+	sourcesPruned := int(sourceResult.RowsAffected())
 	var deleted, compacted int
 	if err := r.pool.QueryRow(ctx, `WITH candidates AS (
  SELECT c.call_id FROM agent_calls c
@@ -129,7 +142,7 @@ func (r *Calls) PruneCallRecords(ctx context.Context, before time.Time, limit in
 ), removed AS (
  DELETE FROM agent_calls c USING candidates x WHERE c.call_id = x.call_id RETURNING c.call_id
 ) SELECT count(*) FROM removed`, before, limit).Scan(&deleted); err != nil {
-		return 0, err
+		return sourcesPruned, err
 	}
 	if err := r.pool.QueryRow(ctx, `WITH candidates AS (
  SELECT call_id FROM agent_calls
@@ -147,9 +160,9 @@ func (r *Calls) PruneCallRecords(ctx context.Context, before time.Time, limit in
    ELSE '{}'::jsonb END, output = NULL, error = NULL, hermes_run_id = NULL
  FROM candidates x WHERE c.call_id = x.call_id RETURNING c.call_id
 ) SELECT count(*) FROM compacted`, before, limit).Scan(&compacted); err != nil {
-		return deleted, err
+		return sourcesPruned + deleted, err
 	}
-	return deleted + compacted, nil
+	return sourcesPruned + deleted + compacted, nil
 }
 
 func (r *Calls) PruneMessages(ctx context.Context, agent domain.AgentType, before time.Time, limit int) (int, error) {

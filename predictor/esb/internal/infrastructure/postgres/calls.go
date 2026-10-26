@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -858,6 +857,11 @@ WHERE call_id = $1
 VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
 		return profileState, false, err
 	}
+	if agentType == string(domain.AgentKonstantin) {
+		if _, err = tx.Exec(ctx, `DELETE FROM konstantin_call_sources WHERE call_id = $1::uuid`, callID); err != nil {
+			return profileState, false, fmt.Errorf("remove completed Konstantin source snapshot: %w", err)
+		}
+	}
 	if _, err = tx.Exec(ctx, `UPDATE agent_calls
 SET status = 'completed', output = $2, error = NULL, updated_at = now(),
     event_sequence = CASE WHEN agent_type = 'konstantin' AND request_json->>'request_kind' = 'question' THEN event_sequence + 1 ELSE event_sequence END,
@@ -924,8 +928,6 @@ WHERE c.call_id = $1 AND c.agent_type = 'valera' AND c.status IN ('started','run
 	return result.RowsAffected() == 1, nil
 }
 
-var evidenceSourcePattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
 type konstantinInput struct {
 	RequestID       string `json:"request_id"`
 	CompanyID       string `json:"company_id"`
@@ -936,8 +938,12 @@ type konstantinInput struct {
 }
 
 type assistantOutput struct {
+	Text   string `json:"text"`
+	Answer string `json:"answer"`
+}
+
+type consultantResponse struct {
 	Text     string                      `json:"text"`
-	Answer   string                      `json:"answer"`
 	Evidence []domain.ConsultantEvidence `json:"evidence"`
 }
 
@@ -948,57 +954,13 @@ func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationI
 	if err := json.Unmarshal(inputJSON, &input); err != nil {
 		return "", err
 	}
-	var result assistantOutput
-	parseErr := json.Unmarshal([]byte(strings.TrimSpace(output)), &result)
-	if result.Text == "" {
-		result.Text = strings.TrimSpace(result.Answer)
+	callSources, err := konstantinCallSources(ctx, tx, callID, conversationID, input.CompanyID)
+	if err != nil {
+		return "", err
 	}
-	validatedEvidence := make([]domain.ConsultantEvidence, 0, len(result.Evidence))
-	valid := parseErr == nil && strings.TrimSpace(result.Text) != "" && len(result.Evidence) > 0
-	for _, item := range result.Evidence {
-		item.SourceID = strings.ToLower(strings.TrimSpace(item.SourceID))
-		if !evidenceSourcePattern.MatchString(item.SourceID) {
-			valid = false
-			break
-		}
-		var materialKind string
-		err := tx.QueryRow(ctx, `SELECT s.material_kind
-FROM konstantin_call_sources AS cs
-JOIN company_news_sources AS s USING (source_id)
-WHERE cs.call_id = $1::uuid
-  AND s.company_id = $2::uuid
-  AND s.source_id = $3::uuid
-  AND s.source_revision <= $4`, callID, input.CompanyID, item.SourceID, input.SourceRevision).Scan(&materialKind)
-		if errors.Is(err, pgx.ErrNoRows) {
-			valid = false
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-		switch item.OriginKind {
-		case "ai_inference":
-		case "fact":
-			if materialKind != "external_news" {
-				valid = false
-			}
-		case "bank_view":
-			if materialKind != "alpha_analysis" {
-				valid = false
-			}
-		default:
-			valid = false
-		}
-		if !valid {
-			break
-		}
-		validatedEvidence = append(validatedEvidence, item)
-	}
-	if !valid {
-		result = assistantOutput{Text: insufficientEvidenceAnswer, Evidence: []domain.ConsultantEvidence{}}
-	} else {
-		result.Text = strings.TrimSpace(result.Text)
-		result.Evidence = validatedEvidence
+	response := consultantResponse{Text: konstantinAssistantText(output), Evidence: callSources}
+	if response.Text == "" || len(callSources) == 0 {
+		response.Text = insufficientEvidenceAnswer
 	}
 	kind := "analysis_result"
 	if input.RequestKind == "question" {
@@ -1010,11 +972,11 @@ WHERE cs.call_id = $1::uuid
 	if input.AnalysisID == "" {
 		input.AnalysisID = input.RequestID
 	}
-	evidence, err := json.Marshal(result.Evidence)
+	evidence, err := json.Marshal(response.Evidence)
 	if err != nil {
 		return "", err
 	}
-	safeOutput, err := json.Marshal(result)
+	safeOutput, err := json.Marshal(response)
 	if err != nil {
 		return "", err
 	}
@@ -1031,11 +993,80 @@ WHERE cs.call_id = $1::uuid
     source_revision
 )
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::jsonb, $9, $10)
-ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, conversationID, input.AnalysisID, kind, result.Text, string(evidence), input.ProfileRevision, input.SourceRevision)
+ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, conversationID, input.AnalysisID, kind, response.Text, string(evidence), input.ProfileRevision, input.SourceRevision)
 	if err != nil {
 		return "", err
 	}
 	return string(safeOutput), nil
+}
+
+func konstantinAssistantText(output string) string {
+	candidate := strings.TrimSpace(output)
+	if strings.HasPrefix(candidate, "```") {
+		lineEnd := strings.IndexByte(candidate, '\n')
+		if lineEnd >= 0 && strings.HasSuffix(candidate, "```") {
+			candidate = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(candidate[lineEnd+1:]), "```"))
+		}
+	}
+	var result assistantOutput
+	if err := json.Unmarshal([]byte(candidate), &result); err == nil {
+		if text := strings.TrimSpace(result.Text); text != "" {
+			return text
+		}
+		return strings.TrimSpace(result.Answer)
+	}
+	var text string
+	if err := json.Unmarshal([]byte(candidate), &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	if strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[") {
+		return ""
+	}
+	return candidate
+}
+
+func konstantinCallSources(ctx context.Context, tx pgx.Tx, callID, conversationID, companyID string) ([]domain.ConsultantEvidence, error) {
+	rows, err := tx.Query(ctx, `SELECT cs.source_id::text, cs.news_id, cs.source_url, cs.material_kind,
+cs.title, COALESCE(cs.published_at, '')
+FROM konstantin_call_sources AS cs
+JOIN agent_calls AS c USING (call_id)
+JOIN agent_conversations AS v USING (conversation_id)
+WHERE cs.call_id = $1::uuid
+  AND cs.company_id = $2::uuid
+  AND v.scope_id = $2::text
+  AND c.agent_type = 'konstantin'
+  AND c.conversation_id = $3::uuid
+ORDER BY cs.news_id, cs.source_id`, callID, companyID, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("read Konstantin call publications: %w", err)
+	}
+	defer rows.Close()
+
+	sources := make([]domain.ConsultantEvidence, 0)
+	for rows.Next() {
+		var source domain.ConsultantEvidence
+		var publishedAt string
+		if err := rows.Scan(&source.SourceID, &source.NewsID, &source.SourceURL, &source.MaterialKind,
+			&source.Title, &publishedAt); err != nil {
+			return nil, err
+		}
+		if publishedAt != "" {
+			source.PublishedAt = &publishedAt
+		}
+		switch source.MaterialKind {
+		case "external_news":
+			source.OriginKind = "fact"
+		case "alpha_analysis":
+			source.OriginKind = "bank_view"
+		default:
+			continue
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sources, nil
 }
 
 func (r *Calls) Fail(ctx context.Context, callID, message string) error {

@@ -244,9 +244,9 @@ func (s *Service) AuthorizeMCPCompany(ctx context.Context, agent domain.AgentTyp
 	return callContext, nil
 }
 
-// RecordMCPCallSources stores the source IDs returned to Konstantin during
-// this call so its final evidence can be checked against the exact MCP context.
-func (s *Service) RecordMCPCallSources(ctx context.Context, callContext domain.MCPCallContext, sourceIDs []string) error {
+// RecordMCPCallSources stores publications returned to Konstantin by MCP for
+// this active company call so the final response can be enriched server-side.
+func (s *Service) RecordMCPCallSources(ctx context.Context, callContext domain.MCPCallContext, sources []domain.ConsultantSource) error {
 	if callContext.Agent != domain.AgentKonstantin || callContext.CallID == "" || !uuidInputPattern.MatchString(callContext.CompanyID) {
 		return ErrInvalidMCPCallContext
 	}
@@ -254,7 +254,7 @@ func (s *Service) RecordMCPCallSources(ctx context.Context, callContext domain.M
 	if err != nil || !strings.EqualFold(call.ScopeID, callContext.CompanyID) || !mcpContextCallActive(call.Status) {
 		return ErrInvalidMCPCallContext
 	}
-	return s.repository.RecordKonstantinCallSources(ctx, callContext.CallID, callContext.CompanyID, sourceIDs)
+	return s.repository.RecordKonstantinCallSources(ctx, callContext.CallID, callContext.CompanyID, sources)
 }
 
 func mcpContextCallActive(status domain.CallStatus) bool {

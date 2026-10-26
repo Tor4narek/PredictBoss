@@ -271,27 +271,61 @@ WHERE source_id = $1::uuid`, source.SourceID).Scan(&existingCompany); err != nil
 	return false, nil
 }
 
-// RecordKonstantinCallSources stores only source IDs returned for the active
-// company's source snapshot. The call ID keeps concurrent runs isolated.
-func (r *Calls) RecordKonstantinCallSources(ctx context.Context, callID, companyID string, sourceIDs []string) error {
-	if len(sourceIDs) == 0 {
+// RecordKonstantinCallSources stores publication metadata returned by MCP for
+// one active company call. The composite keys make repeated reads idempotent.
+func (r *Calls) RecordKonstantinCallSources(ctx context.Context, callID, companyID string, sources []domain.ConsultantSource) error {
+	if len(sources) == 0 {
 		return nil
 	}
-	_, err := r.pool.Exec(ctx, `INSERT INTO konstantin_call_sources (call_id, source_id)
-SELECT c.call_id, s.source_id
-FROM agent_calls AS c
+	encodedSources, err := json.Marshal(sources)
+	if err != nil {
+		return fmt.Errorf("encode publications returned to Konstantin: %w", err)
+	}
+	result, err := r.pool.Exec(ctx, `WITH requested_sources AS (
+    SELECT source_id, news_id, source_url, material_kind, title, published_at
+    FROM jsonb_to_recordset($3::jsonb) AS source(
+        source_id TEXT,
+        news_id TEXT,
+        source_url TEXT,
+        material_kind TEXT,
+        title TEXT,
+        published_at TEXT
+    )
+)
+INSERT INTO konstantin_call_sources AS stored_sources (
+    call_id,
+    company_id,
+    source_id,
+    news_id,
+    source_url,
+    material_kind,
+    title,
+    published_at
+)
+SELECT c.call_id, $2::uuid, requested.source_id::uuid, requested.news_id,
+       COALESCE(requested.source_url, ''), requested.material_kind, COALESCE(requested.title, ''),
+       NULLIF(requested.published_at, '')
+FROM requested_sources AS requested
+CROSS JOIN agent_calls AS c
 JOIN agent_conversations AS v USING (conversation_id)
-JOIN company_news_sources AS s
-  ON s.company_id = v.scope_id::uuid
- AND s.source_id::text = ANY($3::text[])
- AND s.source_revision <= (c.request_json->>'source_revision')::bigint
 WHERE c.call_id = $1::uuid
   AND c.agent_type = 'konstantin'
-  AND v.scope_id = $2
+  AND v.scope_id = $2::text
   AND c.status IN ('submitting', 'started', 'running', 'processing')
-ON CONFLICT (call_id, source_id) DO NOTHING`, callID, companyID, sourceIDs)
+ON CONFLICT (call_id, news_id) DO UPDATE
+SET source_id = EXCLUDED.source_id
+WHERE stored_sources.company_id = EXCLUDED.company_id
+  AND stored_sources.source_id = EXCLUDED.source_id
+  AND stored_sources.source_url = EXCLUDED.source_url
+  AND stored_sources.material_kind = EXCLUDED.material_kind
+  AND stored_sources.title = EXCLUDED.title
+  AND stored_sources.published_at IS NOT DISTINCT FROM EXCLUDED.published_at`,
+		callID, companyID, encodedSources)
 	if err != nil {
-		return fmt.Errorf("record sources returned to Konstantin: %w", err)
+		return fmt.Errorf("record publications returned to Konstantin: %w", err)
+	}
+	if result.RowsAffected() != int64(len(sources)) {
+		return domain.ErrConflict
 	}
 	return nil
 }

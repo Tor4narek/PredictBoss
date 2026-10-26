@@ -248,6 +248,12 @@
                     "string"
                   ]
                 },
+                "published_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
                 "relevance": {
                   "type": "string"
                 },
@@ -255,6 +261,9 @@
                   "type": "string"
                 },
                 "source_url": {
+                  "type": "string"
+                },
+                "title": {
                   "type": "string"
                 }
               },
@@ -454,15 +463,35 @@
                   "items": {
                     "additionalProperties": false,
                     "properties": {
+                      "materialKind": {
+                        "type": "string"
+                      },
+                      "newsId": {
+                        "type": "string"
+                      },
                       "originKind": {
                         "type": "string"
                       },
+                      "publishedAt": {
+                        "type": [
+                          "null",
+                          "string"
+                        ]
+                      },
                       "sourceId": {
+                        "type": "string"
+                      },
+                      "sourceUrl": {
+                        "type": "string"
+                      },
+                      "title": {
                         "type": "string"
                       }
                     },
                     "required": [
                       "sourceId",
+                      "newsId",
+                      "materialKind",
                       "originKind"
                     ],
                     "type": "object"
@@ -570,19 +599,39 @@
             "type": "string"
           },
           "evidence": {
-            "description": "Source evidence for the analysis.",
+            "description": "Publication metadata verified by ESB from MCP results for this call.",
             "items": {
               "additionalProperties": false,
               "properties": {
+                "materialKind": {
+                  "type": "string"
+                },
+                "newsId": {
+                  "type": "string"
+                },
                 "originKind": {
                   "type": "string"
                 },
+                "publishedAt": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
                 "sourceId": {
+                  "type": "string"
+                },
+                "sourceUrl": {
+                  "type": "string"
+                },
+                "title": {
                   "type": "string"
                 }
               },
               "required": [
                 "sourceId",
+                "newsId",
+                "materialKind",
                 "originKind"
               ],
               "type": "object"
@@ -613,15 +662,35 @@
                   "items": {
                     "additionalProperties": false,
                     "properties": {
+                      "materialKind": {
+                        "type": "string"
+                      },
+                      "newsId": {
+                        "type": "string"
+                      },
                       "originKind": {
                         "type": "string"
                       },
+                      "publishedAt": {
+                        "type": [
+                          "null",
+                          "string"
+                        ]
+                      },
                       "sourceId": {
+                        "type": "string"
+                      },
+                      "sourceUrl": {
+                        "type": "string"
+                      },
+                      "title": {
                         "type": "string"
                       }
                     },
                     "required": [
                       "sourceId",
+                      "newsId",
+                      "materialKind",
                       "originKind"
                     ],
                     "type": "object"
@@ -857,6 +926,12 @@
                     "string"
                   ]
                 },
+                "published_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
                 "relevance": {
                   "type": "string"
                 },
@@ -864,6 +939,9 @@
                   "type": "string"
                 },
                 "source_url": {
+                  "type": "string"
+                },
+                "title": {
                   "type": "string"
                 }
               },
