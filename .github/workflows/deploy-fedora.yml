@@ -44,6 +44,11 @@ jobs:
           test -n "$FEDORA_USER"
           test -n "$PRODUCTION_ENV_FILE"
           test -n "$LLM_API_KEY"
+          ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            'set -eu; checkout="$HOME/predictboss"; if [ ! -d "$checkout/.git" ]; then staging="$HOME/predictboss-bootstrap-$$"; git clone --branch main --single-branch https://github.com/Tor4narek/PredictBoss.git "$staging"; if [ -f "$checkout/.env" ]; then mv "$checkout/.env" "$staging/.env"; fi; if [ -d "$checkout" ]; then rmdir "$checkout"; fi; mv "$staging" "$checkout"; fi'
           {
             printf '%s' "$PRODUCTION_ENV_FILE" | awk -F= '$1 != "LLM_API_KEY"'
             printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY"
