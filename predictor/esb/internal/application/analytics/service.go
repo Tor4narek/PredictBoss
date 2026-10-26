@@ -62,17 +62,26 @@ func (s *Service) SaveNewsAndFacts(ctx context.Context, news domain.News, facts 
 	news.SourceID = strings.TrimSpace(news.SourceID)
 	news.SourceURL = strings.TrimSpace(news.SourceURL)
 	news.Text = strings.TrimSpace(news.Text)
-	if !idPattern.MatchString(news.ID) || news.SourceID == "" || news.Text == "" || len(facts) > s.limits.MaxFactsPerNews {
-		return nil, ErrInvalidAnalyticsInput
+	if !idPattern.MatchString(news.ID) {
+		return nil, fmt.Errorf("%w: news_id must contain 1 to 128 letters, digits, dots, underscores, or hyphens", ErrInvalidAnalyticsInput)
+	}
+	if news.SourceID == "" {
+		return nil, fmt.Errorf("%w: source_id is required", ErrInvalidAnalyticsInput)
+	}
+	if news.Text == "" {
+		return nil, fmt.Errorf("%w: news_text is required", ErrInvalidAnalyticsInput)
+	}
+	if len(facts) > s.limits.MaxFactsPerNews {
+		return nil, fmt.Errorf("%w: facts contains more than %d items", ErrInvalidAnalyticsInput, s.limits.MaxFactsPerNews)
 	}
 	if news.CompanyID != "" && !uuidPattern.MatchString(news.CompanyID) {
-		return nil, ErrInvalidAnalyticsInput
+		return nil, fmt.Errorf("%w: company_id must be a UUID when provided", ErrInvalidAnalyticsInput)
 	}
 	if news.MaterialKind != "" && news.MaterialKind != "external_news" && news.MaterialKind != "alpha_analysis" {
-		return nil, ErrInvalidAnalyticsInput
+		return nil, fmt.Errorf("%w: material_kind must be external_news or alpha_analysis", ErrInvalidAnalyticsInput)
 	}
 	if news.MediaType != "" && news.MediaType != "application/pdf" && news.MediaType != "text/html" {
-		return nil, ErrInvalidAnalyticsInput
+		return nil, fmt.Errorf("%w: media_type must be text/html or application/pdf", ErrInvalidAnalyticsInput)
 	}
 	if news.PublishedAt != nil {
 		if _, err := time.Parse(time.RFC3339, *news.PublishedAt); err != nil {

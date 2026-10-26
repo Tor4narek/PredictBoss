@@ -1461,7 +1461,7 @@
       }
     },
     {
-      "description": "Store submitted news and company-independent facts in ClickHouse. Confidence accepts a JSON number or a numeric string; ESB normalizes numeric strings.",
+      "description": "Store submitted news and company-independent facts in ClickHouse. Copy news_id, source_id, and news_text exactly from the current call. Copy optional metadata only when supplied; never invent company_id, source_url, or timestamps. An empty facts array is valid. occurred_at must be RFC3339 with an explicit timezone or null. ESB normalizes empty or non-RFC3339 values to null because the event time is unknown or ambiguous. Confidence accepts a JSON number or numeric string.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1494,6 +1494,7 @@
                   "type": "string"
                 },
                 "occurred_at": {
+                  "description": "RFC3339 timestamp with an explicit timezone, or null. ESB normalizes empty or non-RFC3339 values to null.",
                   "type": [
                     "null",
                     "string"
