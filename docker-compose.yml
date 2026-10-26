@@ -10,6 +10,9 @@ x-hermes-common: &hermes-common
     HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
     ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
     LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
+  depends_on:
+    esb:
+      condition: service_healthy
   networks:
     - predictor-runtime
 
@@ -286,16 +289,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      hermes-serezha:
-        condition: service_started
-      hermes-saveliy:
-        condition: service_started
-      hermes-valera:
-        condition: service_started
-      hermes-kesha:
-        condition: service_started
-      hermes-konstantin:
-        condition: service_started
     networks:
       - predictor-storage
       - predictor-runtime
