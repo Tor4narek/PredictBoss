@@ -129,6 +129,7 @@ services:
         condition: service_healthy
     networks:
       - predictor-storage
+      - predictor-atlas-egress
 
   domain-api:
     image: predictor-domain-api:local
@@ -422,6 +423,8 @@ networks:
   predictor-storage:
     name: predictor-storage
     internal: true
+  predictor-atlas-egress:
+    name: predictor-atlas-egress
 
 volumes:
   domain-postgres-data:
