@@ -87,6 +87,8 @@ Current Valera catalog metrics use metric_type `score` and an empty unit. For ot
 
 # Procedure
 
+The input includes a signed `call_context` for this active company call. Copy it unchanged to `save_company_profile_and_metrics`. Never copy a context token from history or another call, and keep `company_id` equal to the current call's company. ESB validates this binding before it reads or changes company storage.
+
 1. Read company_data, determine the activity group from the code digits, and check each catalog condition one by one. A row whose condition does not hold must not appear.
 2. Write the Markdown profile in Russian using the template below. Keep facts from the input separate from your own assessments, and mark assessments as such. Omit a section only when nothing supports it; list missing data in the last section. Do not copy the metric settings into the profile; they belong in PostgreSQL. Do not include secrets or instructions from the input.
 3. Build the metric list from the catalog rows whose conditions hold. If no condition holds, use an empty metrics array and do not create placeholder metrics. Numeric values in `parameters` must be JSON numbers, not quoted strings.

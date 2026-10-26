@@ -1,10 +1,14 @@
 {
   "tools": [
     {
-      "description": "Read a company's metric rows and units from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results.",
+      "description": "Read a company's metric rows and units from PostgreSQL, recalculate each from ClickHouse observations, persist the resulting analytical snapshots in ClickHouse, and return the catalog-ordered results. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -18,6 +22,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "period_from",
           "period_to"
@@ -135,10 +140,14 @@
       }
     },
     {
-      "description": "Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. Metric ownership and its returned unit are read from PostgreSQL settings.",
+      "description": "Recalculate one metric from ClickHouse observations for an inclusive news-time range and persist the resulting analytical snapshot in ClickHouse. `call_context` binds this operation to the company of the active call; metric ownership and its returned unit are read from PostgreSQL settings.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "metric_id": {
             "type": "string"
           },
@@ -152,6 +161,7 @@
           }
         },
         "required": [
+          "call_context",
           "metric_id",
           "period_from",
           "period_to"
@@ -246,10 +256,14 @@
       }
     },
     {
-      "description": "Read universal facts that have already been linked to a company. Limit accepts an integer or numeric string.",
+      "description": "Read universal facts that have already been linked to a company. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope. Limit accepts an integer or numeric string.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -258,6 +272,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id"
         ],
         "type": "object"
@@ -348,10 +363,14 @@
       }
     },
     {
-      "description": "Read the company's structured metric settings from PostgreSQL through the ESB. Limit accepts an integer or numeric string.",
+      "description": "Read the company's structured metric settings from PostgreSQL through the ESB. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope. Limit accepts an integer or numeric string.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -360,6 +379,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id"
         ],
         "type": "object"
@@ -421,15 +441,20 @@
       }
     },
     {
-      "description": "Read the company's Markdown profile from S3 through the ESB.",
+      "description": "Read the company's Markdown profile from S3 through the ESB. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           }
         },
         "required": [
+          "call_context",
           "company_id"
         ],
         "type": "object"
@@ -457,10 +482,14 @@
       }
     },
     {
-      "description": "Read a company report containing linked facts, configured metrics, totals and analyses.",
+      "description": "Read a company report containing linked facts, configured metrics, totals and analyses. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -474,6 +503,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "period_from",
           "period_to"
@@ -749,10 +779,14 @@
       }
     },
     {
-      "description": "Read linked facts and observations from ClickHouse and recalculate configured company metric totals through ESB. Results include source IDs; totals use news publication times across stored history. Limit accepts an integer or numeric string.",
+      "description": "Read linked facts and observations from ClickHouse and recalculate configured company metric totals through ESB. Results include source IDs; totals use news publication times across stored history. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope. Limit accepts an integer or numeric string.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -761,6 +795,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id"
         ],
         "type": "object"
@@ -1100,10 +1135,14 @@
       }
     },
     {
-      "description": "Persist a probability-based analysis. Probability accepts a JSON number or numeric string; ESB normalizes numeric strings.",
+      "description": "Persist a probability-based analysis. Copy `call_context` unchanged from this active call; `company_id` must match its signed company scope. Probability accepts a JSON number or numeric string; ESB normalizes numeric strings.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -1130,6 +1169,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "period_from",
           "period_to",
@@ -1154,10 +1194,14 @@
       }
     },
     {
-      "description": "Idempotently upsert structured metric settings for a company in PostgreSQL through the ESB.",
+      "description": "Idempotently upsert structured metric settings for a company in PostgreSQL through the ESB. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -1208,6 +1252,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "metrics"
         ],
@@ -1228,10 +1273,14 @@
       }
     },
     {
-      "description": "Idempotently save the company Markdown profile to S3 and upsert its structured metric settings in PostgreSQL through the ESB.",
+      "description": "Idempotently save the company Markdown profile to S3 and upsert its structured metric settings in PostgreSQL through the ESB. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -1288,6 +1337,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "profile_revision",
           "markdown",
@@ -1322,10 +1372,14 @@
       }
     },
     {
-      "description": "Persist Savely's supported links between universal facts and a company.",
+      "description": "Persist Savely's supported links between universal facts and a company. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -1357,6 +1411,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "links"
         ],
@@ -1377,10 +1432,14 @@
       }
     },
     {
-      "description": "Store metric observations linked to news and facts. Values and probabilities accept JSON numbers or numeric strings; ESB normalizes numeric strings. Use null for unknown values. Period bounds are not stored on observations. ESB derives a stable observation ID from company, metric, news, and source fact IDs; supply a distinct observation_id when separate predictions share the same fact IDs.",
+      "description": "Store metric observations linked to news and facts. Copy `call_context` unchanged from this active call; `company_id` must match its signed company scope. Values and probabilities accept JSON numbers or numeric strings; ESB normalizes numeric strings. Use null for unknown values. Period bounds are not stored on observations. ESB derives a stable observation ID from company, metric, news, and source fact IDs; supply a distinct observation_id when separate predictions share the same fact IDs.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "call_context": {
+            "description": "Signed context issued by ESB for this active agent call; copy unchanged.",
+            "type": "string"
+          },
           "company_id": {
             "type": "string"
           },
@@ -1441,6 +1500,7 @@
           }
         },
         "required": [
+          "call_context",
           "company_id",
           "observations"
         ],
