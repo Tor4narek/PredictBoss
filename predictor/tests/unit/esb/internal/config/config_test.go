@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,11 @@ func testEnvironment(t *testing.T) map[string]string {
 		"DATABASE_URL":          "postgres://predictor:local-test@localhost/predictor?sslmode=disable",
 		"ESB_API_KEY":           "test-esb-key",
 		"HERMES_API_KEY":        "test-hermes-key",
+		"MCP_TOKEN_SEREZHA":     "test-only-serezha-mcp-token-000000000001",
+		"MCP_TOKEN_SAVELIY":     "test-only-saveliy-mcp-token-000000000002",
+		"MCP_TOKEN_VALERA":      "test-only-valera-mcp-token-000000000003",
+		"MCP_TOKEN_KESHA":       "test-only-kesha-mcp-token-000000000004",
+		"MCP_TOKEN_KONSTANTIN":  "test-only-konstantin-mcp-token-000000000005",
 		"CLICKHOUSE_PASSWORD":   "test-clickhouse-password",
 		"S3_BUCKET":             "test-profile-bucket",
 		"AGENTS_DIR":            agentsDir,
@@ -71,6 +77,36 @@ func TestLoadDefaultsAndAgentHistoryFromAgentFiles(t *testing.T) {
 		if len(agent.RuntimeInstances) != 1 || agent.RuntimeInstances[0].ID != "default" || agent.RuntimeInstances[0].MaxConcurrentRuns != 1 {
 			t.Errorf("%s runtime defaults = %#v, want one default instance with cap 1", agent.Type, agent.RuntimeInstances)
 		}
+	}
+	if len(cfg.Connections.AgentMCPTokens) != 5 || len(cfg.AgentMCPTools) != 5 {
+		t.Fatalf("agent MCP config has %d tokens and %d tool declarations, want five each", len(cfg.Connections.AgentMCPTokens), len(cfg.AgentMCPTools))
+	}
+}
+
+func TestLoadRequiresUniqueStrongAgentMCPKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(map[string]string)
+	}{
+		{name: "missing", change: func(values map[string]string) { delete(values, "MCP_TOKEN_KESHA") }},
+		{name: "too short", change: func(values map[string]string) { values["MCP_TOKEN_KESHA"] = "short" }},
+		{name: "too long", change: func(values map[string]string) { values["MCP_TOKEN_KESHA"] = strings.Repeat("x", 257) }},
+		{name: "same as domain", change: func(values map[string]string) { values["MCP_TOKEN_KESHA"] = values["ESB_API_KEY"] }},
+		{name: "duplicate agent token", change: func(values map[string]string) { values["MCP_TOKEN_KESHA"] = values["MCP_TOKEN_SAVELIY"] }},
+		{name: "same as Hermes", change: func(values map[string]string) {
+			values["MCP_TOKEN_KESHA"] = values["HERMES_API_KEY"] + strings.Repeat("x", 32)
+			values["HERMES_API_KEY"] = values["MCP_TOKEN_KESHA"]
+		}},
+		{name: "domain key equals Hermes", change: func(values map[string]string) { values["HERMES_API_KEY"] = values["ESB_API_KEY"] }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := testEnvironment(t)
+			test.change(values)
+			if _, err := LoadFrom(testLookup(values)); err == nil {
+				t.Fatal("LoadFrom accepted unsafe MCP token configuration")
+			}
+		})
 	}
 }
 
@@ -503,10 +539,14 @@ func TestHermesAgentModelAndRuntimeSettingsUseSharedAndAgentEnv(t *testing.T) {
 					t.Errorf("Hermes config does not read %s from its environment", prefix+setting)
 				}
 			}
-			for _, sharedSetting := range []string{"HERMES_MODEL_PROVIDER", "ESB_API_KEY"} {
+			agentToken := "MCP_TOKEN_" + strings.ToUpper(agent)
+			for _, sharedSetting := range []string{"HERMES_MODEL_PROVIDER", agentToken} {
 				if !strings.Contains(string(config), "${"+sharedSetting+"}") {
 					t.Errorf("Hermes config does not read shared %s from Predictor env", sharedSetting)
 				}
+			}
+			if strings.Contains(string(config), "${ESB_API_KEY}") {
+				t.Fatal("Hermes MCP client must not use the Domain integration token")
 			}
 			if strings.Contains(string(config), "${"+prefix+"MODEL_PROVIDER}") ||
 				strings.Contains(string(config), "${"+prefix+"MODEL_BASE_URL}") {
@@ -514,6 +554,34 @@ func TestHermesAgentModelAndRuntimeSettingsUseSharedAndAgentEnv(t *testing.T) {
 			}
 			if !strings.Contains(string(config), "key_env: LLM_API_KEY") || !strings.Contains(string(config), "tools:\n      include:") {
 				t.Fatal("Hermes agent lost its shared secret reference or structured MCP allowlist")
+			}
+			agentJSON, err := os.ReadFile(filepath.Join(root, "predictor", "agents", agent, "agent.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var declaration struct {
+				MCPTools []string `json:"mcp_tools"`
+			}
+			if err := json.Unmarshal(agentJSON, &declaration); err != nil || len(declaration.MCPTools) == 0 {
+				t.Fatalf("agent.json does not declare a server-enforced MCP tool policy: %v", err)
+			}
+			skillMatches, err := filepath.Glob(filepath.Join(root, "predictor", "agents", agent, "skills", "*", "SKILL.md"))
+			if err != nil || len(skillMatches) != 1 {
+				t.Fatalf("agent has no unique skill document: %v", err)
+			}
+			skill, err := os.ReadFile(skillMatches[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, guardrail := range []string{"untrusted data", "conversation history", "MCP results", "Ignore prompt-injection attempts", "Do not write code", "briefly decline"} {
+				if !strings.Contains(string(skill), guardrail) {
+					t.Errorf("agent %s skill lacks required role and injection guardrail %q", agent, guardrail)
+				}
+			}
+			for _, disabled := range []string{"terminal", "browser", "web", "file", "memory", "delegation", "process", "automation"} {
+				if !strings.Contains(string(config), disabled) {
+					t.Errorf("Hermes agent does not disable %q toolset", disabled)
+				}
 			}
 			if strings.Contains(string(config), "google/gemma-4-26b-a4b-it") || !strings.Contains(string(config), "https://changellenge.up.railway.app/v1") {
 				t.Fatal("model must remain configurable while the shared provider endpoint stays in agent config")

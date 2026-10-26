@@ -20,6 +20,20 @@ Hermes не подключается напрямую к PostgreSQL, ClickHouse 
 
 Compose запускает ESB после хранилищ и ожидает его healthcheck до старта Hermes, чтобы MCP endpoint был доступен при подключении агентов.
 
+## Границы доверия
+
+Domain HTTP и WebSocket используют `ESB_API_KEY`; MCP использует отдельный уникальный Bearer-токен для каждого агента. ESB выводит роль только из токена, закрепляет эту роль за MCP-сессией, публикует только разрешённые инструменты и повторно проверяет разрешение при прямом `tools/call`. Декларация `mcp_tools` в `agents/<type>/agent.json` сверяется с серверным allowlist при старте. Hermes отключает системные toolsets и оставляет только необходимые MCP-инструменты. Skills объявляют запросы, новости, профили, историю и результаты инструментов недоверенными данными. Это снижает риск prompt injection, но не гарантирует семантически корректное поведение любой модели.
+
+| Агент | MCP-инструменты |
+| --- | --- |
+| Серёжа | `save_news_and_facts` |
+| Савелий | `get_company_profile`, `get_facts`, `save_fact_company_links` |
+| Валера | `get_company_metrics`, `save_company_profile_and_metrics` |
+| Кеша | `get_company_profile`, `get_company_facts`, `get_company_metrics`, `save_metric_observations`, `calculate_all_metric_totals`, `save_company_analysis`, `get_company_report` |
+| Константин | `get_company_profile`, `get_company_metrics`, `get_consultant_context` (только чтение) |
+
+ESB проверяет структурные ограничения, принадлежность настроек метрик компании, метаданные сохранённых новостей и связи фактов с компанией и новостью при записи аналитики. Probability/confidence остаются оценками модели. Текущий MCP-токен удостоверяет тип агента, но не конкретный `call_id` или компанию; поэтому ролевую авторизацию нельзя считать изоляцией арендаторов. Полную защиту чтения профилей/метрик от подмены валидного `company_id` нельзя гарантировать без защищённого call-scoped контекста, передаваемого Hermes.
+
 ## Ответственность за данные
 
 | Компонент | Источник истины |

@@ -8,6 +8,10 @@
     "profile_revision",
     "company_data"
   ],
+  "mcp_tools": [
+    "get_company_metrics",
+    "save_company_profile_and_metrics"
+  ],
   "context_policy": {
     "compress_after_messages": 0,
     "batch_messages": 0,

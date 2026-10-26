@@ -4,7 +4,7 @@
 
 ## Подключение
 
-Адрес ESB задаётся `HTTP_ADDR` (по умолчанию `http://localhost:8081`). Защищённые HTTP-запросы, MCP и WebSocket handshake требуют `Authorization: Bearer <ESB_API_KEY>`. Открыт только `GET /healthz`; защищены `/readyz`, `/call`, `/stream` и `/mcp`.
+Адрес ESB задаётся `HTTP_ADDR` (по умолчанию `http://localhost:8081`). `/readyz`, `/call` и WebSocket `/stream` требуют `Authorization: Bearer <ESB_API_KEY>`. MCP `/mcp` принимает отдельный Bearer-токен агента: `MCP_TOKEN_SEREZHA`, `MCP_TOKEN_SAVELIY`, `MCP_TOKEN_VALERA`, `MCP_TOKEN_KESHA` или `MCP_TOKEN_KONSTANTIN`. Токен Domain не авторизует MCP. Открыт только `GET /healthz`.
 
 | Запрос | Назначение |
 | --- | --- |
@@ -13,6 +13,8 @@
 | `GET /call?data=facts` | Читать факты из ClickHouse; фильтры и курсор передаются JSON-телом GET. |
 | `GET /stream?...` | Единственный WebSocket ESB — поток Константина. URL подписки возвращает `GET /call?agent=konstantin`. |
 | `POST /mcp` | Streamable HTTP MCP endpoint для Hermes; инструменты публикуются через `tools/list`. |
+
+ESB определяет MCP-роль по Bearer-токену и привязывает к ней созданную MCP-сессию. Серверный allowlist действует для `tools/list` и прямого `tools/call`. Декларация `mcp_tools` в `agents/<type>/agent.json` сверяется со встроенной политикой при старте ESB. Подмена query-параметра `agent`, аргумента модели или состава Hermes `tools.include` не повышает права. Токены должны быть уникальными, содержать 32–256 байт и отличаться от других ключей; генерируйте каждый независимо, например `openssl rand -hex 32`, и храните только в игнорируемом `predictor/.env`.
 
 В текущем контракте `GET /call` использует JSON-тело. Некоторые клиенты и прокси его отбрасывают; проверьте это на используемом HTTP-клиенте. Переводите `http(s)` в `ws(s)` при подключении к возвращённому относительному `streamUrl`.
 

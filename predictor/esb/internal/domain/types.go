@@ -188,6 +188,23 @@ type Fact struct {
 	Confidence   float64  `json:"confidence"`
 }
 
+// NewsReference is the persisted source metadata used to validate analytical
+// writes against an existing news record.
+type NewsReference struct {
+	ID           string `json:"id"`
+	SourceID     string `json:"source_id"`
+	SourceURL    string `json:"source_url"`
+	MaterialKind string `json:"material_kind"`
+}
+
+// FactReference binds an existing universal fact to its originating news.
+type FactReference struct {
+	ID        string `json:"id"`
+	NewsID    string `json:"news_id"`
+	SourceID  string `json:"source_id"`
+	SourceURL string `json:"source_url"`
+}
+
 type FactQuery struct {
 	CompanyID    string
 	NewsID       string
@@ -475,6 +492,10 @@ type StaleCallReconciler interface {
 
 type AnalyticsRepository interface {
 	SaveNewsAndFacts(context.Context, News, []Fact) ([]string, error)
+	NewsReferences(context.Context, []string) ([]NewsReference, error)
+	FactReferences(context.Context, []string) ([]FactReference, error)
+	CompanyFactIDs(context.Context, string, []string) ([]string, error)
+	CompanyNewsIDs(context.Context, string, []string) ([]string, error)
 	FinalizeNews(context.Context, News, string) error
 	FactsByNews(context.Context, string, int) ([]Fact, error)
 	QueryFacts(context.Context, FactQuery) ([]FactRecord, error)

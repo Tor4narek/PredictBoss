@@ -1,8 +1,21 @@
 package mcp
 
 import (
+	"context"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
+
+func addTool[Input, Output any](server *mcp.Server, allowed map[string]struct{}, tool *mcp.Tool,
+	handler func(context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, Output, error)) {
+	if allowed != nil {
+		if _, ok := allowed[tool.Name]; !ok {
+			return
+		}
+	}
+	mcp.AddTool(server, tool, handler)
+}
 
 type saveNewsFactsInput struct {
 	NewsID       string      `json:"news_id" jsonschema:"stable news identifier"`

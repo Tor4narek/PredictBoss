@@ -8,7 +8,6 @@ x-hermes-common: &hermes-common
     API_SERVER_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
     HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
     HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
-    ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
     LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
     ESB_MCP_URL: http://esb:8081/mcp
   depends_on:
@@ -120,6 +119,7 @@ services:
       - ./predictor/agents/serezha/skills:/opt/skills:ro
     environment:
       <<: *hermes-env
+      MCP_TOKEN_SEREZHA: ${MCP_TOKEN_SEREZHA:?Set MCP_TOKEN_SEREZHA in predictor/.env}
       AGENT_SEREZHA_MODEL_ID: ${AGENT_SEREZHA_MODEL_ID:?Set AGENT_SEREZHA_MODEL_ID in predictor/.env}
       AGENT_SEREZHA_MAX_TURNS: ${AGENT_SEREZHA_MAX_TURNS:?Set AGENT_SEREZHA_MAX_TURNS in predictor/.env}
       AGENT_SEREZHA_REASONING_EFFORT: ${AGENT_SEREZHA_REASONING_EFFORT:?Set AGENT_SEREZHA_REASONING_EFFORT in predictor/.env}
@@ -142,6 +142,7 @@ services:
       - ./predictor/agents/saveliy/skills:/opt/skills:ro
     environment:
       <<: *hermes-env
+      MCP_TOKEN_SAVELIY: ${MCP_TOKEN_SAVELIY:?Set MCP_TOKEN_SAVELIY in predictor/.env}
       AGENT_SAVELIY_MODEL_ID: ${AGENT_SAVELIY_MODEL_ID:?Set AGENT_SAVELIY_MODEL_ID in predictor/.env}
       AGENT_SAVELIY_MAX_TURNS: ${AGENT_SAVELIY_MAX_TURNS:?Set AGENT_SAVELIY_MAX_TURNS in predictor/.env}
       AGENT_SAVELIY_REASONING_EFFORT: ${AGENT_SAVELIY_REASONING_EFFORT:?Set AGENT_SAVELIY_REASONING_EFFORT in predictor/.env}
@@ -164,6 +165,7 @@ services:
       - ./predictor/agents/valera/skills:/opt/skills:ro
     environment:
       <<: *hermes-env
+      MCP_TOKEN_VALERA: ${MCP_TOKEN_VALERA:?Set MCP_TOKEN_VALERA in predictor/.env}
       AGENT_VALERA_MODEL_ID: ${AGENT_VALERA_MODEL_ID:?Set AGENT_VALERA_MODEL_ID in predictor/.env}
       AGENT_VALERA_MAX_TURNS: ${AGENT_VALERA_MAX_TURNS:?Set AGENT_VALERA_MAX_TURNS in predictor/.env}
       AGENT_VALERA_REASONING_EFFORT: ${AGENT_VALERA_REASONING_EFFORT:?Set AGENT_VALERA_REASONING_EFFORT in predictor/.env}
@@ -186,6 +188,7 @@ services:
       - ./predictor/agents/kesha/skills:/opt/skills:ro
     environment:
       <<: *hermes-env
+      MCP_TOKEN_KESHA: ${MCP_TOKEN_KESHA:?Set MCP_TOKEN_KESHA in predictor/.env}
       AGENT_KESHA_MODEL_ID: ${AGENT_KESHA_MODEL_ID:?Set AGENT_KESHA_MODEL_ID in predictor/.env}
       AGENT_KESHA_MAX_TURNS: ${AGENT_KESHA_MAX_TURNS:?Set AGENT_KESHA_MAX_TURNS in predictor/.env}
       AGENT_KESHA_REASONING_EFFORT: ${AGENT_KESHA_REASONING_EFFORT:?Set AGENT_KESHA_REASONING_EFFORT in predictor/.env}
@@ -208,6 +211,7 @@ services:
       - ./predictor/agents/konstantin/skills:/opt/skills:ro
     environment:
       <<: *hermes-env
+      MCP_TOKEN_KONSTANTIN: ${MCP_TOKEN_KONSTANTIN:?Set MCP_TOKEN_KONSTANTIN in predictor/.env}
       AGENT_KONSTANTIN_MODEL_ID: ${AGENT_KONSTANTIN_MODEL_ID:?Set AGENT_KONSTANTIN_MODEL_ID in predictor/.env}
       AGENT_KONSTANTIN_MAX_TURNS: ${AGENT_KONSTANTIN_MAX_TURNS:?Set AGENT_KONSTANTIN_MAX_TURNS in predictor/.env}
       AGENT_KONSTANTIN_REASONING_EFFORT: ${AGENT_KONSTANTIN_REASONING_EFFORT:?Set AGENT_KONSTANTIN_REASONING_EFFORT in predictor/.env}
@@ -232,6 +236,11 @@ services:
       HTTP_ADDR: ${HTTP_ADDR:-:8081}
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable}
       ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
+      MCP_TOKEN_SEREZHA: ${MCP_TOKEN_SEREZHA:?Set MCP_TOKEN_SEREZHA in predictor/.env}
+      MCP_TOKEN_SAVELIY: ${MCP_TOKEN_SAVELIY:?Set MCP_TOKEN_SAVELIY in predictor/.env}
+      MCP_TOKEN_VALERA: ${MCP_TOKEN_VALERA:?Set MCP_TOKEN_VALERA in predictor/.env}
+      MCP_TOKEN_KESHA: ${MCP_TOKEN_KESHA:?Set MCP_TOKEN_KESHA in predictor/.env}
+      MCP_TOKEN_KONSTANTIN: ${MCP_TOKEN_KONSTANTIN:?Set MCP_TOKEN_KONSTANTIN in predictor/.env}
       HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
       HERMES_SEREZHA_INSTANCES: ${HERMES_SEREZHA_INSTANCES:-serezha-1=available@http://hermes-serezha:8642;serezha-2=available@http://hermes-serezha-2:8642}
       HERMES_SAVELIY_INSTANCES: ${HERMES_SAVELIY_INSTANCES:-saveliy-1=available@http://hermes-saveliy:8642;saveliy-2=available@http://hermes-saveliy-2:8642}

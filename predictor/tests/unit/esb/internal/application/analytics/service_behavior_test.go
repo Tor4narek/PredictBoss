@@ -22,11 +22,60 @@ type behaviorRepository struct {
 	queryFacts       []domain.FactRecord
 	queryErr         error
 	observations     []domain.MetricObservation
+	newsReferences   []domain.NewsReference
+	factReferences   []domain.FactReference
+	companyNews      []string
+	companyFacts     []string
+	factIDs          []string
 	companyID        string
 	saveObservation  error
 	saveAnalysis     domain.CompanyAnalysis
 	saveAnalysisErr  error
 	calculatedMetric []string
+}
+
+func (r *behaviorRepository) NewsReferences(_ context.Context, newsIDs []string) ([]domain.NewsReference, error) {
+	if r.newsReferences != nil {
+		return r.newsReferences, nil
+	}
+	result := make([]domain.NewsReference, 0, len(newsIDs))
+	for _, id := range newsIDs {
+		result = append(result, domain.NewsReference{ID: id, SourceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", SourceURL: "https://example.test/news", MaterialKind: "external_news"})
+	}
+	return result, nil
+}
+
+func (r *behaviorRepository) FactReferences(_ context.Context, factIDs []string) ([]domain.FactReference, error) {
+	if r.factReferences != nil {
+		return r.factReferences, nil
+	}
+	result := make([]domain.FactReference, 0, len(factIDs))
+	for _, id := range factIDs {
+		result = append(result, domain.FactReference{ID: id, NewsID: "news-7"})
+	}
+	return result, nil
+}
+
+func (r *behaviorRepository) CompanyFactIDs(_ context.Context, _ string, factIDs []string) ([]string, error) {
+	if r.companyFacts != nil {
+		return r.companyFacts, nil
+	}
+	return factIDs, nil
+}
+
+func (r *behaviorRepository) CompanyNewsIDs(_ context.Context, _ string, newsIDs []string) ([]string, error) {
+	if r.companyNews != nil {
+		return r.companyNews, nil
+	}
+	return newsIDs, nil
+}
+
+func (r *behaviorRepository) SaveFactCompanyLinks(_ context.Context, _ string, links []domain.FactCompanyLink) error {
+	r.factIDs = make([]string, 0, len(links))
+	for _, link := range links {
+		r.factIDs = append(r.factIDs, link.FactID)
+	}
+	return nil
 }
 
 func (r *behaviorRepository) SaveNewsAndFacts(_ context.Context, news domain.News, facts []domain.Fact) ([]string, error) {
@@ -64,16 +113,16 @@ func TestSaveNewsAndFactsNormalizesBeforePersistence(t *testing.T) {
 	service := NewService(repository, &metricSettingsFake{}, testLimits())
 	publishedAt := "2026-10-25T09:00:00Z"
 	ids, err := service.SaveNewsAndFacts(context.Background(), domain.News{
-		ID: " news-1 ", SourceID: " source-1 ", SourceURL: " https://example.test/news ",
+		ID: " news-1 ", SourceID: " 22222222-2222-4222-8222-222222222222 ", SourceURL: " https://example.test/news ",
 		CompanyID: "11111111-1111-4111-8111-111111111111", Text: " Article ", PublishedAt: &publishedAt,
-	}, []domain.Fact{{Text: " Evidence-backed fact ", Confidence: 0.8}})
+	}, []domain.Fact{{Text: " Evidence-backed fact ", Evidence: "Article", Confidence: 0.8}})
 	if err != nil {
 		t.Fatalf("SaveNewsAndFacts returned error: %v", err)
 	}
-	if len(ids) != 1 || repository.news.ID != "news-1" || repository.news.Text != "Article" || repository.news.SourceID != "source-1" {
+	if len(ids) != 1 || repository.news.ID != "news-1" || repository.news.Text != "Article" || repository.news.SourceID != "22222222-2222-4222-8222-222222222222" {
 		t.Fatalf("normalized news or returned fact IDs are wrong: news=%#v ids=%#v", repository.news, ids)
 	}
-	if len(repository.facts) != 1 || repository.facts[0].NewsID != "news-1" || repository.facts[0].SourceID != "source-1" || repository.facts[0].Category != "general" {
+	if len(repository.facts) != 1 || repository.facts[0].NewsID != "news-1" || repository.facts[0].SourceID != repository.news.SourceID || repository.facts[0].Category != "general" {
 		t.Fatalf("fact was not bound to normalized news metadata: %#v", repository.facts)
 	}
 }
@@ -84,9 +133,9 @@ func TestSaveNewsAndFactsRejectsInvalidInputsBeforePersistence(t *testing.T) {
 		news domain.News
 		fact domain.Fact
 	}{
-		{name: "missing text", news: domain.News{ID: "news-1", SourceID: "source-1"}},
-		{name: "invalid published time", news: domain.News{ID: "news-1", SourceID: "source-1", Text: "body", PublishedAt: stringPointer("yesterday")}},
-		{name: "invalid confidence", news: domain.News{ID: "news-1", SourceID: "source-1", Text: "body"}, fact: domain.Fact{Text: "fact", Confidence: 1.1}},
+		{name: "missing text", news: domain.News{ID: "news-1", SourceID: "22222222-2222-4222-8222-222222222222"}},
+		{name: "invalid published time", news: domain.News{ID: "news-1", SourceID: "22222222-2222-4222-8222-222222222222", Text: "body", PublishedAt: stringPointer("yesterday")}},
+		{name: "invalid confidence", news: domain.News{ID: "news-1", SourceID: "22222222-2222-4222-8222-222222222222", Text: "body"}, fact: domain.Fact{Text: "fact", Evidence: "body", Confidence: 1.1}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &behaviorRepository{}
@@ -106,7 +155,7 @@ func TestFinalizeNewsHashesTextAndPropagatesPersistenceFailure(t *testing.T) {
 	storageErr := errors.New("ClickHouse unavailable")
 	repository := &behaviorRepository{finalizeErr: storageErr}
 	service := NewService(repository, &metricSettingsFake{}, testLimits())
-	_, err := service.FinalizeNews(context.Background(), domain.News{ID: "news-1", SourceID: "source-1", Text: "source text"})
+	_, err := service.FinalizeNews(context.Background(), domain.News{ID: "news-1", SourceID: "22222222-2222-4222-8222-222222222222", Text: "source text"})
 	if !errors.Is(err, storageErr) || repository.finalizedHash == "" || repository.finalizedNews.Text != "source text" {
 		t.Fatalf("FinalizeNews did not pass a text hash and preserve the adapter error: hash=%q news=%#v err=%v", repository.finalizedHash, repository.finalizedNews, err)
 	}
@@ -142,7 +191,7 @@ func TestSaveMetricObservationsRequiresCompanyOwnedMetric(t *testing.T) {
 	metricID := "22222222-2222-4222-8222-222222222222"
 	value, probability := 0.0, 0.7
 	settings := &metricSettingsFake{metrics: []domain.CompanyMetric{{ID: metricID}}}
-	repository := &behaviorRepository{}
+	repository := &behaviorRepository{companyNews: []string{"news-7"}}
 	service := NewService(repository, settings, testLimits())
 	observations := []domain.MetricObservation{{MetricID: metricID, NewsID: "news-7", Value: &value, Probability: &probability}}
 	if err := service.SaveMetricObservations(context.Background(), companyID, observations); err != nil {
@@ -160,6 +209,79 @@ func TestSaveMetricObservationsRequiresCompanyOwnedMetric(t *testing.T) {
 	observations[0].Value = &invalid
 	if err := service.SaveMetricObservations(context.Background(), companyID, observations); !errors.Is(err, ErrInvalidAnalyticsInput) {
 		t.Fatalf("non-finite observation error = %v, want invalid analytics input", err)
+	}
+}
+
+func TestSaveMetricObservationsRejectsUnpersistedOrForeignReferencesAtomically(t *testing.T) {
+	companyID := "11111111-1111-4111-8111-111111111111"
+	otherCompanyID := "33333333-3333-4333-8333-333333333333"
+	metricID := "22222222-2222-4222-8222-222222222222"
+	factID := "44444444-4444-4444-8444-444444444444"
+	newsID := "news-7"
+	value, probability := 1.0, 0.9
+	validNews := domain.NewsReference{ID: newsID, SourceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", SourceURL: "https://example.test/news", MaterialKind: "external_news"}
+	validFact := domain.FactReference{ID: factID, NewsID: newsID}
+	tests := []struct {
+		name         string
+		news         []domain.NewsReference
+		facts        []domain.FactReference
+		companyNews  []string
+		companyFacts []string
+		observations []domain.MetricObservation
+	}{
+		{name: "missing news", news: []domain.NewsReference{}, companyNews: []string{newsID}, observations: []domain.MetricObservation{{MetricID: metricID, NewsID: newsID}}},
+		{name: "news belongs to another company", news: []domain.NewsReference{validNews}, companyNews: []string{}, observations: []domain.MetricObservation{{MetricID: metricID, NewsID: newsID}}},
+		{name: "invented source id", news: []domain.NewsReference{validNews}, companyNews: []string{newsID}, observations: []domain.MetricObservation{{MetricID: metricID, NewsID: newsID, SourceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}}},
+		{name: "fact belongs to another news", news: []domain.NewsReference{validNews}, facts: []domain.FactReference{{ID: factID, NewsID: "other-news"}}, companyNews: []string{newsID}, companyFacts: []string{factID}, observations: []domain.MetricObservation{{MetricID: metricID, NewsID: newsID, SourceFactIDs: []string{factID}}}},
+		{name: "fact not linked to company", news: []domain.NewsReference{validNews}, facts: []domain.FactReference{validFact}, companyNews: []string{newsID}, companyFacts: []string{}, observations: []domain.MetricObservation{{MetricID: metricID, NewsID: newsID, SourceFactIDs: []string{factID}}}},
+		{name: "fact ID not persisted", news: []domain.NewsReference{validNews}, facts: []domain.FactReference{}, companyNews: []string{newsID}, companyFacts: []string{factID}, observations: []domain.MetricObservation{{MetricID: metricID, NewsID: newsID, SourceFactIDs: []string{factID}}}},
+		{name: "company ID mismatch", news: []domain.NewsReference{validNews}, companyNews: []string{newsID}, observations: []domain.MetricObservation{{CompanyID: otherCompanyID, MetricID: metricID, NewsID: newsID}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &behaviorRepository{
+				newsReferences: test.news, factReferences: test.facts,
+				companyNews: test.companyNews, companyFacts: test.companyFacts,
+			}
+			settings := &metricSettingsFake{metrics: []domain.CompanyMetric{{ID: metricID}}}
+			service := NewService(repository, settings, testLimits())
+			observations := append([]domain.MetricObservation(nil), test.observations...)
+			if len(observations) > 0 && observations[0].Value == nil {
+				observations[0].Value, observations[0].Probability = &value, &probability
+			}
+			err := service.SaveMetricObservations(context.Background(), companyID, observations)
+			if !errors.Is(err, ErrInvalidAnalyticsInput) {
+				t.Fatalf("SaveMetricObservations error = %v, want invalid analytics input", err)
+			}
+			if repository.observations != nil {
+				t.Fatalf("invalid references reached persistence: %#v", repository.observations)
+			}
+		})
+	}
+}
+
+func TestSaveMetricObservationsAllowsFactReuseAcrossMetricsAndNormalizesProvenance(t *testing.T) {
+	companyID := "11111111-1111-4111-8111-111111111111"
+	metricIDs := []string{"22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"}
+	factID := "44444444-4444-4444-8444-444444444444"
+	repository := &behaviorRepository{
+		newsReferences: []domain.NewsReference{{ID: "news-7", SourceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", SourceURL: "https://example.test/news", MaterialKind: "external_news"}},
+		factReferences: []domain.FactReference{{ID: factID, NewsID: "news-7"}},
+		companyNews:    []string{"news-7"}, companyFacts: []string{factID},
+	}
+	settings := &metricSettingsFake{metrics: []domain.CompanyMetric{{ID: metricIDs[0]}, {ID: metricIDs[1]}}}
+	service := NewService(repository, settings, testLimits())
+	observations := []domain.MetricObservation{
+		{MetricID: metricIDs[0], NewsID: "news-7", SourceFactIDs: []string{factID}},
+		{MetricID: metricIDs[1], NewsID: "news-7", SourceFactIDs: []string{factID}},
+	}
+	if err := service.SaveMetricObservations(context.Background(), companyID, observations); err != nil {
+		t.Fatalf("same supported fact could not support multiple metrics: %v", err)
+	}
+	for _, observation := range repository.observations {
+		if observation.SourceID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" || observation.SourceURL != "https://example.test/news" || observation.MaterialKind != "external_news" {
+			t.Fatalf("observation provenance was not copied from persisted news: %#v", observation)
+		}
 	}
 }
 
