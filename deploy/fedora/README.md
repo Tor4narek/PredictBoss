@@ -64,5 +64,9 @@ Verify the Fedora SSH host key out of band before trusting it. The GitHub secret
 | `FEDORA_USER` | Dedicated deployment account, such as `guest` |
 | `FEDORA_SSH_KEY` | Contents of `predictboss_deploy` (private key) |
 | `FEDORA_KNOWN_HOSTS` | Verified `known_hosts` entry for `FEDORA_HOST` |
+| `PRODUCTION_ENV_FILE` | Full production `.env` contents in dotenv format (multiline secret) |
+| `LLM_API_KEY` | Current LLM provider API key; kept separate for rotation |
 
-After the first successful manual deployment and Actions secret setup, each push to `main` runs the deployment. The workflow keeps one deployment active at a time and never uploads `.env` or the company CSV to GitHub.
+Before every deployment, the workflow writes `$HOME/predictboss/.env` over the verified SSH connection with file mode `600`. Put the stable production settings and credentials in `PRODUCTION_ENV_FILE`, replacing placeholders and local defaults. Keep `LLM_API_KEY` out of that file; the workflow adds its value from the separate secret of the same name. Set `DOMAIN_CSV_PATH` to the absolute CSV path on Fedora (for example `/home/guest/predictboss-data/df_Uid_data_hack.csv`); the CSV itself stays on the server and is never sent to GitHub. Keep `SWAGGER_ENABLED=false` and `HOST_BIND_ADDRESS=127.0.0.1`.
+
+After the first successful manual deployment and Actions secret setup, each push to `main` composes the server `.env` from `PRODUCTION_ENV_FILE` and `LLM_API_KEY`, then runs the deployment. The workflow keeps one deployment active at a time. Update the LLM credential by changing only the `LLM_API_KEY` GitHub secret; update other production settings through `PRODUCTION_ENV_FILE`. Each deployment replaces the server `.env` with the current composed values.

@@ -36,10 +36,22 @@ jobs:
         env:
           FEDORA_HOST: ${{ secrets.FEDORA_HOST }}
           FEDORA_USER: ${{ secrets.FEDORA_USER }}
+          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
           set -euo pipefail
           test -n "$FEDORA_HOST"
           test -n "$FEDORA_USER"
+          test -n "$PRODUCTION_ENV_FILE"
+          test -n "$LLM_API_KEY"
+          {
+            printf '%s' "$PRODUCTION_ENV_FILE" | awk -F= '$1 != "LLM_API_KEY"'
+            printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY"
+          } | ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$FEDORA_USER@$FEDORA_HOST" \
+            'umask 077; mkdir -p "$HOME/predictboss"; tmp="$HOME/predictboss/.env.tmp"; cat > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$HOME/predictboss/.env"'
           ssh -i "$HOME/.ssh/id_ed25519" \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
