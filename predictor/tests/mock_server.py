@@ -12,6 +12,7 @@ BANK_SOURCE_ID = "33333333-3333-4333-8333-333333333333"
 
 RUNS = {}
 IDEMPOTENCY = {}
+REQUESTS = []
 LOCK = threading.Lock()
 RUN_SEQUENCE = 0
 
@@ -43,6 +44,12 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 runs = [dict(run_id=run_id, **run) for run_id, run in RUNS.items()]
             self.send_json(200, {"runs": runs})
+            return
+
+        if path == "/test/requests":
+            with LOCK:
+                requests = list(REQUESTS)
+            self.send_json(200, {"requests": requests})
             return
 
         if path.startswith("/v1/runs/"):
@@ -125,10 +132,16 @@ class Handler(BaseHTTPRequestHandler):
                 output = json.dumps({"status": "completed", "mock": True})
             RUNS[run_id] = {
                 "output": output,
+                "status": agent_input.get("mock_status", "completed"),
                 "input": agent_input,
                 "instructions": request.get("instructions", ""),
                 "conversation_history": request.get("conversation_history", []),
             }
+            REQUESTS.append({
+                "instance_id": os.environ.get("MOCK_INSTANCE_ID", "mock"),
+                "run_id": run_id,
+                "idempotency_key": key,
+            })
             if key:
                 IDEMPOTENCY[key] = run_id
         self.send_json(202, {"run_id": run_id})

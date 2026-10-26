@@ -70,7 +70,7 @@ wait_until_value() {
   return 1
 }
 
-"${compose[@]}" stop esb
+"${compose[@]}" stop esb esb-secondary
 
 clickhouse_exec --multiquery <<SQL
 INSERT INTO default.news (news_id, source_id, source_url, inserted_at, material_kind, media_type, title, published_at)
@@ -126,7 +126,7 @@ INSERT INTO agent_conversations (conversation_id, agent_type, scope_id, created_
 ('${unknown_conversation}', 'kesha', 'cleanup-unknown-company', now() - INTERVAL '2 days', now() - INTERVAL '2 days');
 INSERT INTO agent_calls (call_id, conversation_id, agent_type, request_json, hermes_run_id, idempotency_key, status, retry_count, created_at, updated_at) VALUES
 ('${failed_news_call}', '${failed_news_conversation}', 'serezha', '{"news_id":"${unprocessed_news_id}","source_id":"${cleanup_source_id}","news_text":"unprocessed fixture text"}'::jsonb, NULL, 'cleanup-news-idempotency', 'failed', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
-('${retry_call}', '${retry_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb, 'cleanup-failed-run', NULL, 'running', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
+('${retry_call}', '${retry_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb, 'cleanup-failed-run', 'cleanup-retry-idempotency', 'running', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
 ('${submission_call}', '${submission_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb, NULL, 'cleanup-submission-idempotency', 'submitting', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
 ('${saveliy_call}', '${saveliy_conversation}', 'saveliy', '{"company_id":"${cleanup_company_id}"}'::jsonb, NULL, NULL, 'completed', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
 ('${konstantin_call}', '${konstantin_conversation}', 'konstantin', '{"company_id":"${cleanup_company_id}"}'::jsonb, NULL, 'cleanup-konstantin-idempotency', 'completed', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
@@ -188,7 +188,11 @@ for _ in $(seq 1 120); do
   fi
   sleep 0.25
 done
-[[ "$retry_state" == "completed:1" ]] || { echo "stale Hermes failure was not retried once" >&2; exit 1; }
+if [[ "$retry_state" != "completed:1" ]]; then
+  call_state="$(postgres_value "SELECT status || ':' || retry_count || ':' || COALESCE(runtime_instance_id, '') || ':' || COALESCE(hermes_run_id, '') FROM agent_calls WHERE call_id = '${retry_call}'")"
+  echo "stale Hermes failure was not retried once (observed=$retry_state call_state=$call_state)" >&2
+  exit 1
+fi
 [[ "$submission_state" == "completed" ]] || { echo "stale submission without a run ID was not recovered" >&2; exit 1; }
 [[ "$(postgres_value "SELECT status FROM agent_calls WHERE call_id = '${unknown_active_call}'")" == "running" ]] || { echo "unknown active Hermes status was modified" >&2; exit 1; }
 [[ "$(postgres_value "SELECT count(*) FROM agent_calls WHERE call_id = '${saveliy_call}'")" == "0" ]] || { echo "expired unreferenced call record was not deleted" >&2; exit 1; }

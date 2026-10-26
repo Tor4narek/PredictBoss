@@ -756,6 +756,222 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	}
 }
 
+func TestRuntimePoolReservationsAcrossESBReplicas(t *testing.T) {
+	primaryESB := strings.TrimRight(os.Getenv("ESB_E2E_BASE_URL"), "/")
+	if primaryESB == "" {
+		primaryESB = "http://127.0.0.1:18081"
+	}
+	secondaryESB := strings.TrimRight(os.Getenv("ESB_E2E_SECONDARY_BASE_URL"), "/")
+	primaryMock := strings.TrimRight(os.Getenv("ESB_E2E_MOCK_PRIMARY_URL"), "/")
+	secondaryMock := strings.TrimRight(os.Getenv("ESB_E2E_MOCK_SECONDARY_URL"), "/")
+	if secondaryESB == "" || primaryMock == "" || secondaryMock == "" {
+		t.Skip("the two-runtime, two-ESB test requires both ESB and mock runtime endpoints")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	waitForHealth(t, client, primaryESB)
+	waitForHealth(t, client, secondaryESB)
+
+	callIDs := make([]string, 0, 5)
+	activeRequests := make([]mockRunRequest, 0, 4)
+	for sequence := 1; sequence <= 4; sequence++ {
+		key := fmt.Sprintf("runtime-pool-%d", sequence)
+		companyID := fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012x", sequence)
+		endpoint := primaryESB
+		if sequence%2 == 0 {
+			endpoint = secondaryESB
+		}
+		call := startHeldSaveliyCall(t, client, endpoint, key, companyID)
+		callIDs = append(callIDs, call.callID)
+		assertCallHasNoRuntimeDetails(t, call.body)
+		activeRequests = append(activeRequests, waitForMockRequest(t, client, []string{primaryMock, secondaryMock}, call.callID))
+	}
+	primarySlots, secondarySlots := 0, 0
+	for _, request := range activeRequests {
+		if request.instance == "primary" {
+			primarySlots++
+		} else if request.instance == "secondary" {
+			secondarySlots++
+		}
+	}
+	if primarySlots != 2 || secondarySlots != 2 {
+		t.Fatalf("runtime pool assignment counts = primary:%d secondary:%d, want two each", primarySlots, secondarySlots)
+	}
+	third := startHeldSaveliyCall(t, client, primaryESB, "runtime-pool-5", "aaaaaaaa-0000-4000-8000-000000000005")
+	callIDs = append(callIDs, third.callID)
+	assertCallHasNoRuntimeDetails(t, third.body)
+	assertCallRemainsQueued(t, client, primaryESB, third.callID, []string{primaryMock, secondaryMock}, third.callID)
+
+	for _, request := range activeRequests {
+		completeMockRun(t, client, request.baseURL, request.runID)
+	}
+	for _, callID := range callIDs[:4] {
+		waitForCall(t, client, primaryESB, "saveliy", callID)
+	}
+	thirdRequest := waitForMockRequest(t, client, []string{primaryMock, secondaryMock}, third.callID)
+	completeMockRun(t, client, thirdRequest.baseURL, thirdRequest.runID)
+	waitForCall(t, client, primaryESB, "saveliy", third.callID)
+}
+
+type mockRunRequest struct {
+	baseURL  string
+	instance string
+	runID    string
+}
+
+type heldCall struct {
+	callID string
+	body   map[string]any
+}
+
+func startHeldSaveliyCall(t *testing.T, client *http.Client, baseURL, key, companyID string) heldCall {
+	t.Helper()
+	body := map[string]any{"company_id": companyID, "news_id": "bbbbbbbb-0000-4000-8000-000000000001", "mock_status": "running"}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/call?agent=saveliy", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", key)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("start held Saveliy call through ESB: %v", err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := responseBody(t, response.StatusCode, data)
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("held Saveliy call returned %d, want 202: %s", response.StatusCode, data)
+	}
+	return heldCall{callID: stringField(t, result, "call_id"), body: result}
+}
+
+func responseBody(t *testing.T, status int, data []byte) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("decode HTTP %d JSON response: %v", status, err)
+	}
+	return body
+}
+
+func assertCallHasNoRuntimeDetails(t *testing.T, body map[string]any) {
+	t.Helper()
+	for _, key := range []string{"runtime_instance_id", "runtimeInstanceId", "runtime_url", "runtimeUrl"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("public /call response unexpectedly exposed %s", key)
+		}
+	}
+}
+
+func waitForMockRequest(t *testing.T, client *http.Client, mockURLs []string, idempotencyKey string) mockRunRequest {
+	t.Helper()
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, baseURL := range mockURLs {
+			result := readMockRequests(t, client, baseURL)
+			for _, request := range result {
+				if request.key == idempotencyKey {
+					return mockRunRequest{baseURL: baseURL, instance: request.instance, runID: request.runID}
+				}
+			}
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("Hermes mocks did not receive idempotency key %q", idempotencyKey)
+		case <-ticker.C:
+		}
+	}
+}
+
+type mockRequestRecord struct {
+	key      string
+	instance string
+	runID    string
+}
+
+func readMockRequests(t *testing.T, client *http.Client, baseURL string) []mockRequestRecord {
+	t.Helper()
+	response, err := client.Get(baseURL + "/test/requests")
+	if err != nil {
+		t.Fatalf("read Hermes mock request list: %v", err)
+	}
+	defer response.Body.Close()
+	var result struct {
+		Requests []struct {
+			InstanceID     string `json:"instance_id"`
+			RunID          string `json:"run_id"`
+			IdempotencyKey string `json:"idempotency_key"`
+		} `json:"requests"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode Hermes mock request list: %v", err)
+	}
+	requests := make([]mockRequestRecord, 0, len(result.Requests))
+	for _, request := range result.Requests {
+		requests = append(requests, mockRequestRecord{key: request.IdempotencyKey, instance: request.InstanceID, runID: request.RunID})
+	}
+	return requests
+}
+
+func assertCallRemainsQueued(t *testing.T, client *http.Client, baseURL, callID string, mockURLs []string, key string) {
+	t.Helper()
+	deadline := time.NewTimer(500 * time.Millisecond)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		result := assertRequest(t, client, baseURL, http.MethodGet, "/call?agent=saveliy", map[string]any{"call_id": callID}, true, http.StatusOK, "")
+		if stringField(t, result.body, "status") != "queued" {
+			t.Fatalf("third call status = %q while both runtime slots are occupied, want queued", result.body["status"])
+		}
+		for _, mockURL := range mockURLs {
+			for _, request := range readMockRequests(t, client, mockURL) {
+				if request.key == key {
+					t.Fatalf("runtime accepted third call while both slots were occupied")
+				}
+			}
+		}
+		select {
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func completeMockRun(t *testing.T, client *http.Client, baseURL, runID string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"run_id": runID, "status": "completed", "output": `{"ok":true}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/test/runs", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("complete Hermes mock run: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("complete Hermes mock run returned %d: %s", response.StatusCode, data)
+	}
+}
+
 func valeraPayload(revision int) map[string]any {
 	return map[string]any{
 		"companyId": companyID, "profileRevision": revision,

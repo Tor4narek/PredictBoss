@@ -50,6 +50,7 @@ services:
     command: ["python", "/app/mock_server.py"]
     environment:
       MOCK_PORT: "8090"
+      MOCK_INSTANCE_ID: "primary"
     ports:
       - "18090:8090"
     volumes:
@@ -60,7 +61,23 @@ services:
       timeout: 3s
       retries: 40
 
-  esb:
+  mock-runtime-secondary:
+    image: python:3.12-alpine
+    command: ["python", "/app/mock_server.py"]
+    environment:
+      MOCK_PORT: "8091"
+      MOCK_INSTANCE_ID: "secondary"
+    ports:
+      - "18091:8091"
+    volumes:
+      - ./mock_server.py:/app/mock_server.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  esb: &esb-service
     image: predictor-esb-e2e:local
     build:
       context: ../..
@@ -71,10 +88,11 @@ services:
       ESB_API_KEY: test-esb-api-key
       HERMES_API_KEY: test-hermes-api-key
       HERMES_SEREZHA_URL: http://mock-runtime:8090
-      HERMES_SAVELIY_URL: http://mock-runtime:8090
       HERMES_VALERA_URL: http://mock-runtime:8090
       HERMES_KESHA_URL: http://mock-runtime:8090
       HERMES_KONSTANTIN_URL: http://mock-runtime:8090
+      HERMES_SAVELIY_INSTANCES: "saveliy-primary=available@http://mock-runtime:8090;saveliy-secondary=available@http://mock-runtime-secondary:8091"
+      AGENT_SAVELIY_MAX_CONCURRENT_RUNS: "2"
       HERMES_POLL_INTERVAL: 50ms
       CLEANUP_ENABLED: ${E2E_CLEANUP_ENABLED:-false}
       CLEANUP_STATUS_CHECK_INTERVAL: ${E2E_CLEANUP_STATUS_INTERVAL:-1h}
@@ -123,6 +141,8 @@ services:
         condition: service_healthy
       mock-runtime:
         condition: service_healthy
+      mock-runtime-secondary:
+        condition: service_healthy
       minio:
         condition: service_healthy
     healthcheck:
@@ -130,6 +150,11 @@ services:
       interval: 2s
       timeout: 3s
       retries: 40
+
+  esb-secondary:
+    <<: *esb-service
+    ports:
+      - "18082:8081"
 
   atlas-postgres:
     image: arigaio/atlas:latest
