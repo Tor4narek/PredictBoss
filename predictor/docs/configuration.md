@@ -22,16 +22,21 @@
 | `FACTS_MAX_PAGE_SIZE` | integer | 100 | facts; 1…100000 | Maximum facts returned by one paged facts query. |
 | `FACTS_MAX_PERIOD_DAYS` | integer | 90 | days; 1…3650 | Maximum allowed time span for a filtered facts query. |
 | `HERMES_HEALTH_TIMEOUT` | duration | 2s | duration; 1ms…1m0s | Per-agent readiness probe timeout. |
-| `HERMES_KESHA_URL` | string | required | —; not validated | Kesha Hermes runtime URL; Compose supplies its service URL. |
-| `HERMES_KONSTANTIN_URL` | string | required | —; not validated | Konstantin Hermes runtime URL; Compose supplies its service URL. |
+| `HERMES_KESHA_INSTANCES` | string | empty / unset | —; not validated | Named Kesha runtime pool as id=state@url entries separated by semicolons. |
+| `HERMES_KESHA_URL` | string | empty / unset | —; not validated | Legacy single Kesha Hermes URL; use HERMES_KESHA_INSTANCES for a pool. |
+| `HERMES_KONSTANTIN_INSTANCES` | string | empty / unset | —; not validated | Named Konstantin runtime pool as id=state@url entries separated by semicolons. |
+| `HERMES_KONSTANTIN_URL` | string | empty / unset | —; not validated | Legacy single Konstantin Hermes URL; use HERMES_KONSTANTIN_INSTANCES for a pool. |
 | `HERMES_MAX_RESPONSE_BYTES` | integer (int64) | 1048576 | bytes; 1024…16777216 | Maximum response body size accepted from Hermes. |
 | `HERMES_POLL_INTERVAL` | duration | 2s | interval; 1ms…10m0s | Queue dispatch and Hermes status polling interval. |
 | `HERMES_REQUEST_TIMEOUT` | duration | 45s | duration; 1ms…10m0s | HTTP client timeout for Hermes run, status, and health requests. |
 | `HERMES_RETRY_BASE_DELAY` | duration | 1s | duration; 0s…5m0s | Base delay between Hermes submission retries; retry delay grows linearly by attempt. |
 | `HERMES_RETRY_MAX_ATTEMPTS` | integer | 5 | attempts; 1…20 | Total attempts to submit a run to Hermes, including the first attempt. |
-| `HERMES_SAVELIY_URL` | string | required | —; not validated | Saveliy Hermes runtime URL; Compose supplies its service URL. |
-| `HERMES_SEREZHA_URL` | string | required | —; not validated | Serezha Hermes runtime URL; Compose supplies its service URL. |
-| `HERMES_VALERA_URL` | string | required | —; not validated | Valera Hermes runtime URL; Compose supplies its service URL. |
+| `HERMES_SAVELIY_INSTANCES` | string | empty / unset | —; not validated | Named Saveliy runtime pool as id=state@url entries separated by semicolons. |
+| `HERMES_SAVELIY_URL` | string | empty / unset | —; not validated | Legacy single Saveliy Hermes URL; use HERMES_SAVELIY_INSTANCES for a pool. |
+| `HERMES_SEREZHA_INSTANCES` | string | empty / unset | —; not validated | Named Serezha runtime pool as id=state@url entries separated by semicolons. |
+| `HERMES_SEREZHA_URL` | string | empty / unset | —; not validated | Legacy single Serezha Hermes URL; use HERMES_SEREZHA_INSTANCES for a pool. |
+| `HERMES_VALERA_INSTANCES` | string | empty / unset | —; not validated | Named Valera runtime pool as id=state@url entries separated by semicolons. |
+| `HERMES_VALERA_URL` | string | empty / unset | —; not validated | Legacy single Valera Hermes URL; use HERMES_VALERA_INSTANCES for a pool. |
 | `HTTP_ADDR` | string | :8081 | —; not validated | ESB listen address inside its network namespace. |
 | `HTTP_IDLE_TIMEOUT` | duration | 1m0s | duration; 1ms…24h0m0s | HTTP server timeout for idle keep-alive connections. |
 | `HTTP_MAX_JSON_BODY_BYTES` | integer (int64) | 2097152 | bytes; 1024…67108864 | Maximum JSON request body accepted by HTTP endpoints. |
@@ -57,23 +62,23 @@
 | `WS_READ_TIMEOUT` | duration | 0s | duration; 0s…1h0m0s | Maximum idle time waiting for one WebSocket frame; zero keeps subscriptions open indefinitely. |
 | `WS_WRITE_TIMEOUT` | duration | 15s | duration; 1ms…10m0s | Maximum time to write one WebSocket frame. |
 | `HERMES_MODEL_PROVIDER` | string | custom | —; not validated | Shared Hermes model-provider identifier for all agents. |
-| `AGENT_KESHA_MAX_CONCURRENT_RUNS` | integer | 0 | runs; 0…100000 | KESHA Hermes concurrent-run limit; zero disables the gateway cap. |
+| `AGENT_KESHA_MAX_CONCURRENT_RUNS` | integer | 1 | runs; 1…100000 | KESHA maximum concurrent runs per Hermes instance; values below one are rejected. |
 | `AGENT_KESHA_MAX_TURNS` | integer | 12 | turns; 1…1000 | KESHA Hermes maximum turns per run. |
 | `AGENT_KESHA_MODEL_ID` | string | google/gemma-4-26b-a4b-it | —; not validated | KESHA model identifier sent to the configured provider. |
 | `AGENT_KESHA_REASONING_EFFORT` | string | low | —; not validated | KESHA Hermes reasoning-effort setting supported by its model/provider. |
-| `AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS` | integer | 0 | runs; 0…100000 | KONSTANTIN Hermes concurrent-run limit; zero disables the gateway cap. |
+| `AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS` | integer | 1 | runs; 1…100000 | KONSTANTIN maximum concurrent runs per Hermes instance; values below one are rejected. |
 | `AGENT_KONSTANTIN_MAX_TURNS` | integer | 12 | turns; 1…1000 | KONSTANTIN Hermes maximum turns per run. |
 | `AGENT_KONSTANTIN_MODEL_ID` | string | google/gemma-4-26b-a4b-it | —; not validated | KONSTANTIN model identifier sent to the configured provider. |
 | `AGENT_KONSTANTIN_REASONING_EFFORT` | string | low | —; not validated | KONSTANTIN Hermes reasoning-effort setting supported by its model/provider. |
-| `AGENT_SAVELIY_MAX_CONCURRENT_RUNS` | integer | 0 | runs; 0…100000 | SAVELIY Hermes concurrent-run limit; zero disables the gateway cap. |
+| `AGENT_SAVELIY_MAX_CONCURRENT_RUNS` | integer | 1 | runs; 1…100000 | SAVELIY maximum concurrent runs per Hermes instance; values below one are rejected. |
 | `AGENT_SAVELIY_MAX_TURNS` | integer | 8 | turns; 1…1000 | SAVELIY Hermes maximum turns per run. |
 | `AGENT_SAVELIY_MODEL_ID` | string | google/gemma-4-26b-a4b-it | —; not validated | SAVELIY model identifier sent to the configured provider. |
 | `AGENT_SAVELIY_REASONING_EFFORT` | string | low | —; not validated | SAVELIY Hermes reasoning-effort setting supported by its model/provider. |
-| `AGENT_SEREZHA_MAX_CONCURRENT_RUNS` | integer | 0 | runs; 0…100000 | SEREZHA Hermes concurrent-run limit; zero disables the gateway cap. |
+| `AGENT_SEREZHA_MAX_CONCURRENT_RUNS` | integer | 1 | runs; 1…100000 | SEREZHA maximum concurrent runs per Hermes instance; values below one are rejected. |
 | `AGENT_SEREZHA_MAX_TURNS` | integer | 8 | turns; 1…1000 | SEREZHA Hermes maximum turns per run. |
 | `AGENT_SEREZHA_MODEL_ID` | string | google/gemma-4-26b-a4b-it | —; not validated | SEREZHA model identifier sent to the configured provider. |
 | `AGENT_SEREZHA_REASONING_EFFORT` | string | low | —; not validated | SEREZHA Hermes reasoning-effort setting supported by its model/provider. |
-| `AGENT_VALERA_MAX_CONCURRENT_RUNS` | integer | 0 | runs; 0…100000 | VALERA Hermes concurrent-run limit; zero disables the gateway cap. |
+| `AGENT_VALERA_MAX_CONCURRENT_RUNS` | integer | 1 | runs; 1…100000 | VALERA maximum concurrent runs per Hermes instance; values below one are rejected. |
 | `AGENT_VALERA_MAX_TURNS` | integer | 10 | turns; 1…1000 | VALERA Hermes maximum turns per run. |
 | `AGENT_VALERA_MODEL_ID` | string | google/gemma-4-26b-a4b-it | —; not validated | VALERA model identifier sent to the configured provider. |
 | `AGENT_VALERA_REASONING_EFFORT` | string | low | —; not validated | VALERA Hermes reasoning-effort setting supported by its model/provider. |
@@ -120,7 +125,6 @@
 | `POSTGRES_PASSWORD` | string | placeholder в `predictor/example.env` | —; not validated | Local Compose PostgreSQL password; replace for private deployments. |
 | `S3_ACCESS_KEY_ID` | string | empty / unset | —; not validated | Optional static S3 access key; pair with S3_SECRET_ACCESS_KEY. |
 | `S3_SECRET_ACCESS_KEY` | string | empty / unset | —; not validated | Optional static S3 secret key; pair with S3_ACCESS_KEY_ID. |
-| `ATLAS_IMAGE` | string | arigaio/atlas:latest | —; not validated | Image used to run PostgreSQL and ClickHouse migrations. |
 | `CLICKHOUSE_HEALTHCHECK_INTERVAL` | duration | 5s | duration; 1ms…1h0m0s | ClickHouse container healthcheck interval in Compose. |
 | `CLICKHOUSE_HEALTHCHECK_RETRIES` | integer | 20 | retries; 1…100 | Consecutive ClickHouse healthcheck failures before the container is unhealthy. |
 | `CLICKHOUSE_HEALTHCHECK_TIMEOUT` | duration | 3s | duration; 1ms…1h0m0s | ClickHouse container healthcheck command timeout in Compose. |
@@ -133,7 +137,6 @@
 | `MINIO_HEALTHCHECK_INTERVAL` | duration | 3s | duration; 1ms…1h0m0s | MinIO container healthcheck interval in Compose. |
 | `MINIO_HEALTHCHECK_RETRIES` | integer | 30 | retries; 1…100 | Consecutive MinIO healthcheck failures before the container is unhealthy. |
 | `MINIO_HEALTHCHECK_TIMEOUT` | duration | 2s | duration; 1ms…1h0m0s | MinIO container healthcheck command timeout in Compose. |
-| `MINIO_IMAGE` | string | dappros/minio:RELEASE.2025-09-07T16-13-09Z | —; not validated | Image used for the local S3-compatible MinIO service. |
 | `POSTGRES_DB` | string | predictor | —; not validated | Database name for the PostgreSQL Compose service. |
 | `POSTGRES_HEALTHCHECK_INTERVAL` | duration | 5s | duration; 1ms…1h0m0s | PostgreSQL container healthcheck interval in Compose. |
 | `POSTGRES_HEALTHCHECK_RETRIES` | integer | 20 | retries; 1…100 | Consecutive PostgreSQL healthcheck failures before the container is unhealthy. |
@@ -147,5 +150,7 @@
 ## Настройки агентов
 
 У всех агентов общий `HERMES_MODEL_PROVIDER` и `LLM_API_KEY`. Модель и runtime-лимиты задаются в env отдельно для агента. Остальная структура и полномочия находятся в `predictor/agents/<type>/hermes.yaml`; роль и сжатие контекста — в `agent.json` и `skills/`.
+
+`HERMES_<TYPE>_INSTANCES` задаёт runtime-пул в формате `id=state@url;id=state@url`; состояния: `available`, `draining`, `unavailable`. `AGENT_<TYPE>_MAX_CONCURRENT_RUNS` — лимит одновременных вызовов на один runtime. Все ESB-процессы должны использовать одинаковую конфигурацию пула. PostgreSQL сохраняет runtime каждого вызова и координирует резервирование слотов между ESB-репликами. Удаляйте runtime ID только после завершения закреплённых за ним вызовов. `HERMES_<TYPE>_URL` поддерживается для совместимости с одиночным runtime.
 
 `context_policy.max_history_messages=0` отключает передачу истории модели. Хранение полной истории и резюме PostgreSQL задаётся независимо через `CLEANUP_MESSAGES_RETENTION_<TYPE>` и `CLEANUP_CONTEXT_SUMMARY_RETENTION`.

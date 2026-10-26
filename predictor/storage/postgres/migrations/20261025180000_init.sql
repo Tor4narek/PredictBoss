@@ -16,7 +16,10 @@ CREATE TABLE agent_calls (
     conversation_id UUID NOT NULL REFERENCES agent_conversations(conversation_id),
     agent_type TEXT NOT NULL CHECK (agent_type IN ('serezha', 'saveliy', 'valera', 'kesha', 'konstantin')),
     request_json JSONB NOT NULL,
-    hermes_run_id TEXT UNIQUE,
+    hermes_run_id TEXT,
+    runtime_instance_id TEXT,
+    CONSTRAINT agent_calls_runtime_run_id_unique
+        UNIQUE (agent_type, runtime_instance_id, hermes_run_id),
     idempotency_key TEXT UNIQUE,
     status TEXT NOT NULL CHECK (status IN ('queued', 'submitting', 'started', 'running', 'processing', 'completed', 'failed', 'cancelled', 'interrupted')),
     output TEXT,
@@ -29,6 +32,11 @@ CREATE TABLE agent_calls (
 CREATE INDEX agent_calls_active_idx
     ON agent_calls (created_at)
     WHERE status IN ('queued', 'submitting', 'started', 'running', 'processing');
+
+CREATE INDEX agent_calls_runtime_active_idx
+    ON agent_calls (agent_type, runtime_instance_id, status)
+    WHERE runtime_instance_id IS NOT NULL
+      AND status IN ('submitting', 'started', 'running', 'processing');
 
 CREATE UNIQUE INDEX agent_calls_one_active_per_conversation_idx
     ON agent_calls (conversation_id)

@@ -3,6 +3,7 @@
   "scope_field": "company_id",
   "skill_file": "skills/kesha-company-metrics/SKILL.md",
   "runtime_url_env": "HERMES_KESHA_URL",
+  "runtime_instances_env": "HERMES_KESHA_INSTANCES",
   "required_fields": [],
   "context_policy": {
     "compress_after_messages": 40,

@@ -3,6 +3,7 @@
   "scope_field": "news_id",
   "skill_file": "skills/serezha-news-facts/SKILL.md",
   "runtime_url_env": "HERMES_SEREZHA_URL",
+  "runtime_instances_env": "HERMES_SEREZHA_INSTANCES",
   "required_fields": [
     "source_id",
     "news_text"

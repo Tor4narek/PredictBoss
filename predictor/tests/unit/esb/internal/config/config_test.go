@@ -68,6 +68,75 @@ func TestLoadDefaultsAndAgentHistoryFromAgentFiles(t *testing.T) {
 		if agent.MaxHistory != wantHistory[string(agent.Type)] {
 			t.Errorf("%s max history = %d, want %d", agent.Type, agent.MaxHistory, wantHistory[string(agent.Type)])
 		}
+		if len(agent.RuntimeInstances) != 1 || agent.RuntimeInstances[0].ID != "default" || agent.RuntimeInstances[0].MaxConcurrentRuns != 1 {
+			t.Errorf("%s runtime defaults = %#v, want one default instance with cap 1", agent.Type, agent.RuntimeInstances)
+		}
+	}
+}
+
+func TestLoadParsesRuntimePoolsAndPerInstanceCapacity(t *testing.T) {
+	values := testEnvironment(t)
+	delete(values, "HERMES_SAVELIY_URL")
+	values["HERMES_SAVELIY_INSTANCES"] = "first=available@http://127.0.0.1:9101;second=draining@http://127.0.0.1:9102"
+	values["AGENT_SAVELIY_MAX_CONCURRENT_RUNS"] = "3"
+
+	cfg, err := LoadFrom(testLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saveliy domain.Agent
+	for _, agent := range cfg.Agents {
+		if agent.Type == domain.AgentSaveliy {
+			saveliy = agent
+		}
+	}
+	if len(saveliy.RuntimeInstances) != 2 {
+		t.Fatalf("Saveliy runtime pool = %#v, want two instances", saveliy.RuntimeInstances)
+	}
+	if first, ok := saveliy.ForRuntime("first"); !ok || first.RuntimeURL != "http://127.0.0.1:9101" {
+		t.Fatalf("ForRuntime(first) = (%#v, %t)", first, ok)
+	}
+	if saveliy.RuntimeInstances[1].State != domain.RuntimeDraining || saveliy.RuntimeInstances[1].MaxConcurrentRuns != 3 {
+		t.Fatalf("second runtime config = %#v", saveliy.RuntimeInstances[1])
+	}
+}
+
+func TestLoadRejectsInvalidRuntimePoolConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		pool      string
+		limit     string
+		legacyURL bool
+	}{
+		{name: "empty entry", pool: "first=available@http://127.0.0.1:9001;"},
+		{name: "duplicate IDs", pool: "same=available@http://127.0.0.1:9001;same=available@http://127.0.0.1:9002"},
+		{name: "duplicate URLs", pool: "one=available@http://127.0.0.1:9001;two=available@http://127.0.0.1:9001"},
+		{name: "invalid state", pool: "one=paused@http://127.0.0.1:9001"},
+		{name: "credentials in URL", pool: "one=available@http://user:pass@127.0.0.1:9001"},
+		{name: "zero instance cap", pool: "one=available@http://127.0.0.1:9001", limit: "0"},
+		{name: "legacy and pool both set", pool: "one=available@http://127.0.0.1:9001", legacyURL: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			values := testEnvironment(t)
+			values["HERMES_SAVELIY_INSTANCES"] = test.pool
+			if !test.legacyURL {
+				delete(values, "HERMES_SAVELIY_URL")
+			}
+			if test.limit != "" {
+				values["AGENT_SAVELIY_MAX_CONCURRENT_RUNS"] = test.limit
+			}
+			if _, err := LoadFrom(testLookup(values)); err == nil {
+				t.Fatal("LoadFrom accepted an invalid runtime pool")
+			}
+		})
+	}
+}
+
+func TestImageTagsAreNotEnvironmentSettings(t *testing.T) {
+	for _, setting := range Definitions() {
+		if strings.HasSuffix(setting.Name, "_IMAGE") {
+			t.Errorf("image setting %s should be owned by Docker Compose", setting.Name)
+		}
 	}
 }
 
@@ -394,6 +463,9 @@ func TestSettingsCatalogMatchesEnvExampleAndCompose(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, setting := range Definitions() {
+		if strings.HasPrefix(setting.Purpose, "Legacy single ") {
+			continue
+		}
 		if setting.Category == "test" {
 			referenced := strings.Contains(string(e2eCompose), setting.Name) || strings.Contains(string(e2eTest), setting.Name)
 			if !referenced {

@@ -114,13 +114,23 @@ func (s *Service) Run(ctx context.Context) {
 }
 
 func (s *Service) dispatchQueued(ctx context.Context) {
-	calls, err := s.repository.ClaimQueued(ctx, s.settings.DispatchBatchSize)
+	var queued []domain.Call
+	var err error
+	if repository, ok := s.repository.(domain.RuntimeCallRepository); ok {
+		var instances []domain.RuntimeInstance
+		for _, agent := range s.agents {
+			instances = append(instances, agent.RuntimeInstances...)
+		}
+		queued, err = repository.ClaimQueuedForRuntimes(ctx, s.settings.DispatchBatchSize, instances)
+	} else {
+		queued, err = s.repository.ClaimQueued(ctx, s.settings.DispatchBatchSize)
+	}
 	if err != nil {
 		log.Printf("call queue claim failed (error_type=%T)", err)
 		return
 	}
-	s.submitWorkers.Add(len(calls))
-	for _, call := range calls {
+	s.submitWorkers.Add(len(queued))
+	for _, call := range queued {
 		call := call
 		go func() {
 			defer s.submitWorkers.Done()
@@ -133,6 +143,11 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 	agent, ok := s.agents[call.Agent]
 	if !ok {
 		s.failCall(ctx, call, "unknown_agent")
+		return
+	}
+	agent, ok = agent.ForRuntime(call.RuntimeInstanceID)
+	if !ok {
+		s.failCall(ctx, call, "hermes_runtime_instance_missing")
 		return
 	}
 	history := s.contextForCall(ctx, call, agent)
@@ -178,6 +193,11 @@ func (s *Service) pollActive(ctx context.Context) {
 		if !ok || call.HermesRunID == nil {
 			continue
 		}
+		agent, ok = agent.ForRuntime(call.RuntimeInstanceID)
+		if !ok {
+			log.Printf("active call runtime is not configured (call_id=%s agent=%s runtime_instance_id=%s)", call.ID, call.Agent, call.RuntimeInstanceID)
+			continue
+		}
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
@@ -216,6 +236,11 @@ func (s *Service) ReconcileStale(ctx context.Context, queuedBefore, runningBefor
 		call := call
 		agent, exists := s.agents[call.Agent]
 		if !exists || call.HermesRunID == nil {
+			continue
+		}
+		agent, exists = agent.ForRuntime(call.RuntimeInstanceID)
+		if !exists {
+			log.Printf("stale call runtime is not configured (call_id=%s agent=%s runtime_instance_id=%s)", call.ID, call.Agent, call.RuntimeInstanceID)
 			continue
 		}
 		wait.Add(1)

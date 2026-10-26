@@ -23,13 +23,46 @@ const (
 )
 
 type Agent struct {
-	Type           AgentType
-	ScopeField     string
-	RequiredFields []string
-	MaxHistory     int
-	ContextPolicy  ContextPolicy
-	RuntimeURL     string
-	Instructions   string
+	Type             AgentType
+	ScopeField       string
+	RequiredFields   []string
+	MaxHistory       int
+	ContextPolicy    ContextPolicy
+	RuntimeURL       string
+	RuntimeInstances []RuntimeInstance
+	Instructions     string
+}
+
+// RuntimeState controls whether an instance accepts newly queued work.
+type RuntimeState string
+
+const (
+	RuntimeAvailable   RuntimeState = "available"
+	RuntimeDraining    RuntimeState = "draining"
+	RuntimeUnavailable RuntimeState = "unavailable"
+)
+
+// RuntimeInstance is one stable Hermes runtime target in an agent's pool.
+type RuntimeInstance struct {
+	ID                string
+	Agent             AgentType
+	BaseURL           string
+	State             RuntimeState
+	MaxConcurrentRuns int
+}
+
+// ForRuntime resolves a call's pinned runtime into an agent-specific client view.
+func (agent Agent) ForRuntime(instanceID string) (Agent, bool) {
+	for _, instance := range agent.RuntimeInstances {
+		if instance.ID == instanceID {
+			agent.RuntimeURL = instance.BaseURL
+			return agent, true
+		}
+	}
+	if instanceID == "" && (agent.RuntimeURL != "" || len(agent.RuntimeInstances) == 0) {
+		return agent, true
+	}
+	return Agent{}, false
 }
 
 // RetentionPolicy describes when an eligible data category may be removed.
@@ -86,18 +119,19 @@ func (status CallStatus) Terminal() bool {
 }
 
 type Call struct {
-	ID             string          `json:"call_id"`
-	Agent          AgentType       `json:"agent"`
-	ScopeID        string          `json:"scope_id"`
-	ConversationID string          `json:"conversation_id"`
-	Input          json.RawMessage `json:"-"`
-	Status         CallStatus      `json:"status"`
-	HermesRunID    *string         `json:"hermes_run_id,omitempty"`
-	Output         *string         `json:"output,omitempty"`
-	Error          *string         `json:"error,omitempty"`
-	RetryCount     int             `json:"-"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	ID                string          `json:"call_id"`
+	Agent             AgentType       `json:"agent"`
+	ScopeID           string          `json:"scope_id"`
+	ConversationID    string          `json:"conversation_id"`
+	Input             json.RawMessage `json:"-"`
+	Status            CallStatus      `json:"status"`
+	HermesRunID       *string         `json:"hermes_run_id,omitempty"`
+	RuntimeInstanceID string          `json:"-"`
+	Output            *string         `json:"output,omitempty"`
+	Error             *string         `json:"error,omitempty"`
+	RetryCount        int             `json:"-"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 type CompanyProfileSyncState struct {
@@ -382,6 +416,13 @@ type CallRepository interface {
 	RecordSource(context.Context, CompanySource) (bool, error)
 	SourceRevision(context.Context, string) (int64, error)
 	ProfileRevision(context.Context, string) (int64, error)
+}
+
+// RuntimeCallRepository claims queued calls while atomically reserving a slot
+// on one configured Hermes instance. The assignment is persisted before I/O.
+type RuntimeCallRepository interface {
+	ClaimQueuedForRuntimes(context.Context, int, []RuntimeInstance) ([]Call, error)
+	ActiveRuntimeAssignments(context.Context) ([]Call, error)
 }
 
 // ContextRepository stores compacted summaries separately from the complete

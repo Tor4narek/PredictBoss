@@ -43,6 +43,7 @@ func RenderDocumentation() []byte {
 	document.WriteString("Длительности используют единицы Go `ns`, `us`/`µs`, `ms`, `s`, `m`, `h` (день — `24h`). Для retention `0`, `0s` и `immediate` означают очистку после подтверждения операции, `never` — хранение без срока. Политики очистки выполняются при `CLEANUP_ENABLED=true`.\n\n")
 	document.WriteString("## Настройки агентов\n\n")
 	document.WriteString("У всех агентов общий `HERMES_MODEL_PROVIDER` и `LLM_API_KEY`. Модель и runtime-лимиты задаются в env отдельно для агента. Остальная структура и полномочия находятся в `predictor/agents/<type>/hermes.yaml`; роль и сжатие контекста — в `agent.json` и `skills/`.\n\n")
+	document.WriteString("`HERMES_<TYPE>_INSTANCES` задаёт runtime-пул в формате `id=state@url;id=state@url`; состояния: `available`, `draining`, `unavailable`. `AGENT_<TYPE>_MAX_CONCURRENT_RUNS` — лимит одновременных вызовов на один runtime. Все ESB-процессы должны использовать одинаковую конфигурацию пула. PostgreSQL сохраняет runtime каждого вызова и координирует резервирование слотов между ESB-репликами. Удаляйте runtime ID только после завершения закреплённых за ним вызовов. `HERMES_<TYPE>_URL` поддерживается для совместимости с одиночным runtime.\n\n")
 	document.WriteString("`context_policy.max_history_messages=0` отключает передачу истории модели. Хранение полной истории и резюме PostgreSQL задаётся независимо через `CLEANUP_MESSAGES_RETENTION_<TYPE>` и `CLEANUP_CONTEXT_SUMMARY_RETENTION`.\n")
 	return document.Bytes()
 }
@@ -105,6 +106,16 @@ func exampleValue(setting Definition) string {
 		return "predictor-local"
 	case "S3_SECRET_ACCESS_KEY":
 		return "local-minio-password-change-me"
+	case "HERMES_SEREZHA_INSTANCES":
+		return "serezha-1=available@http://hermes-serezha:8642;serezha-2=available@http://hermes-serezha-2:8642"
+	case "HERMES_SAVELIY_INSTANCES":
+		return "saveliy-1=available@http://hermes-saveliy:8642;saveliy-2=available@http://hermes-saveliy-2:8642"
+	case "HERMES_VALERA_INSTANCES":
+		return "valera-1=available@http://hermes-valera:8642;valera-2=available@http://hermes-valera-2:8642"
+	case "HERMES_KESHA_INSTANCES":
+		return "kesha-1=available@http://hermes-kesha:8642;kesha-2=available@http://hermes-kesha-2:8642"
+	case "HERMES_KONSTANTIN_INSTANCES":
+		return "konstantin-1=available@http://hermes-konstantin:8642;konstantin-2=available@http://hermes-konstantin-2:8642"
 	case "S3_FORCE_PATH_STYLE", "S3_CREATE_BUCKET":
 		return "true"
 	case "CLICKHOUSE_PASSWORD":

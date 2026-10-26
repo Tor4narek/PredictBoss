@@ -37,3 +37,18 @@ func TestMetricTypeValid(t *testing.T) {
 		t.Fatal("Valid(unknown) = true, want false")
 	}
 }
+
+func TestAgentForRuntimeUsesPinnedInstance(t *testing.T) {
+	agent := Agent{Type: AgentSaveliy, RuntimeInstances: []RuntimeInstance{
+		{ID: "one", Agent: AgentSaveliy, BaseURL: "http://one:8642"},
+		{ID: "two", Agent: AgentSaveliy, BaseURL: "http://two:8642"},
+	}}
+
+	resolved, ok := agent.ForRuntime("two")
+	if !ok || resolved.RuntimeURL != "http://two:8642" {
+		t.Fatalf("ForRuntime(two) = (%#v, %t)", resolved, ok)
+	}
+	if _, ok := agent.ForRuntime("removed"); ok {
+		t.Fatal("ForRuntime accepted an instance missing from the configured pool")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -168,11 +169,16 @@ func buildDefinitions() []Definition {
 		stringDef("ESB_API_KEY", "", "Bearer key required by Domain and Hermes MCP clients.", "secret", true),
 		stringDef("HERMES_API_KEY", "", "Bearer key ESB uses for Hermes runtime calls.", "secret", true),
 		stringDef("HERMES_MODEL_PROVIDER", "custom", "Shared Hermes model-provider identifier for all agents.", "hermes", false),
-		stringDef("HERMES_SEREZHA_URL", "", "Serezha Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
-		stringDef("HERMES_SAVELIY_URL", "", "Saveliy Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
-		stringDef("HERMES_VALERA_URL", "", "Valera Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
-		stringDef("HERMES_KESHA_URL", "", "Kesha Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
-		stringDef("HERMES_KONSTANTIN_URL", "", "Konstantin Hermes runtime URL; Compose supplies its service URL.", "runtime", true),
+		stringDef("HERMES_SEREZHA_URL", "", "Legacy single Serezha Hermes URL; use HERMES_SEREZHA_INSTANCES for a pool.", "runtime", false),
+		stringDef("HERMES_SAVELIY_URL", "", "Legacy single Saveliy Hermes URL; use HERMES_SAVELIY_INSTANCES for a pool.", "runtime", false),
+		stringDef("HERMES_VALERA_URL", "", "Legacy single Valera Hermes URL; use HERMES_VALERA_INSTANCES for a pool.", "runtime", false),
+		stringDef("HERMES_KESHA_URL", "", "Legacy single Kesha Hermes URL; use HERMES_KESHA_INSTANCES for a pool.", "runtime", false),
+		stringDef("HERMES_KONSTANTIN_URL", "", "Legacy single Konstantin Hermes URL; use HERMES_KONSTANTIN_INSTANCES for a pool.", "runtime", false),
+		stringDef("HERMES_SEREZHA_INSTANCES", "", "Named Serezha runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
+		stringDef("HERMES_SAVELIY_INSTANCES", "", "Named Saveliy runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
+		stringDef("HERMES_VALERA_INSTANCES", "", "Named Valera runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
+		stringDef("HERMES_KESHA_INSTANCES", "", "Named Kesha runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
+		stringDef("HERMES_KONSTANTIN_INSTANCES", "", "Named Konstantin runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
 		durationDef("HERMES_POLL_INTERVAL", 2*time.Second, time.Millisecond, 10*time.Minute, "interval", "Queue dispatch and Hermes status polling interval.", "runtime"),
 		intDef("QUEUE_DISPATCH_BATCH_SIZE", 100, 1, 10000, "calls", "Maximum queued calls claimed in one dispatch cycle; each claim can start one worker.", "runtime"),
 		durationDef("CONTEXT_COMPACTION_TIMEOUT", 30*time.Second, time.Millisecond, time.Hour, "duration", "Maximum time spent requesting a compressed agent-context summary from Hermes.", "runtime"),
@@ -266,8 +272,6 @@ func buildDefinitions() []Definition {
 		durationDef("ESB_HEALTHCHECK_INTERVAL", 10*time.Second, time.Millisecond, time.Hour, "duration", "ESB container healthcheck interval in Compose.", "compose"),
 		durationDef("ESB_HEALTHCHECK_TIMEOUT", 3*time.Second, time.Millisecond, time.Hour, "duration", "ESB container healthcheck command timeout in Compose.", "compose"),
 		intDef("ESB_HEALTHCHECK_RETRIES", 20, 1, 100, "retries", "Consecutive ESB healthcheck failures before the container is unhealthy.", "compose"),
-		stringDef("MINIO_IMAGE", "dappros/minio:RELEASE.2025-09-07T16-13-09Z", "Image used for the local S3-compatible MinIO service.", "compose", false),
-		stringDef("ATLAS_IMAGE", "arigaio/atlas:latest", "Image used to run PostgreSQL and ClickHouse migrations.", "compose", false),
 		stringDef("MINIO_ROOT_USER", "predictor-local", "Local MinIO root account.", "secret", false),
 		stringDef("MINIO_ROOT_PASSWORD", "local-minio-password-change-me", "Local MinIO root password; replace for private deployments.", "secret", false),
 		stringDef("LLM_API_KEY", "", "LLM provider key consumed by Hermes, never by ESB.", "secret", true),
@@ -291,11 +295,11 @@ func hermesAgentDefinitions() []Definition {
 	}
 
 	defaults := []agentDefaults{
-		{agent: "SEREZHA", model: "google/gemma-4-26b-a4b-it", maxTurns: 8, reasoning: "low"},
-		{agent: "SAVELIY", model: "google/gemma-4-26b-a4b-it", maxTurns: 8, reasoning: "low"},
-		{agent: "VALERA", model: "google/gemma-4-26b-a4b-it", maxTurns: 10, reasoning: "low"},
-		{agent: "KESHA", model: "google/gemma-4-26b-a4b-it", maxTurns: 12, reasoning: "low"},
-		{agent: "KONSTANTIN", model: "google/gemma-4-26b-a4b-it", maxTurns: 12, reasoning: "low"},
+		{agent: "SEREZHA", model: "google/gemma-4-26b-a4b-it", maxTurns: 8, reasoning: "low", concurrent: 1},
+		{agent: "SAVELIY", model: "google/gemma-4-26b-a4b-it", maxTurns: 8, reasoning: "low", concurrent: 1},
+		{agent: "VALERA", model: "google/gemma-4-26b-a4b-it", maxTurns: 10, reasoning: "low", concurrent: 1},
+		{agent: "KESHA", model: "google/gemma-4-26b-a4b-it", maxTurns: 12, reasoning: "low", concurrent: 1},
+		{agent: "KONSTANTIN", model: "google/gemma-4-26b-a4b-it", maxTurns: 12, reasoning: "low", concurrent: 1},
 	}
 
 	settings := make([]Definition, 0, len(defaults)*6)
@@ -305,7 +309,7 @@ func hermesAgentDefinitions() []Definition {
 			stringDef(prefix+"MODEL_ID", agent.model, agent.agent+" model identifier sent to the configured provider.", "hermes-agent", false),
 			intDef(prefix+"MAX_TURNS", agent.maxTurns, 1, 1000, "turns", agent.agent+" Hermes maximum turns per run.", "hermes-agent"),
 			stringDef(prefix+"REASONING_EFFORT", agent.reasoning, agent.agent+" Hermes reasoning-effort setting supported by its model/provider.", "hermes-agent", false),
-			intDef(prefix+"MAX_CONCURRENT_RUNS", agent.concurrent, 0, 100000, "runs", agent.agent+" Hermes concurrent-run limit; zero disables the gateway cap.", "hermes-agent"),
+			intDef(prefix+"MAX_CONCURRENT_RUNS", agent.concurrent, 1, 100000, "runs", agent.agent+" maximum concurrent runs per Hermes instance; values below one are rejected.", "hermes-agent"),
 		)
 	}
 	return settings
@@ -660,8 +664,33 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		if strings.TrimSpace(runtimeURL) == "" {
-			return Config{}, fmt.Errorf("%s is required", definition.RuntimeURLEnv)
+		instancesRaw := ""
+		if definition.RuntimeInstancesEnv != "" {
+			instancesRaw, err = stringValue(lookup, definition.RuntimeInstancesEnv)
+			if err != nil {
+				return Config{}, err
+			}
+		}
+		if strings.TrimSpace(runtimeURL) != "" && strings.TrimSpace(instancesRaw) != "" {
+			return Config{}, fmt.Errorf("set either %s or %s, not both", definition.RuntimeURLEnv, definition.RuntimeInstancesEnv)
+		}
+		maxConcurrentRuns, err := intValue(lookup, "AGENT_"+strings.ToUpper(name)+"_MAX_CONCURRENT_RUNS")
+		if err != nil {
+			return Config{}, err
+		}
+		var runtimeInstances []domain.RuntimeInstance
+		if strings.TrimSpace(instancesRaw) != "" {
+			runtimeInstances, err = parseRuntimeInstances(instancesRaw, domain.AgentType(name), maxConcurrentRuns)
+			if err != nil {
+				return Config{}, fmt.Errorf("parse %s: %w", definition.RuntimeInstancesEnv, err)
+			}
+		} else {
+			baseURL, parseErr := normalizedRuntimeURL(runtimeURL)
+			if parseErr != nil {
+				return Config{}, fmt.Errorf("%s is required and must be a valid URL", definition.RuntimeURLEnv)
+			}
+			runtimeInstances = []domain.RuntimeInstance{{ID: "default", Agent: domain.AgentType(name), BaseURL: baseURL,
+				State: domain.RuntimeAvailable, MaxConcurrentRuns: maxConcurrentRuns}}
 		}
 		policy, err := parseContextPolicy(definition.ContextPolicy)
 		if err != nil {
@@ -673,18 +702,95 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		}
 		cfg.Agents = append(cfg.Agents, domain.Agent{Type: domain.AgentType(name), ScopeField: definition.ScopeField,
 			RequiredFields: definition.RequiredFields, MaxHistory: historyLimit,
-			ContextPolicy: policy, RuntimeURL: strings.TrimRight(runtimeURL, "/"), Instructions: skillInstructions(string(skill))})
+			ContextPolicy: policy, RuntimeURL: strings.TrimRight(runtimeURL, "/"), RuntimeInstances: runtimeInstances,
+			Instructions: skillInstructions(string(skill))})
 	}
 	return cfg, nil
 }
 
 type agentFile struct {
-	Name           string             `json:"name"`
-	ScopeField     string             `json:"scope_field"`
-	SkillFile      string             `json:"skill_file"`
-	RuntimeURLEnv  string             `json:"runtime_url_env"`
-	RequiredFields []string           `json:"required_fields"`
-	ContextPolicy  *contextPolicyFile `json:"context_policy"`
+	Name                string             `json:"name"`
+	ScopeField          string             `json:"scope_field"`
+	SkillFile           string             `json:"skill_file"`
+	RuntimeURLEnv       string             `json:"runtime_url_env"`
+	RuntimeInstancesEnv string             `json:"runtime_instances_env"`
+	RequiredFields      []string           `json:"required_fields"`
+	ContextPolicy       *contextPolicyFile `json:"context_policy"`
+}
+
+func parseRuntimeInstances(raw string, agent domain.AgentType, maxConcurrentRuns int) ([]domain.RuntimeInstance, error) {
+	if maxConcurrentRuns < 1 {
+		return nil, errors.New("max concurrent runs per instance must be at least one")
+	}
+	entries := strings.Split(raw, ";")
+	instances := make([]domain.RuntimeInstance, 0, len(entries))
+	ids := make(map[string]struct{}, len(entries))
+	urls := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, errors.New("pool contains an empty instance")
+		}
+		id, stateAndURL, ok := strings.Cut(entry, "=")
+		state, baseURL, stateOK := strings.Cut(stateAndURL, "@")
+		id = strings.TrimSpace(id)
+		state = strings.TrimSpace(state)
+		if !ok || !stateOK || !validRuntimeID(id) {
+			return nil, errors.New("expected id=state@url entries")
+		}
+		if _, exists := ids[id]; exists {
+			return nil, errors.New("pool contains a duplicate instance ID")
+		}
+		ids[id] = struct{}{}
+		var runtimeState domain.RuntimeState
+		switch domain.RuntimeState(state) {
+		case domain.RuntimeAvailable:
+			runtimeState = domain.RuntimeAvailable
+		case domain.RuntimeDraining:
+			runtimeState = domain.RuntimeDraining
+		case domain.RuntimeUnavailable:
+			runtimeState = domain.RuntimeUnavailable
+		default:
+			return nil, errors.New("instance state must be available, draining, or unavailable")
+		}
+		baseURL, err := normalizedRuntimeURL(baseURL)
+		if err != nil {
+			return nil, errors.New("instance URL must be an absolute HTTP or HTTPS URL without credentials, query, or fragment")
+		}
+		if _, exists := urls[baseURL]; exists {
+			return nil, errors.New("pool contains a duplicate instance URL")
+		}
+		urls[baseURL] = struct{}{}
+		instances = append(instances, domain.RuntimeInstance{ID: id, Agent: agent, BaseURL: baseURL,
+			State: runtimeState, MaxConcurrentRuns: maxConcurrentRuns})
+	}
+	if len(instances) == 0 {
+		return nil, errors.New("pool must contain at least one instance")
+	}
+	return instances, nil
+}
+
+func validRuntimeID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for index, char := range id {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') ||
+			(index > 0 && (char == '.' || char == '_' || char == '-')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizedRuntimeURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invalid runtime URL")
+	}
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 type contextPolicyFile struct {

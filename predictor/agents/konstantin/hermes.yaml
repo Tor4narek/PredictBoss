@@ -19,7 +19,7 @@ skills:
   external_dirs: [/opt/skills]
 mcp_servers:
   esb:
-    url: http://esb:8081/mcp
+    url: ${ESB_MCP_URL}
     headers:
       Authorization: "Bearer ${ESB_API_KEY}"
     supports_parallel_tool_calls: false

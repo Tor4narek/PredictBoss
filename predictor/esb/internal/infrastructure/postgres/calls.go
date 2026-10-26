@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -149,7 +150,7 @@ func sameNewsRequest(stored, submitted []byte) bool {
 func (r *Calls) requeueFailedNews(ctx context.Context, callID string) (domain.Call, bool, error) {
 	var call domain.Call
 	err := r.pool.QueryRow(ctx, `UPDATE agent_calls c
-SET status = 'queued', hermes_run_id = NULL, output = NULL, error = 'news_retry', updated_at = now()
+SET status = 'queued', hermes_run_id = NULL, runtime_instance_id = NULL, output = NULL, error = 'news_retry', updated_at = now()
 FROM agent_conversations v
 WHERE c.call_id = $1 AND c.agent_type = 'serezha' AND c.status IN ('failed','interrupted','cancelled')
   AND v.conversation_id = c.conversation_id
@@ -473,6 +474,233 @@ FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.cre
 	return calls, rows.Err()
 }
 
+type queuedRuntimeCall struct {
+	id        string
+	agent     domain.AgentType
+	runtimeID string
+}
+
+// ClaimQueuedForRuntimes uses PostgreSQL advisory locks and active-call counts
+// to reserve each runtime slot across all ESB processes before returning work.
+func (r *Calls) ClaimQueuedForRuntimes(ctx context.Context, limit int, instances []domain.RuntimeInstance) ([]domain.Call, error) {
+	if limit <= 0 || len(instances) == 0 {
+		return nil, nil
+	}
+	for _, instance := range instances {
+		if instance.ID == "" || instance.Agent == "" || instance.MaxConcurrentRuns < 1 {
+			return nil, errors.New("invalid Hermes runtime instance configuration")
+		}
+	}
+	candidateLimit := limit * len(instances) * 4
+	if candidateLimit < limit {
+		candidateLimit = limit
+	}
+	if candidateLimit > 10000 {
+		candidateLimit = 10000
+	}
+	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, COALESCE(c.runtime_instance_id, '')
+FROM agent_calls c
+WHERE c.status = 'queued'
+  AND c.call_id = (
+      SELECT q.call_id
+      FROM agent_calls q
+      WHERE q.conversation_id = c.conversation_id
+        AND q.status = 'queued'
+      ORDER BY q.created_at, q.call_id
+      LIMIT 1
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_calls active
+      WHERE active.conversation_id = c.conversation_id
+        AND active.status IN ('submitting', 'started', 'running', 'processing')
+  )
+ORDER BY c.created_at, c.call_id
+LIMIT $1`, candidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]queuedRuntimeCall, 0, candidateLimit)
+	for rows.Next() {
+		var candidate queuedRuntimeCall
+		if err := rows.Scan(&candidate.id, &candidate.agent, &candidate.runtimeID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	loads, err := r.runtimeLoads(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byAgent := make(map[domain.AgentType][]domain.RuntimeInstance)
+	for _, instance := range instances {
+		byAgent[instance.Agent] = append(byAgent[instance.Agent], instance)
+	}
+	claimed := make([]domain.Call, 0, limit)
+	for _, candidate := range candidates {
+		if len(claimed) >= limit {
+			break
+		}
+		pool := byAgent[candidate.agent]
+		eligible := make([]domain.RuntimeInstance, 0, len(pool))
+		for _, instance := range pool {
+			if candidate.runtimeID != "" {
+				if instance.ID == candidate.runtimeID {
+					eligible = append(eligible, instance)
+					break
+				}
+				continue
+			}
+			if instance.State == domain.RuntimeAvailable {
+				eligible = append(eligible, instance)
+			}
+		}
+		sort.SliceStable(eligible, func(i, j int) bool {
+			left := float64(loads[runtimeKey(eligible[i])]) / float64(eligible[i].MaxConcurrentRuns)
+			right := float64(loads[runtimeKey(eligible[j])]) / float64(eligible[j].MaxConcurrentRuns)
+			if left == right {
+				return eligible[i].ID < eligible[j].ID
+			}
+			return left < right
+		})
+		for _, instance := range eligible {
+			call, reserved, err := r.claimRuntimeSlot(ctx, candidate, instance)
+			if err != nil {
+				return nil, err
+			}
+			if !reserved {
+				continue
+			}
+			claimed = append(claimed, call)
+			loads[runtimeKey(instance)]++
+			break
+		}
+	}
+	return claimed, nil
+}
+
+func (r *Calls) runtimeLoads(ctx context.Context) (map[string]int, error) {
+	rows, err := r.pool.Query(ctx, `SELECT agent_type, runtime_instance_id, count(*)
+FROM agent_calls
+WHERE runtime_instance_id IS NOT NULL
+  AND status IN ('submitting', 'started', 'running', 'processing')
+GROUP BY agent_type, runtime_instance_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	loads := make(map[string]int)
+	for rows.Next() {
+		var agentType domain.AgentType
+		var runtimeID string
+		var count int
+		if err := rows.Scan(&agentType, &runtimeID, &count); err != nil {
+			return nil, err
+		}
+		loads[runtimeKey(domain.RuntimeInstance{Agent: agentType, ID: runtimeID})] = count
+	}
+	return loads, rows.Err()
+}
+
+func (r *Calls) claimRuntimeSlot(ctx context.Context, candidate queuedRuntimeCall, instance domain.RuntimeInstance) (claimed domain.Call, reserved bool, resultErr error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.Call{}, false, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, rollbackTransaction(ctx, tx)) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, runtimeKey(instance)); err != nil {
+		return domain.Call{}, false, err
+	}
+	var active int
+	if err := tx.QueryRow(ctx, `SELECT count(*)
+FROM agent_calls
+WHERE runtime_instance_id = $1
+  AND agent_type = $2
+  AND status IN ('submitting', 'started', 'running', 'processing')`, instance.ID, string(instance.Agent)).Scan(&active); err != nil {
+		return domain.Call{}, false, err
+	}
+	if active >= instance.MaxConcurrentRuns {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			return domain.Call{}, false, err
+		}
+		return domain.Call{}, false, nil
+	}
+	query := `UPDATE agent_calls c
+SET status = 'submitting', runtime_instance_id = $3, updated_at = now()
+FROM agent_conversations v
+WHERE c.call_id = $1
+  AND c.agent_type = $2
+  AND c.conversation_id = v.conversation_id
+  AND c.status = 'queued'
+  AND (c.runtime_instance_id IS NULL OR c.runtime_instance_id = $3)
+  AND c.call_id = (
+      SELECT q.call_id
+      FROM agent_calls q
+      WHERE q.conversation_id = c.conversation_id
+        AND q.status = 'queued'
+      ORDER BY q.created_at, q.call_id
+      LIMIT 1
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_calls active_call
+      WHERE active_call.conversation_id = c.conversation_id
+        AND active_call.status IN ('submitting', 'started', 'running', 'processing')
+  )
+RETURNING c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json,
+          c.status, c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at,
+          c.runtime_instance_id`
+	err = tx.QueryRow(ctx, query, candidate.id, string(candidate.agent), instance.ID).Scan(
+		&claimed.ID, &claimed.Agent, &claimed.ScopeID, &claimed.ConversationID, &claimed.Input, &claimed.Status,
+		&claimed.HermesRunID, &claimed.Output, &claimed.Error, &claimed.RetryCount, &claimed.CreatedAt,
+		&claimed.UpdatedAt, &claimed.RuntimeInstanceID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			return domain.Call{}, false, err
+		}
+		return domain.Call{}, false, nil
+	}
+	if err != nil {
+		return domain.Call{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Call{}, false, err
+	}
+	return claimed, true, nil
+}
+
+func runtimeKey(instance domain.RuntimeInstance) string {
+	return string(instance.Agent) + ":" + instance.ID
+}
+
+func (r *Calls) ActiveRuntimeAssignments(ctx context.Context) ([]domain.Call, error) {
+	rows, err := r.pool.Query(ctx, `SELECT call_id::text, agent_type, COALESCE(runtime_instance_id, '')
+FROM agent_calls
+WHERE status IN ('queued', 'submitting', 'started', 'running', 'processing')
+  AND (status <> 'queued' OR runtime_instance_id IS NOT NULL)
+ORDER BY created_at, call_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var calls []domain.Call
+	for rows.Next() {
+		var call domain.Call
+		if err := rows.Scan(&call.ID, &call.Agent, &call.RuntimeInstanceID); err != nil {
+			return nil, err
+		}
+		calls = append(calls, call)
+	}
+	return calls, rows.Err()
+}
+
 func (r *Calls) SetRun(ctx context.Context, callID, runID string) error {
 	result, err := r.pool.Exec(ctx, `UPDATE agent_calls SET hermes_run_id = $2, status = 'started', updated_at = now()
 WHERE call_id = $1 AND status = 'submitting'`, callID, runID)
@@ -484,8 +712,8 @@ WHERE call_id = $1 AND status = 'submitting'`, callID, runID)
 
 func (r *Calls) ListActive(ctx context.Context) ([]domain.Call, error) {
 	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
-c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at FROM agent_calls c
-JOIN agent_conversations v USING (conversation_id) WHERE c.status IN ('started','running') AND c.hermes_run_id IS NOT NULL
+c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, COALESCE(c.runtime_instance_id, '') FROM agent_calls c
+JOIN agent_conversations v USING (conversation_id) WHERE c.status IN ('submitting','started','running','processing')
 ORDER BY c.created_at`)
 	if err != nil {
 		return nil, err
@@ -494,7 +722,7 @@ ORDER BY c.created_at`)
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt, &call.RuntimeInstanceID); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -650,7 +878,7 @@ func sanitizedNewsInput(raw []byte, expectedHash string) ([]byte, error) {
 
 func (r *Calls) RetryProfileSave(ctx context.Context, callID, companyID string, expectedRevision int64, maxRetries int) (bool, error) {
 	result, err := r.pool.Exec(ctx, `UPDATE agent_calls c
-SET status = 'queued', retry_count = retry_count + 1, hermes_run_id = NULL, output = NULL,
+SET status = 'queued', retry_count = retry_count + 1, hermes_run_id = NULL, runtime_instance_id = NULL, output = NULL,
     error = 'profile_sync_retry', updated_at = now()
 WHERE c.call_id = $1 AND c.agent_type = 'valera' AND c.status IN ('started','running') AND c.retry_count < $4
   AND EXISTS (SELECT 1 FROM agent_conversations v WHERE v.conversation_id = c.conversation_id AND v.scope_id = $2)

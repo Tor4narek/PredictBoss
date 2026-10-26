@@ -10,6 +10,7 @@ x-hermes-common: &hermes-common
     HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:?Set HERMES_MODEL_PROVIDER in predictor/.env}
     ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
     LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in predictor/.env}
+    ESB_MCP_URL: http://esb:8081/mcp
   depends_on:
     esb:
       condition: service_healthy
@@ -56,7 +57,7 @@ services:
       - predictor-storage
 
   minio:
-    image: ${MINIO_IMAGE:-dappros/minio:RELEASE.2025-09-07T16-13-09Z}
+    image: dappros/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: predictor-minio
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
@@ -77,7 +78,7 @@ services:
       - predictor-storage
 
   atlas-postgres:
-    image: ${ATLAS_IMAGE:?Set ATLAS_IMAGE in predictor/.env}
+    image: arigaio/atlas:latest
     container_name: predictor-atlas-postgres
     profiles: ["migrations"]
     working_dir: /migrations
@@ -94,7 +95,7 @@ services:
       - predictor-storage
 
   atlas-clickhouse:
-    image: ${ATLAS_IMAGE:?Set ATLAS_IMAGE in predictor/.env}
+    image: arigaio/atlas:latest
     container_name: predictor-atlas-clickhouse
     profiles: ["migrations"]
     working_dir: /migrations
@@ -110,7 +111,7 @@ services:
     networks:
       - predictor-storage
 
-  hermes-serezha:
+  hermes-serezha: &hermes-serezha
     <<: *hermes-common
     container_name: predictor-hermes-serezha
     volumes:
@@ -124,7 +125,15 @@ services:
       AGENT_SEREZHA_REASONING_EFFORT: ${AGENT_SEREZHA_REASONING_EFFORT:?Set AGENT_SEREZHA_REASONING_EFFORT in predictor/.env}
       AGENT_SEREZHA_MAX_CONCURRENT_RUNS: ${AGENT_SEREZHA_MAX_CONCURRENT_RUNS:?Set AGENT_SEREZHA_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-saveliy:
+  hermes-serezha-2:
+    <<: *hermes-serezha
+    container_name: predictor-hermes-serezha-2
+    volumes:
+      - hermes-serezha-2-data:/opt/data
+      - ./predictor/agents/serezha/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/serezha/skills:/opt/skills:ro
+
+  hermes-saveliy: &hermes-saveliy
     <<: *hermes-common
     container_name: predictor-hermes-saveliy
     volumes:
@@ -138,7 +147,15 @@ services:
       AGENT_SAVELIY_REASONING_EFFORT: ${AGENT_SAVELIY_REASONING_EFFORT:?Set AGENT_SAVELIY_REASONING_EFFORT in predictor/.env}
       AGENT_SAVELIY_MAX_CONCURRENT_RUNS: ${AGENT_SAVELIY_MAX_CONCURRENT_RUNS:?Set AGENT_SAVELIY_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-valera:
+  hermes-saveliy-2:
+    <<: *hermes-saveliy
+    container_name: predictor-hermes-saveliy-2
+    volumes:
+      - hermes-saveliy-2-data:/opt/data
+      - ./predictor/agents/saveliy/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/saveliy/skills:/opt/skills:ro
+
+  hermes-valera: &hermes-valera
     <<: *hermes-common
     container_name: predictor-hermes-valera
     volumes:
@@ -152,7 +169,15 @@ services:
       AGENT_VALERA_REASONING_EFFORT: ${AGENT_VALERA_REASONING_EFFORT:?Set AGENT_VALERA_REASONING_EFFORT in predictor/.env}
       AGENT_VALERA_MAX_CONCURRENT_RUNS: ${AGENT_VALERA_MAX_CONCURRENT_RUNS:?Set AGENT_VALERA_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-kesha:
+  hermes-valera-2:
+    <<: *hermes-valera
+    container_name: predictor-hermes-valera-2
+    volumes:
+      - hermes-valera-2-data:/opt/data
+      - ./predictor/agents/valera/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/valera/skills:/opt/skills:ro
+
+  hermes-kesha: &hermes-kesha
     <<: *hermes-common
     container_name: predictor-hermes-kesha
     volumes:
@@ -166,7 +191,15 @@ services:
       AGENT_KESHA_REASONING_EFFORT: ${AGENT_KESHA_REASONING_EFFORT:?Set AGENT_KESHA_REASONING_EFFORT in predictor/.env}
       AGENT_KESHA_MAX_CONCURRENT_RUNS: ${AGENT_KESHA_MAX_CONCURRENT_RUNS:?Set AGENT_KESHA_MAX_CONCURRENT_RUNS in predictor/.env}
 
-  hermes-konstantin:
+  hermes-kesha-2:
+    <<: *hermes-kesha
+    container_name: predictor-hermes-kesha-2
+    volumes:
+      - hermes-kesha-2-data:/opt/data
+      - ./predictor/agents/kesha/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/kesha/skills:/opt/skills:ro
+
+  hermes-konstantin: &hermes-konstantin
     <<: *hermes-common
     container_name: predictor-hermes-konstantin
     volumes:
@@ -180,6 +213,14 @@ services:
       AGENT_KONSTANTIN_REASONING_EFFORT: ${AGENT_KONSTANTIN_REASONING_EFFORT:?Set AGENT_KONSTANTIN_REASONING_EFFORT in predictor/.env}
       AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS: ${AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS:?Set AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS in predictor/.env}
 
+  hermes-konstantin-2:
+    <<: *hermes-konstantin
+    container_name: predictor-hermes-konstantin-2
+    volumes:
+      - hermes-konstantin-2-data:/opt/data
+      - ./predictor/agents/konstantin/hermes.yaml:/opt/data/config.yaml:ro
+      - ./predictor/agents/konstantin/skills:/opt/skills:ro
+
   esb:
     image: predictor-esb:local
     build:
@@ -192,11 +233,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable}
       ESB_API_KEY: ${ESB_API_KEY:?Set ESB_API_KEY in predictor/.env}
       HERMES_API_KEY: ${HERMES_API_KEY:?Set HERMES_API_KEY in predictor/.env}
-      HERMES_SEREZHA_URL: ${HERMES_SEREZHA_URL:-http://hermes-serezha:8642}
-      HERMES_SAVELIY_URL: ${HERMES_SAVELIY_URL:-http://hermes-saveliy:8642}
-      HERMES_VALERA_URL: ${HERMES_VALERA_URL:-http://hermes-valera:8642}
-      HERMES_KESHA_URL: ${HERMES_KESHA_URL:-http://hermes-kesha:8642}
-      HERMES_KONSTANTIN_URL: ${HERMES_KONSTANTIN_URL:-http://hermes-konstantin:8642}
+      HERMES_SEREZHA_INSTANCES: ${HERMES_SEREZHA_INSTANCES:-serezha-1=available@http://hermes-serezha:8642;serezha-2=available@http://hermes-serezha-2:8642}
+      HERMES_SAVELIY_INSTANCES: ${HERMES_SAVELIY_INSTANCES:-saveliy-1=available@http://hermes-saveliy:8642;saveliy-2=available@http://hermes-saveliy-2:8642}
+      HERMES_VALERA_INSTANCES: ${HERMES_VALERA_INSTANCES:-valera-1=available@http://hermes-valera:8642;valera-2=available@http://hermes-valera-2:8642}
+      HERMES_KESHA_INSTANCES: ${HERMES_KESHA_INSTANCES:-kesha-1=available@http://hermes-kesha:8642;kesha-2=available@http://hermes-kesha-2:8642}
+      HERMES_KONSTANTIN_INSTANCES: ${HERMES_KONSTANTIN_INSTANCES:-konstantin-1=available@http://hermes-konstantin:8642;konstantin-2=available@http://hermes-konstantin-2:8642}
       HERMES_POLL_INTERVAL: ${HERMES_POLL_INTERVAL:-2s}
       QUEUE_DISPATCH_BATCH_SIZE: ${QUEUE_DISPATCH_BATCH_SIZE:-100}
       CONTEXT_COMPACTION_TIMEOUT: ${CONTEXT_COMPACTION_TIMEOUT:-30s}
@@ -306,7 +347,12 @@ volumes:
   postgres-data:
   minio-data:
   hermes-serezha-data:
+  hermes-serezha-2-data:
   hermes-saveliy-data:
+  hermes-saveliy-2-data:
   hermes-valera-data:
+  hermes-valera-2-data:
   hermes-kesha-data:
+  hermes-kesha-2-data:
   hermes-konstantin-data:
+  hermes-konstantin-2-data:

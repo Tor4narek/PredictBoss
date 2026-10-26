@@ -19,6 +19,7 @@ import (
 	"github.com/predictboss/predictor/esb/internal/application/companycontext"
 	"github.com/predictboss/predictor/esb/internal/application/news"
 	"github.com/predictboss/predictor/esb/internal/config"
+	"github.com/predictboss/predictor/esb/internal/domain"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/clickhouse"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/hermes"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/postgres"
@@ -133,12 +134,62 @@ func runESB() error {
 		if err := ch.Ping(ctx); err != nil {
 			return err
 		}
+		var runtimeRepository domain.RuntimeCallRepository = callRepository
+		agents := make(map[domain.AgentType]domain.Agent, len(cfg.Agents))
 		for _, agent := range cfg.Agents {
+			agents[agent.Type] = agent
+		}
+		assignments, err := runtimeRepository.ActiveRuntimeAssignments(ctx)
+		if err != nil {
+			return fmt.Errorf("load active Hermes runtime assignments: %w", err)
+		}
+		checked := make(map[string]error)
+		probe := func(agent domain.Agent, instanceID string) error {
+			key := string(agent.Type) + ":" + instanceID
+			if previous, exists := checked[key]; exists {
+				return previous
+			}
 			checkCtx, cancel := context.WithTimeout(ctx, cfg.Hermes.HealthTimeout)
-			err := hermesClient.Health(checkCtx, agent)
+			probeErr := hermesClient.Health(checkCtx, agent)
 			cancel()
-			if err != nil {
-				return err
+			checked[key] = probeErr
+			return probeErr
+		}
+		for _, call := range assignments {
+			configuredAgent, exists := agents[call.Agent]
+			if !exists {
+				return fmt.Errorf("active call references an unknown agent (call_id=%s agent=%s)", call.ID, call.Agent)
+			}
+			runtimeAgent, exists := configuredAgent.ForRuntime(call.RuntimeInstanceID)
+			if !exists {
+				return fmt.Errorf("active call runtime is not configured (call_id=%s agent=%s runtime_instance_id=%s)", call.ID, call.Agent, call.RuntimeInstanceID)
+			}
+			if err := probe(runtimeAgent, call.RuntimeInstanceID); err != nil {
+				return fmt.Errorf("active Hermes runtime is unavailable (agent=%s runtime_instance_id=%s)", call.Agent, call.RuntimeInstanceID)
+			}
+		}
+		for _, agent := range cfg.Agents {
+			var hasAvailableRuntime bool
+			var hasHealthyRuntime bool
+			for _, instance := range agent.RuntimeInstances {
+				if instance.State != domain.RuntimeAvailable {
+					continue
+				}
+				hasAvailableRuntime = true
+				runtimeAgent, exists := agent.ForRuntime(instance.ID)
+				if !exists {
+					continue
+				}
+				if probe(runtimeAgent, instance.ID) == nil {
+					hasHealthyRuntime = true
+					break
+				}
+			}
+			if !hasAvailableRuntime {
+				return fmt.Errorf("agent has no available Hermes runtime (agent=%s)", agent.Type)
+			}
+			if !hasHealthyRuntime {
+				return fmt.Errorf("agent has no healthy Hermes runtime (agent=%s)", agent.Type)
 			}
 		}
 		return nil
