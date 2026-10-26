@@ -15,6 +15,7 @@ import (
 )
 
 var ErrInvalidCall = errors.New("invalid call")
+var ErrInvalidMCPCallContext = errors.New("invalid MCP call context")
 var scopePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 type Service struct {
@@ -27,6 +28,7 @@ type Service struct {
 }
 
 type Config struct {
+	MCPCallContextSigner             domain.MCPCallContextSigner
 	PollInterval                     time.Duration
 	DispatchBatchSize                int
 	ContextCompactionTimeout         time.Duration
@@ -151,6 +153,27 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 		return
 	}
 	history := s.contextForCall(ctx, call, agent)
+	hermesInput := string(call.Input)
+	if agent.ScopeField == "company_id" {
+		if s.settings.MCPCallContextSigner == nil {
+			s.failCall(ctx, call, "mcp_call_context_unavailable")
+			return
+		}
+		callContext, err := s.settings.MCPCallContextSigner.IssueMCPCallContext(domain.MCPCallContext{
+			Agent: call.Agent, CallID: call.ID, CompanyID: call.ScopeID, ExpiresAt: time.Now().UTC().Add(mcpCallContextLifetime),
+		})
+		if err != nil {
+			s.failCall(ctx, call, "mcp_call_context_unavailable")
+			logCallOperationFailure(call, "issue_mcp_call_context", err)
+			return
+		}
+		hermesInput, err = addMCPCallContext(call.Input, callContext)
+		if err != nil {
+			s.failCall(ctx, call, "mcp_call_context_unavailable")
+			logCallOperationFailure(call, "attach_mcp_call_context", err)
+			return
+		}
+	}
 	idempotencyKey := call.ID
 	if call.RetryCount > 0 {
 		retryKind := "retry"
@@ -161,7 +184,7 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 	} else if call.Agent == domain.AgentSerezha && call.Error != nil && *call.Error == "news_retry" {
 		idempotencyKey = fmt.Sprintf("%s:news-retry:%d", call.ID, call.UpdatedAt.UnixNano())
 	}
-	runID, err := s.runtime.Start(ctx, agent, string(call.Input), history, idempotencyKey)
+	runID, err := s.runtime.Start(ctx, agent, hermesInput, history, idempotencyKey)
 	if err != nil {
 		s.failCall(ctx, call, "hermes_submission_failed")
 		logCallOperationFailure(call, "hermes_start", err)
@@ -169,6 +192,48 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 	}
 	if err := s.repository.SetRun(ctx, call.ID, runID); err != nil {
 		logCallOperationFailure(call, "save_hermes_run", err)
+	}
+}
+
+// AuthorizeMCPCompany binds company-scoped MCP calls to a live PostgreSQL call
+// and refuses both missing context and caller-supplied company substitutions.
+func (s *Service) AuthorizeMCPCompany(ctx context.Context, agent domain.AgentType, token, requestedCompanyID string) (domain.MCPCallContext, error) {
+	if s.settings.MCPCallContextSigner == nil {
+		return domain.MCPCallContext{}, ErrInvalidMCPCallContext
+	}
+	callContext, err := s.settings.MCPCallContextSigner.VerifyMCPCallContext(token, agent)
+	if err != nil || callContext.Agent != agent || !uuidInputPattern.MatchString(callContext.CompanyID) {
+		return domain.MCPCallContext{}, ErrInvalidMCPCallContext
+	}
+	if requestedCompanyID != "" && !strings.EqualFold(strings.TrimSpace(requestedCompanyID), callContext.CompanyID) {
+		return domain.MCPCallContext{}, ErrInvalidMCPCallContext
+	}
+	call, err := s.repository.GetForAgent(ctx, callContext.CallID, agent)
+	if err != nil || !strings.EqualFold(call.ScopeID, callContext.CompanyID) || !mcpContextCallActive(call.Status) {
+		return domain.MCPCallContext{}, ErrInvalidMCPCallContext
+	}
+	return callContext, nil
+}
+
+// RecordMCPCallSources stores the source IDs returned to Konstantin during
+// this call so its final evidence can be checked against the exact MCP context.
+func (s *Service) RecordMCPCallSources(ctx context.Context, callContext domain.MCPCallContext, sourceIDs []string) error {
+	if callContext.Agent != domain.AgentKonstantin || callContext.CallID == "" || !uuidInputPattern.MatchString(callContext.CompanyID) {
+		return ErrInvalidMCPCallContext
+	}
+	call, err := s.repository.GetForAgent(ctx, callContext.CallID, callContext.Agent)
+	if err != nil || !strings.EqualFold(call.ScopeID, callContext.CompanyID) || !mcpContextCallActive(call.Status) {
+		return ErrInvalidMCPCallContext
+	}
+	return s.repository.RecordKonstantinCallSources(ctx, callContext.CallID, callContext.CompanyID, sourceIDs)
+}
+
+func mcpContextCallActive(status domain.CallStatus) bool {
+	switch status {
+	case domain.CallSubmitting, domain.CallStarted, domain.CallRunning, domain.CallProcessing:
+		return true
+	default:
+		return false
 	}
 }
 

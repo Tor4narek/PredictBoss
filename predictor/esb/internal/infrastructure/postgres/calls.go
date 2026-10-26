@@ -819,14 +819,15 @@ WHERE call_id = $1
 			return profileState, false, err
 		}
 	}
+	if agentType == string(domain.AgentKonstantin) {
+		output, err = insertKonstantinEvent(ctx, tx, callID, conversationID, inputJSON, output)
+		if err != nil {
+			return profileState, false, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO agent_messages (conversation_id, call_id, role, content)
 VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
 		return profileState, false, err
-	}
-	if agentType == string(domain.AgentKonstantin) {
-		if err := insertKonstantinEvent(ctx, tx, callID, conversationID, inputJSON, output); err != nil {
-			return profileState, false, err
-		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE agent_calls
 SET status = 'completed', output = $2, error = NULL, updated_at = now()
@@ -908,57 +909,65 @@ type assistantOutput struct {
 	Evidence []domain.ConsultantEvidence `json:"evidence"`
 }
 
-func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationID string, inputJSON []byte, output string) error {
+const insufficientEvidenceAnswer = "Недостаточно подтверждённых источников в данных этого вызова, чтобы дать подтверждённую рекомендацию."
+
+func insertKonstantinEvent(ctx context.Context, tx pgx.Tx, callID, conversationID string, inputJSON []byte, output string) (string, error) {
 	var input konstantinInput
 	if err := json.Unmarshal(inputJSON, &input); err != nil {
-		return err
+		return "", err
 	}
 	var result assistantOutput
-	if json.Unmarshal([]byte(strings.TrimSpace(output)), &result) != nil {
-		result.Text = strings.TrimSpace(output)
-	}
+	parseErr := json.Unmarshal([]byte(strings.TrimSpace(output)), &result)
 	if result.Text == "" {
 		result.Text = strings.TrimSpace(result.Answer)
 	}
-	if result.Text == "" {
-		result.Text = strings.TrimSpace(output)
-	}
-	if result.Evidence == nil {
-		result.Evidence = []domain.ConsultantEvidence{}
-	}
 	validatedEvidence := make([]domain.ConsultantEvidence, 0, len(result.Evidence))
+	valid := parseErr == nil && strings.TrimSpace(result.Text) != "" && len(result.Evidence) > 0
 	for _, item := range result.Evidence {
 		item.SourceID = strings.ToLower(strings.TrimSpace(item.SourceID))
 		if !evidenceSourcePattern.MatchString(item.SourceID) {
-			continue
+			valid = false
+			break
 		}
 		var materialKind string
-		err := tx.QueryRow(ctx, `SELECT material_kind
-FROM company_news_sources
-WHERE company_id = $1::uuid
-  AND source_id = $2::uuid`, input.CompanyID, item.SourceID).Scan(&materialKind)
+		err := tx.QueryRow(ctx, `SELECT s.material_kind
+FROM konstantin_call_sources AS cs
+JOIN company_news_sources AS s USING (source_id)
+WHERE cs.call_id = $1::uuid
+  AND s.company_id = $2::uuid
+  AND s.source_id = $3::uuid
+  AND s.source_revision <= $4`, callID, input.CompanyID, item.SourceID, input.SourceRevision).Scan(&materialKind)
 		if errors.Is(err, pgx.ErrNoRows) {
-			continue
+			valid = false
+			break
 		}
 		if err != nil {
-			return err
+			return "", err
 		}
 		switch item.OriginKind {
 		case "ai_inference":
 		case "fact":
 			if materialKind != "external_news" {
-				continue
+				valid = false
 			}
 		case "bank_view":
 			if materialKind != "alpha_analysis" {
-				continue
+				valid = false
 			}
 		default:
-			continue
+			valid = false
+		}
+		if !valid {
+			break
 		}
 		validatedEvidence = append(validatedEvidence, item)
 	}
-	result.Evidence = validatedEvidence
+	if !valid {
+		result = assistantOutput{Text: insufficientEvidenceAnswer, Evidence: []domain.ConsultantEvidence{}}
+	} else {
+		result.Text = strings.TrimSpace(result.Text)
+		result.Evidence = validatedEvidence
+	}
 	kind := "analysis_result"
 	if input.RequestKind == "question" {
 		kind = "assistant_answer"
@@ -971,7 +980,11 @@ WHERE company_id = $1::uuid
 	}
 	evidence, err := json.Marshal(result.Evidence)
 	if err != nil {
-		return err
+		return "", err
+	}
+	safeOutput, err := json.Marshal(result)
+	if err != nil {
+		return "", err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO konstantin_messages (
     request_id,
@@ -987,7 +1000,10 @@ WHERE company_id = $1::uuid
 )
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::jsonb, $9, $10)
 ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, conversationID, input.AnalysisID, kind, result.Text, string(evidence), input.ProfileRevision, input.SourceRevision)
-	return err
+	if err != nil {
+		return "", err
+	}
+	return string(safeOutput), nil
 }
 
 func (r *Calls) Fail(ctx context.Context, callID, message string) error {

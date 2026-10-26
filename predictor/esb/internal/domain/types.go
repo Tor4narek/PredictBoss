@@ -134,6 +134,28 @@ type Call struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
+// MCPCallContext is a short-lived capability binding an agent to one persisted call.
+// The company scope is derived from the call record, never from MCP arguments.
+type MCPCallContext struct {
+	Agent     AgentType
+	CallID    string
+	CompanyID string
+	ExpiresAt time.Time
+}
+
+// MCPCallContextSigner signs and verifies per-call MCP capabilities.
+type MCPCallContextSigner interface {
+	IssueMCPCallContext(MCPCallContext) (string, error)
+	VerifyMCPCallContext(string, AgentType) (MCPCallContext, error)
+}
+
+// MCPCompanyCallAuthorizer validates an active call capability and requested
+// company against the authoritative call record.
+type MCPCompanyCallAuthorizer interface {
+	AuthorizeMCPCompany(context.Context, AgentType, string, string) (MCPCallContext, error)
+	RecordMCPCallSources(context.Context, MCPCallContext, []string) error
+}
+
 type CompanyProfileSyncState struct {
 	Revision int64
 	Synced   bool
@@ -431,6 +453,7 @@ type CallRepository interface {
 	KonstantinHistory(context.Context, string, time.Time, time.Time, string, int) (ConsultantHistoryPage, error)
 	AnalysisReady(context.Context, string, string) (bool, error)
 	RecordSource(context.Context, CompanySource) (bool, error)
+	RecordKonstantinCallSources(context.Context, string, string, []string) error
 	SourceRevision(context.Context, string) (int64, error)
 	ProfileRevision(context.Context, string) (int64, error)
 }

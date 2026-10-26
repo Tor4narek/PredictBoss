@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/predictboss/predictor/esb/internal/domain"
@@ -50,8 +51,9 @@ type factsOutput struct {
 	Facts []domain.Fact `json:"facts"`
 }
 type companyFactLinksInput struct {
-	CompanyID string                 `json:"company_id"`
-	Links     []factCompanyLinkInput `json:"links"`
+	CallContext string                 `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
+	CompanyID   string                 `json:"company_id"`
+	Links       []factCompanyLinkInput `json:"links"`
 }
 type factCompanyLinkInput struct {
 	FactID     string `json:"fact_id"`
@@ -59,20 +61,24 @@ type factCompanyLinkInput struct {
 	Confidence any    `json:"confidence" jsonschema:"confidence from 0 to 1; accepts a number or numeric string"`
 }
 type companyLimitInput struct {
-	CompanyID string `json:"company_id"`
-	Limit     any    `json:"limit,omitempty" jsonschema:"integer limit; accepts an integer or numeric string"`
+	CallContext string `json:"call_context" jsonschema:"Signed context issued by ESB for this active call; copy unchanged."`
+	CompanyID   string `json:"company_id"`
+	Limit       any    `json:"limit,omitempty" jsonschema:"integer limit; accepts an integer or numeric string"`
 }
 type companyFactsOutput struct {
 	Facts []domain.CompanyFact `json:"facts"`
 }
 type companyMetricsInput struct {
-	CompanyID string                 `json:"company_id"`
-	Metrics   []domain.CompanyMetric `json:"metrics"`
+	CallContext string                 `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
+	CompanyID   string                 `json:"company_id"`
+	Metrics     []domain.CompanyMetric `json:"metrics"`
 }
 type companyProfileInput struct {
-	CompanyID string `json:"company_id"`
+	CallContext string `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
+	CompanyID   string `json:"company_id"`
 }
 type saveCompanyContextInput struct {
+	CallContext     string                 `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
 	CompanyID       string                 `json:"company_id"`
 	ProfileRevision int64                  `json:"profile_revision"`
 	Markdown        string                 `json:"markdown"`
@@ -93,6 +99,7 @@ type companyMetricsOutput struct {
 	Metrics []domain.CompanyMetric `json:"metrics"`
 }
 type metricObservationsInput struct {
+	CallContext  string                   `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
 	CompanyID    string                   `json:"company_id"`
 	Observations []metricObservationInput `json:"observations"`
 }
@@ -109,6 +116,7 @@ type metricObservationInput struct {
 	SourceFactIDs []string `json:"source_fact_ids"`
 }
 type companyAnalysisInput struct {
+	CallContext string   `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
 	CompanyID   string   `json:"company_id"`
 	PeriodFrom  string   `json:"period_from"`
 	PeriodTo    string   `json:"period_to"`
@@ -117,15 +125,29 @@ type companyAnalysisInput struct {
 	Text        string   `json:"text"`
 }
 type metricTotalInput struct {
-	MetricID   string `json:"metric_id"`
-	PeriodFrom string `json:"period_from" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day"`
-	PeriodTo   string `json:"period_to" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day"`
+	CallContext string `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
+	MetricID    string `json:"metric_id"`
+	PeriodFrom  string `json:"period_from" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day"`
+	PeriodTo    string `json:"period_to" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day"`
 }
 type periodInput struct {
-	CompanyID  string `json:"company_id"`
-	PeriodFrom string `json:"period_from" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day"`
-	PeriodTo   string `json:"period_to" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day"`
+	CallContext string `json:"call_context" jsonschema:"Signed context issued by ESB for this active agent call; copy unchanged."`
+	CompanyID   string `json:"company_id"`
+	PeriodFrom  string `json:"period_from" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as start of day"`
+	PeriodTo    string `json:"period_to" jsonschema:"inclusive timestamp YYYY-MM-DD HH:mm:ss; YYYY-MM-DD is accepted as end of day"`
 }
 type insertedOutput struct {
 	Inserted int `json:"inserted"`
+}
+
+func authorizeMCPCompany(ctx context.Context, authorizer domain.MCPCompanyCallAuthorizer, agent domain.AgentType,
+	callContext, companyID string) (domain.MCPCallContext, error) {
+	if authorizer == nil {
+		return domain.MCPCallContext{}, fmt.Errorf("company-scoped MCP tools require an active ESB call context")
+	}
+	value, err := authorizer.AuthorizeMCPCompany(ctx, agent, callContext, companyID)
+	if err != nil {
+		return domain.MCPCallContext{}, fmt.Errorf("invalid or expired MCP call context")
+	}
+	return value, nil
 }

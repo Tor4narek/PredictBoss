@@ -94,6 +94,12 @@ CREATE TABLE company_news_sources (
 CREATE INDEX company_news_sources_company_revision_idx
     ON company_news_sources (company_id, source_revision DESC);
 
+CREATE TABLE konstantin_call_sources (
+    call_id UUID NOT NULL REFERENCES agent_calls(call_id) ON DELETE CASCADE,
+    source_id UUID NOT NULL REFERENCES company_news_sources(source_id),
+    PRIMARY KEY (call_id, source_id)
+);
+
 CREATE TABLE konstantin_messages (
     message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     request_id UUID NOT NULL UNIQUE,

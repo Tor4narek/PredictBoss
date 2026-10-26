@@ -42,7 +42,11 @@ var agentTools = map[domain.AgentType][]string{
 // Agent identity is derived only from its bearer token; the integration API key
 // is intentionally not accepted here.
 func NewStorageHandler(service *analytics.Service, companyContext *companycontext.Service,
-	tokens map[domain.AgentType]string, declaredTools map[domain.AgentType][]string) (http.Handler, error) {
+	authorizer domain.MCPCompanyCallAuthorizer, tokens map[domain.AgentType]string,
+	declaredTools map[domain.AgentType][]string) (http.Handler, error) {
+	if authorizer == nil {
+		return nil, errors.New("MCP company call authorizer is required")
+	}
 	principals, err := authenticateAgentTokens(tokens)
 	if err != nil {
 		return nil, err
@@ -53,7 +57,7 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 		if !ok || !sameTools(expectedTools, declared) {
 			return nil, fmt.Errorf("agent %s MCP tool declaration does not match the ESB policy", agent)
 		}
-		servers[agent] = newStorageServer(service, companyContext, toolSet(expectedTools))
+		servers[agent] = newStorageServer(service, companyContext, agent, authorizer, toolSet(expectedTools))
 	}
 	streamable := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		principal := auth.TokenInfoFromContext(r.Context())
@@ -75,15 +79,16 @@ func NewStorageHandler(service *analytics.Service, companyContext *companycontex
 // NewStorageServer is used by the API documentation generator to discover the
 // complete tool schemas without initializing storage connections.
 func NewStorageServer(service *analytics.Service, companyContext *companycontext.Service) *mcp.Server {
-	return newStorageServer(service, companyContext, nil)
+	return newStorageServer(service, companyContext, "", nil, nil)
 }
 
-func newStorageServer(service *analytics.Service, companyContext *companycontext.Service, allowed map[string]struct{}) *mcp.Server {
+func newStorageServer(service *analytics.Service, companyContext *companycontext.Service, agent domain.AgentType,
+	authorizer domain.MCPCompanyCallAuthorizer, allowed map[string]struct{}) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "predictor-esb", Version: "0.3.0"}, nil)
-	registerCompanyProfileTools(server, allowed, companyContext)
-	registerFactTools(server, allowed, service)
-	registerMetricTools(server, allowed, service)
-	registerReportTools(server, allowed, service)
+	registerCompanyProfileTools(server, allowed, companyContext, agent, authorizer)
+	registerFactTools(server, allowed, service, agent, authorizer)
+	registerMetricTools(server, allowed, service, agent, authorizer)
+	registerReportTools(server, allowed, service, agent, authorizer)
 	return server
 }
 

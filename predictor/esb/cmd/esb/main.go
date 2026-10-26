@@ -22,6 +22,7 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/clickhouse"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/hermes"
+	"github.com/predictboss/predictor/esb/internal/infrastructure/mcpcontext"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/postgres"
 	"github.com/predictboss/predictor/esb/internal/infrastructure/s3"
 	"github.com/predictboss/predictor/esb/internal/presentation/httpapi"
@@ -92,6 +93,10 @@ func runESB() error {
 	if err != nil {
 		return fmt.Errorf("configure Hermes client: %w", err)
 	}
+	mcpCallContextSigner, err := mcpcontext.NewSigner(cfg.Connections.AgentMCPTokens)
+	if err != nil {
+		return fmt.Errorf("configure per-call MCP context signing: %w", err)
+	}
 	var runningStaleAfter time.Duration
 	var activeMaxRetries int
 	if cfg.Cleanup.Enabled {
@@ -100,7 +105,8 @@ func runESB() error {
 	}
 	completionSignal := make(chan struct{}, 1)
 	callService := calls.NewService(callRepository, hermesClient, cfg.Agents, calls.Config{
-		PollInterval: cfg.Queue.HermesPollInterval, DispatchBatchSize: cfg.Queue.DispatchBatchSize,
+		MCPCallContextSigner: mcpCallContextSigner,
+		PollInterval:         cfg.Queue.HermesPollInterval, DispatchBatchSize: cfg.Queue.DispatchBatchSize,
 		ContextCompactionTimeout:         cfg.Queue.ContextCompactionTimeout,
 		ValeraProfileSyncMaxRetries:      cfg.Queue.ValeraProfileSyncRetries,
 		RunningStaleAfter:                runningStaleAfter,
@@ -201,7 +207,7 @@ func runESB() error {
 		WriteTimeout:  cfg.WebSocket.WriteTimeout,
 		OutgoingQueue: cfg.WebSocket.OutgoingQueue, ReplayLimit: cfg.WebSocket.ReplayLimit,
 	})
-	storageHandler, err := presentationmcp.NewStorageHandler(analyticsService, companyContextService,
+	storageHandler, err := presentationmcp.NewStorageHandler(analyticsService, companyContextService, callService,
 		cfg.Connections.AgentMCPTokens, cfg.AgentMCPTools)
 	if err != nil {
 		return fmt.Errorf("configure MCP agent authorization: %w", err)

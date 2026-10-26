@@ -11,7 +11,8 @@ import (
 	"github.com/predictboss/predictor/esb/internal/domain"
 )
 
-func registerFactTools(server *mcp.Server, allowed map[string]struct{}, service *analytics.Service) {
+func registerFactTools(server *mcp.Server, allowed map[string]struct{}, service *analytics.Service,
+	agent domain.AgentType, authorizer domain.MCPCompanyCallAuthorizer) {
 	addTool(server, allowed, &mcp.Tool{Name: "save_news_and_facts", Description: "Store submitted news and company-independent facts in ClickHouse. Copy news_id, source_id, and news_text exactly from the current call. Copy optional metadata only when supplied; never invent company_id, source_url, or timestamps. An empty facts array is valid. occurred_at must be RFC3339 with an explicit timezone or null. ESB normalizes empty or non-RFC3339 values to null because the event time is unknown or ambiguous. Confidence accepts a JSON number or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input saveNewsFactsInput) (*mcp.CallToolResult, saveNewsFactsOutput, error) {
 		if strings.TrimSpace(input.NewsID) == "" || strings.TrimSpace(input.SourceID) == "" || strings.TrimSpace(input.NewsText) == "" {
 			return nil, saveNewsFactsOutput{}, fmt.Errorf("news_id, source_id and news_text are required")
@@ -46,7 +47,11 @@ func registerFactTools(server *mcp.Server, allowed map[string]struct{}, service 
 		return nil, factsOutput{Facts: facts}, nil
 	})
 
-	addTool(server, allowed, &mcp.Tool{Name: "save_fact_company_links", Description: "Persist Savely's supported links between universal facts and a company."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyFactLinksInput) (*mcp.CallToolResult, insertedOutput, error) {
+	addTool(server, allowed, &mcp.Tool{Name: "save_fact_company_links", Description: "Persist Savely's supported links between universal facts and a company. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyFactLinksInput) (*mcp.CallToolResult, insertedOutput, error) {
+		callContext, err := authorizeMCPCompany(ctx, authorizer, agent, input.CallContext, input.CompanyID)
+		if err != nil {
+			return nil, insertedOutput{}, err
+		}
 		links := make([]domain.FactCompanyLink, 0, len(input.Links))
 		for i, link := range input.Links {
 			confidence, err := numericValue(link.Confidence)
@@ -55,18 +60,22 @@ func registerFactTools(server *mcp.Server, allowed map[string]struct{}, service 
 			}
 			links = append(links, domain.FactCompanyLink{FactID: link.FactID, Relevance: link.Relevance, Confidence: confidence})
 		}
-		if err := service.SaveFactCompanyLinks(ctx, input.CompanyID, links); err != nil {
+		if err := service.SaveFactCompanyLinks(ctx, callContext.CompanyID, links); err != nil {
 			return nil, insertedOutput{}, err
 		}
 		return nil, insertedOutput{Inserted: len(links)}, nil
 	})
 
-	addTool(server, allowed, &mcp.Tool{Name: "get_company_facts", Description: "Read universal facts that have already been linked to a company. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, companyFactsOutput, error) {
+	addTool(server, allowed, &mcp.Tool{Name: "get_company_facts", Description: "Read universal facts that have already been linked to a company. `call_context` must be copied unchanged from this active call; `company_id` must match its signed company scope. Limit accepts an integer or numeric string."}, func(ctx context.Context, _ *mcp.CallToolRequest, input companyLimitInput) (*mcp.CallToolResult, companyFactsOutput, error) {
+		callContext, err := authorizeMCPCompany(ctx, authorizer, agent, input.CallContext, input.CompanyID)
+		if err != nil {
+			return nil, companyFactsOutput{}, err
+		}
 		limit, err := integerValue(input.Limit)
 		if err != nil {
 			return nil, companyFactsOutput{}, fmt.Errorf("limit must be an integer: %w", err)
 		}
-		facts, err := service.CompanyFacts(ctx, input.CompanyID, limit)
+		facts, err := service.CompanyFacts(ctx, callContext.CompanyID, limit)
 		if err != nil {
 			return nil, companyFactsOutput{}, err
 		}

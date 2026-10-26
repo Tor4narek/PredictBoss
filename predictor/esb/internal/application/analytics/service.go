@@ -460,9 +460,10 @@ func (s *Service) SaveCompanyAnalysis(ctx context.Context, analysis domain.Compa
 	return s.repository.SaveCompanyAnalysis(ctx, analysis)
 }
 
-func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to string) (domain.MetricTotal, error) {
+func (s *Service) CalculateMetricTotal(ctx context.Context, companyID, metricID, from, to string) (domain.MetricTotal, error) {
+	companyID = strings.TrimSpace(companyID)
 	metricID = strings.TrimSpace(metricID)
-	if !uuidPattern.MatchString(metricID) {
+	if !uuidPattern.MatchString(companyID) || !uuidPattern.MatchString(metricID) {
 		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
 	fromTime, toTime, err := metricPeriod(from, to)
@@ -470,9 +471,12 @@ func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to s
 		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
 	fromText, toText := fromTime.Format("2006-01-02 15:04:05"), toTime.Format("2006-01-02 15:04:05")
-	metric, companyID, err := s.metrics.MetricForID(ctx, metricID)
+	metric, metricCompanyID, err := s.metrics.MetricForID(ctx, metricID)
 	if err != nil {
 		return domain.MetricTotal{}, err
+	}
+	if !strings.EqualFold(metricCompanyID, companyID) {
+		return domain.MetricTotal{}, ErrInvalidAnalyticsInput
 	}
 	var total domain.MetricTotal
 	if toTime.Before(fromTime) {
@@ -483,7 +487,7 @@ func (s *Service) CalculateMetricTotal(ctx context.Context, metricID, from, to s
 			return domain.MetricTotal{}, err
 		}
 	}
-	total.CompanyID = companyID
+	total.CompanyID = metricCompanyID
 	total.Unit = metric.Unit
 	if err := s.repository.SaveMetricTotal(ctx, total); err != nil {
 		return domain.MetricTotal{}, err

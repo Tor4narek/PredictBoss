@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -267,6 +268,31 @@ WHERE source_id = $1::uuid`, source.SourceID).Scan(&existingCompany); err != nil
 		return false, domain.ErrConflict
 	}
 	return false, nil
+}
+
+// RecordKonstantinCallSources stores only source IDs returned for the active
+// company's source snapshot. The call ID keeps concurrent runs isolated.
+func (r *Calls) RecordKonstantinCallSources(ctx context.Context, callID, companyID string, sourceIDs []string) error {
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx, `INSERT INTO konstantin_call_sources (call_id, source_id)
+SELECT c.call_id, s.source_id
+FROM agent_calls AS c
+JOIN agent_conversations AS v USING (conversation_id)
+JOIN company_news_sources AS s
+  ON s.company_id = v.scope_id::uuid
+ AND s.source_id::text = ANY($3::text[])
+ AND s.source_revision <= (c.request_json->>'source_revision')::bigint
+WHERE c.call_id = $1::uuid
+  AND c.agent_type = 'konstantin'
+  AND v.scope_id = $2
+  AND c.status IN ('submitting', 'started', 'running', 'processing')
+ON CONFLICT (call_id, source_id) DO NOTHING`, callID, companyID, sourceIDs)
+	if err != nil {
+		return fmt.Errorf("record sources returned to Konstantin: %w", err)
+	}
+	return nil
 }
 
 func (r *Calls) SourceRevision(ctx context.Context, companyID string) (int64, error) {
