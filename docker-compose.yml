@@ -105,7 +105,6 @@ services:
     command: ["migrate", "apply", "--env", "local"]
     environment:
       ATLAS_DATABASE_URL: postgres://${POSTGRES_USER:-predictor}:${POSTGRES_PASSWORD:-local-predictor-password}@postgres:5432/${POSTGRES_DB:-predictor}?sslmode=disable
-      ATLAS_TOKEN: ${ATLAS_TOKEN:-}
     volumes:
       - ./predictor/storage/postgres:/migrations:ro,z
     depends_on:
