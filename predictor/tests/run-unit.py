@@ -23,6 +23,14 @@ def main() -> int:
         print(f"no ESB unit tests found under {TEST_ROOT}", file=sys.stderr)
         return 2
 
+    observer_tests = subprocess.run(
+        [sys.executable, str(ROOT / "predictor" / "tests" / "test_mcp_observer.py")],
+        cwd=ROOT,
+        check=False,
+    )
+    if observer_tests.returncode != 0:
+        return observer_tests.returncode
+
     with tempfile.TemporaryDirectory(prefix="predictor-go-overlay-") as temp_dir:
         overlay = Path(temp_dir) / "overlay.json"
         overlay.write_text(json.dumps({"Replace": replacements}), encoding="utf-8")

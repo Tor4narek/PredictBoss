@@ -1,4 +1,4 @@
-.PHONY: docs docs-check build lint test test-unit test-integration test-e2e test-race coverage tools
+.PHONY: docs docs-check build lint test test-unit test-integration test-e2e test-llm-tools test-race coverage tools
 
 GO ?= go
 GOLANGCI_LINT_VERSION := 2.8.0
@@ -37,6 +37,9 @@ test-e2e:
 	@docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required for the isolated ESB E2E suite." >&2; exit 1; }
 	@docker info >/dev/null 2>&1 || { echo "Start the Docker daemon before running the ESB E2E suite." >&2; exit 1; }
 	./predictor/tests/run-e2e.sh
+
+test-llm-tools:
+	./predictor/tests/run-llm-tools.sh
 
 test-race:
 	GO="$(GO)" python3 predictor/tests/run-unit.py -race ./...
