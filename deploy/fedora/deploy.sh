@@ -77,6 +77,6 @@ done
 "${compose[@]}" up -d postgres clickhouse minio domain-postgres
 "${compose[@]}" --profile migrations run --rm atlas-postgres
 "${compose[@]}" --profile migrations run --rm atlas-clickhouse
-"${compose[@]}" build --parallel 1 domain-api domain-worker frontend esb
+"${compose[@]}" build --parallel=1 domain-api domain-worker frontend esb
 "${compose[@]}" up -d --no-build --remove-orphans
 "${compose[@]}" ps
