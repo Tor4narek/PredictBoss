@@ -202,36 +202,6 @@ func (s *Service) KonstantinHistory(ctx context.Context, companyID, fromText, to
 	return page, nil
 }
 
-func (s *Service) WaitKonstantinEvent(ctx context.Context, requestID string) (domain.ConsultantEvent, error) {
-	ticker := time.NewTicker(s.settings.KonstantinEventPollInterval)
-	defer ticker.Stop()
-	for {
-		event, err := s.repository.Event(ctx, requestID)
-		if err == nil {
-			return event, nil
-		}
-		if !errors.Is(err, domain.ErrNotFound) {
-			return domain.ConsultantEvent{}, err
-		}
-		call, statusErr := s.repository.RequestStatus(ctx, requestID)
-		if statusErr == nil && (call.Status == domain.CallFailed || call.Status == domain.CallCancelled || call.Status == domain.CallInterrupted) {
-			message := "agent_call_" + string(call.Status)
-			if call.Error != nil && *call.Error != "" {
-				message = *call.Error
-			}
-			return domain.ConsultantEvent{}, errors.New(message)
-		}
-		if statusErr != nil && !errors.Is(statusErr, domain.ErrNotFound) {
-			return domain.ConsultantEvent{}, statusErr
-		}
-		select {
-		case <-ctx.Done():
-			return domain.ConsultantEvent{}, ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
-
 func deterministicUUID(seed string) string {
 	digest := sha256.Sum256([]byte(seed))
 	data := digest[:16]

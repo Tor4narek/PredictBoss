@@ -67,20 +67,19 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 					}},
 				}
 				call := assertRequest(t, client, baseURL, http.MethodPost, "/call?agent=saveliy", body, true, http.StatusAccepted, "")
-				waitForLLMCall(t, client, baseURL, "saveliy", stringField(t, call.body, "call_id"))
+				waitForLLMCall(t, client, baseURL, observerURL, correlationID, "saveliy", stringField(t, call.body, "call_id"))
 				after := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent, after[len(before):])
 				assertProfileToolCall(t, after[len(before):], agent, correlationID, "save_fact_company_links")
-				linked := callTool(t, ctx, sessions, "get_company_facts", map[string]any{"company_id": companyID, "limit": 10})
-				if len(arrayField(t, linked, "facts")) != 1 {
-					t.Fatal("Saveliy completed without persisting the expected company-fact link")
+				if linked := clickHouseCount(t, "SELECT count() FROM fact_company FINAL WHERE company_id = '"+companyID+"' AND fact_id = toUUID('"+factID+"')"); linked != 1 {
+					t.Fatalf("Saveliy completed without persisting the expected company-fact link (rows=%d)", linked)
 				}
 
 			case "kesha":
 				call := assertRequest(t, client, baseURL, http.MethodPost, "/call?agent=kesha", map[string]any{
 					"company_id": companyID, "period_from": "2026-01-01", "period_to": "2027-01-01",
 				}, true, http.StatusAccepted, "")
-				waitForLLMCall(t, client, baseURL, "kesha", stringField(t, call.body, "call_id"))
+				waitForLLMCall(t, client, baseURL, observerURL, correlationID, "kesha", stringField(t, call.body, "call_id"))
 				after := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent, after[len(before):])
 				events := after[len(before):]
@@ -293,7 +292,7 @@ func waitForReadiness(t *testing.T, client *http.Client, baseURL string) {
 	}
 }
 
-func waitForLLMCall(t *testing.T, client *http.Client, baseURL, agent, callID string) {
+func waitForLLMCall(t *testing.T, client *http.Client, baseURL, observerURL, correlationID, agent, callID string) {
 	t.Helper()
 	deadline := time.NewTimer(5 * time.Minute)
 	defer deadline.Stop()
@@ -307,7 +306,13 @@ func waitForLLMCall(t *testing.T, client *http.Client, baseURL, agent, callID st
 			case "completed":
 				return
 			case "failed", "cancelled", "interrupted":
-				t.Fatalf("real %s call ended with status %s", agent, result.body["status"])
+				events := observedCalls(t, client, observerURL, correlationID)
+				logObservedToolCalls(t, agent, events)
+				message := fmt.Sprintf("real %s call ended with status %s", agent, result.body["status"])
+				if code, ok := result.body["error"].(string); ok && stableLLMErrorCode(code) {
+					message += " (error=" + code + ")"
+				}
+				t.Fatal(message)
 			}
 		} else {
 			t.Fatalf("read real %s call status returned HTTP %d", agent, result.status)
@@ -317,6 +322,16 @@ func waitForLLMCall(t *testing.T, client *http.Client, baseURL, agent, callID st
 			t.Fatalf("real %s call %s did not complete before the test deadline", agent, callID)
 		case <-ticker.C:
 		}
+	}
+}
+
+func stableLLMErrorCode(code string) bool {
+	switch code {
+	case "assistant_response_failed", "execution_deadline_exceeded", "company_profile_not_synced",
+		"news_persistence_unconfirmed", "profile_revision_superseded":
+		return true
+	default:
+		return false
 	}
 }
 

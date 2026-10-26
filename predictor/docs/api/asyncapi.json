@@ -26,7 +26,7 @@
           }
         },
         "requestId": {
-          "description": "Optional pending analysis request to await.",
+          "description": "Optional request to observe until its one-shot answer or terminal state.",
           "schema": {
             "format": "uuid",
             "type": "string"
@@ -38,6 +38,9 @@
           "oneOf": [
             {
               "$ref": "#/components/messages/Question"
+            },
+            {
+              "$ref": "#/components/messages/Cancel"
             }
           ]
         },
@@ -54,12 +57,21 @@
               "$ref": "#/components/messages/Accepted"
             },
             {
+              "$ref": "#/components/messages/CancelRequested"
+            },
+            {
+              "$ref": "#/components/messages/CancelFailed"
+            },
+            {
+              "$ref": "#/components/messages/AssistantCancelled"
+            },
+            {
               "$ref": "#/components/messages/StreamError"
             }
           ]
         },
         "operationId": "receiveKonstantinEvents",
-        "summary": "Receive analysis, answers, acknowledgements, and errors."
+        "summary": "Receive one complete answer or cancellation lifecycle events; no token deltas are emitted."
       }
     }
   },
@@ -70,6 +82,34 @@
         "name": "Accepted",
         "payload": {
           "$ref": "#/components/schemas/Accepted"
+        }
+      },
+      "AssistantCancelled": {
+        "contentType": "application/json",
+        "name": "AssistantCancelled",
+        "payload": {
+          "$ref": "#/components/schemas/AssistantCancelled"
+        }
+      },
+      "Cancel": {
+        "contentType": "application/json",
+        "name": "Cancel",
+        "payload": {
+          "$ref": "#/components/schemas/Cancel"
+        }
+      },
+      "CancelFailed": {
+        "contentType": "application/json",
+        "name": "CancelFailed",
+        "payload": {
+          "$ref": "#/components/schemas/CancelFailed"
+        }
+      },
+      "CancelRequested": {
+        "contentType": "application/json",
+        "name": "CancelRequested",
+        "payload": {
+          "$ref": "#/components/schemas/CancelRequested"
         }
       },
       "ConsultantEvent": {
@@ -113,24 +153,180 @@
             "description": "Question request ID.",
             "type": "string"
           },
+          "responseId": {
+            "description": "Stable identifier for this one-shot answer; equal to callId.",
+            "type": "string"
+          },
           "reused": {
             "description": "True when an idempotent earlier call was reused.",
             "type": "boolean"
+          },
+          "sequence": {
+            "description": "First lifecycle sequence number; always zero.",
+            "type": "integer"
           }
         },
         "required": [
           "kind",
           "requestId",
           "callId",
+          "responseId",
+          "sequence",
           "reused"
         ],
         "title": "Accepted",
+        "type": "object"
+      },
+      "AssistantCancelled": {
+        "additionalProperties": false,
+        "properties": {
+          "callId": {
+            "description": "ESB call ID.",
+            "type": "string"
+          },
+          "incomplete": {
+            "description": "True because no final assistant answer was saved.",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "Message kind; always assistant_cancelled.",
+            "enum": [
+              "assistant_cancelled"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Question request ID.",
+            "type": "string"
+          },
+          "responseId": {
+            "description": "Stable answer identifier; equal to callId.",
+            "type": "string"
+          },
+          "sequence": {
+            "description": "Terminal sequence number for this call.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "callId",
+          "responseId",
+          "sequence",
+          "incomplete"
+        ],
+        "title": "AssistantCancelled",
+        "type": "object"
+      },
+      "Cancel": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Message kind; must be cancel.",
+            "enum": [
+              "cancel"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Request ID of the Konstantin question to cancel.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId"
+        ],
+        "title": "Cancel",
+        "type": "object"
+      },
+      "CancelFailed": {
+        "additionalProperties": false,
+        "properties": {
+          "callId": {
+            "description": "ESB call ID.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Stable error code; never includes Hermes details.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Message kind; always cancel_failed.",
+            "enum": [
+              "cancel_failed"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Question request ID.",
+            "type": "string"
+          },
+          "responseId": {
+            "description": "Stable answer identifier; equal to callId.",
+            "type": "string"
+          },
+          "sequence": {
+            "description": "Monotonic sequence number for this call.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "callId",
+          "responseId",
+          "sequence",
+          "error"
+        ],
+        "title": "CancelFailed",
+        "type": "object"
+      },
+      "CancelRequested": {
+        "additionalProperties": false,
+        "properties": {
+          "callId": {
+            "description": "ESB call ID.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Message kind; always cancel_requested.",
+            "enum": [
+              "cancel_requested"
+            ],
+            "type": "string"
+          },
+          "requestId": {
+            "description": "Cancelled question request ID.",
+            "type": "string"
+          },
+          "responseId": {
+            "description": "Stable answer identifier; equal to callId.",
+            "type": "string"
+          },
+          "sequence": {
+            "description": "Monotonic sequence number for this call.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "callId",
+          "responseId",
+          "sequence"
+        ],
+        "title": "CancelRequested",
         "type": "object"
       },
       "ConsultantEvent": {
         "additionalProperties": false,
         "properties": {
           "analysisId": {
+            "type": "string"
+          },
+          "callId": {
             "type": "string"
           },
           "companyId": {
@@ -177,7 +373,13 @@
           "requestId": {
             "type": "string"
           },
+          "responseId": {
+            "type": "string"
+          },
           "schemaVersion": {
+            "type": "integer"
+          },
+          "sequence": {
             "type": "integer"
           },
           "text": {
@@ -242,9 +444,17 @@
       "StreamError": {
         "additionalProperties": false,
         "properties": {
-          "error": {
-            "description": "Stable error code.",
+          "callId": {
+            "description": "ESB call ID when a call exists.",
             "type": "string"
+          },
+          "error": {
+            "description": "Stable machine-readable error code.",
+            "type": "string"
+          },
+          "incomplete": {
+            "description": "True when no complete answer was saved.",
+            "type": "boolean"
           },
           "kind": {
             "description": "Message kind; always error.",
@@ -256,6 +466,18 @@
           "requestId": {
             "description": "Related request ID when available.",
             "type": "string"
+          },
+          "responseId": {
+            "description": "Stable answer identifier when a call exists.",
+            "type": "string"
+          },
+          "sequence": {
+            "description": "Monotonic sequence number when a call exists.",
+            "type": "integer"
+          },
+          "terminal": {
+            "description": "True when no later answer event will follow on this connection.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -268,7 +490,7 @@
     }
   },
   "info": {
-    "description": "The only WebSocket API in ESB. The client subscribes to a company conversation and may send question frames.",
+    "description": "The only WebSocket API in ESB. Questions are answered with one saved assistant_answer message. The client may cancel one request by requestId.",
     "title": "Predictor ESB Konstantin WebSocket",
     "version": "0.3.0"
   },

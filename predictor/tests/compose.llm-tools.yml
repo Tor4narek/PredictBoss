@@ -1,5 +1,5 @@
 x-real-hermes: &real-hermes
-  image: nousresearch/hermes-agent:latest
+  image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
   restart: "no"
   command: ["gateway", "run"]
   depends_on:

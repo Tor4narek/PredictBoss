@@ -124,13 +124,20 @@ INSERT INTO agent_conversations (conversation_id, agent_type, scope_id, created_
 ('${saveliy_conversation}', 'saveliy', '${cleanup_company_id}', now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
 ('${konstantin_conversation}', 'konstantin', '${cleanup_company_id}', now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
 ('${unknown_conversation}', 'kesha', 'cleanup-unknown-company', now() - INTERVAL '2 days', now() - INTERVAL '2 days');
-INSERT INTO agent_calls (call_id, conversation_id, agent_type, request_json, hermes_run_id, idempotency_key, status, retry_count, created_at, updated_at) VALUES
-('${failed_news_call}', '${failed_news_conversation}', 'serezha', '{"news_id":"${unprocessed_news_id}","source_id":"${cleanup_source_id}","news_text":"unprocessed fixture text"}'::jsonb, NULL, 'cleanup-news-idempotency', 'failed', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
-('${retry_call}', '${retry_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb, 'cleanup-failed-run', 'cleanup-retry-idempotency', 'running', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
-('${submission_call}', '${submission_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb, NULL, 'cleanup-submission-idempotency', 'submitting', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
-('${saveliy_call}', '${saveliy_conversation}', 'saveliy', '{"company_id":"${cleanup_company_id}"}'::jsonb, NULL, NULL, 'completed', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
-('${konstantin_call}', '${konstantin_conversation}', 'konstantin', '{"company_id":"${cleanup_company_id}"}'::jsonb, NULL, 'cleanup-konstantin-idempotency', 'completed', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
-('${unknown_active_call}', '${unknown_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb, 'missing-hermes-run', NULL, 'running', 0, now() - INTERVAL '2 days', now() - INTERVAL '2 days');
+INSERT INTO agent_calls (call_id, conversation_id, agent_type, request_json, hermes_run_id, idempotency_key,
+                         status, retry_count, execution_deadline_at, launch_started_at, created_at, updated_at) VALUES
+('${failed_news_call}', '${failed_news_conversation}', 'serezha', '{"news_id":"${unprocessed_news_id}","source_id":"${cleanup_source_id}","news_text":"unprocessed fixture text"}'::jsonb,
+ NULL, 'cleanup-news-idempotency', 'failed', 0, now() + INTERVAL '1 day', NULL, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
+('${retry_call}', '${retry_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb,
+ 'cleanup-failed-run', 'cleanup-retry-idempotency', 'running', 0, now() + INTERVAL '1 day', now() - INTERVAL '2 days', now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
+('${submission_call}', '${submission_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb,
+ NULL, 'cleanup-submission-idempotency', 'submitting', 0, now() + INTERVAL '1 day', NULL, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
+('${saveliy_call}', '${saveliy_conversation}', 'saveliy', '{"company_id":"${cleanup_company_id}"}'::jsonb,
+ NULL, NULL, 'completed', 0, now() + INTERVAL '1 day', NULL, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
+('${konstantin_call}', '${konstantin_conversation}', 'konstantin', '{"company_id":"${cleanup_company_id}"}'::jsonb,
+ NULL, 'cleanup-konstantin-idempotency', 'completed', 0, now() + INTERVAL '1 day', NULL, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
+('${unknown_active_call}', '${unknown_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb,
+ 'missing-hermes-run', NULL, 'running', 0, now() + INTERVAL '1 day', now() - INTERVAL '2 days', now() - INTERVAL '2 days', now() - INTERVAL '2 days');
 INSERT INTO agent_messages (conversation_id, call_id, role, content, created_at) VALUES
 ('${failed_news_conversation}', '${failed_news_call}', 'user', '{"news_id":"${unprocessed_news_id}","news_text":"unprocessed fixture text"}', now() - INTERVAL '2 days'),
 ('${saveliy_conversation}', '${saveliy_call}', 'user', 'expired message fixture', now() - INTERVAL '2 days'),

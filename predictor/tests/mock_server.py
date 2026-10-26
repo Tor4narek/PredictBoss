@@ -17,6 +17,7 @@ REQUESTS = []
 NEXT_OUTPUTS = {}
 NEXT_STATUSES = {}
 MCP_CALLS = []
+STOP_REQUESTS = []
 LOCK = threading.Lock()
 RUN_SEQUENCE = 0
 
@@ -62,6 +63,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"calls": calls})
             return
 
+        if path == "/test/stops":
+            with LOCK:
+                stops = list(STOP_REQUESTS)
+            self.send_json(200, {"stops": stops})
+            return
+
         if path.startswith("/v1/runs/"):
             if not self.authorized("test-hermes-api-key"):
                 self.send_json(401, {"error": "unauthorized"})
@@ -83,7 +90,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global RUN_SEQUENCE
-        if urlparse(self.path).path == "/test/next-status":
+        path = urlparse(self.path).path
+        if path.startswith("/v1/runs/") and path.endswith("/stop"):
+            if not self.authorized("test-hermes-api-key"):
+                self.send_json(401, {"error": "unauthorized"})
+                return
+            run_id = path.removeprefix("/v1/runs/").removesuffix("/stop").rstrip("/")
+            with LOCK:
+                run = RUNS.get(run_id)
+                if run is not None:
+                    run["status"] = "cancelled"
+                    STOP_REQUESTS.append({"run_id": run_id})
+            if run is None:
+                self.send_json(404, {"error": "run_not_found"})
+            else:
+                self.send_json(202, {"status": "stopping"})
+            return
+        if path == "/test/next-status":
             try:
                 fixture = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 company_id = fixture["company_id"]
@@ -97,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
                 NEXT_STATUSES[company_id] = status
             self.send_json(201, {"status": "queued"})
             return
-        if urlparse(self.path).path == "/test/next-output":
+        if path == "/test/next-output":
             try:
                 fixture = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 company_id = fixture["company_id"]
@@ -112,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
                 NEXT_OUTPUTS[(company_id, request_kind)] = json.dumps(output, separators=(",", ":"))
             self.send_json(201, {"status": "queued"})
             return
-        if urlparse(self.path).path == "/test/runs":
+        if path == "/test/runs":
             try:
                 fixture = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 run_id = fixture["run_id"]
@@ -131,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             self.send_json(201, {"run_id": run_id})
             return
-        if urlparse(self.path).path != "/v1/runs":
+        if path != "/v1/runs":
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized("test-hermes-api-key"):

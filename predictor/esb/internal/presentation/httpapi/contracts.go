@@ -145,14 +145,52 @@ type questionFrame struct {
 }
 
 type acceptedFrame struct {
-	Kind      string `json:"kind" jsonschema:"Message kind; always accepted."`
-	RequestID string `json:"requestId" jsonschema:"Question request ID."`
-	CallID    string `json:"callId" jsonschema:"Queued Hermes call ID."`
-	Reused    bool   `json:"reused" jsonschema:"True when an idempotent earlier call was reused."`
+	Kind       string `json:"kind" jsonschema:"Message kind; always accepted."`
+	RequestID  string `json:"requestId" jsonschema:"Question request ID."`
+	CallID     string `json:"callId" jsonschema:"Queued Hermes call ID."`
+	ResponseID string `json:"responseId" jsonschema:"Stable identifier for this one-shot answer; equal to callId."`
+	Sequence   int64  `json:"sequence" jsonschema:"First lifecycle sequence number; always zero."`
+	Reused     bool   `json:"reused" jsonschema:"True when an idempotent earlier call was reused."`
+}
+
+type cancelFrame struct {
+	Kind      string `json:"kind" jsonschema:"Message kind; must be cancel."`
+	RequestID string `json:"requestId" jsonschema:"Request ID of the Konstantin question to cancel."`
+}
+
+type cancelRequestedFrame struct {
+	Kind       string `json:"kind" jsonschema:"Message kind; always cancel_requested."`
+	RequestID  string `json:"requestId" jsonschema:"Cancelled question request ID."`
+	CallID     string `json:"callId" jsonschema:"ESB call ID."`
+	ResponseID string `json:"responseId" jsonschema:"Stable answer identifier; equal to callId."`
+	Sequence   int64  `json:"sequence" jsonschema:"Monotonic sequence number for this call."`
+}
+
+type cancelFailedFrame struct {
+	Kind       string `json:"kind" jsonschema:"Message kind; always cancel_failed."`
+	RequestID  string `json:"requestId" jsonschema:"Question request ID."`
+	CallID     string `json:"callId" jsonschema:"ESB call ID."`
+	ResponseID string `json:"responseId" jsonschema:"Stable answer identifier; equal to callId."`
+	Sequence   int64  `json:"sequence" jsonschema:"Monotonic sequence number for this call."`
+	Error      string `json:"error" jsonschema:"Stable error code; never includes Hermes details."`
+}
+
+type assistantCancelledFrame struct {
+	Kind       string `json:"kind" jsonschema:"Message kind; always assistant_cancelled."`
+	RequestID  string `json:"requestId" jsonschema:"Question request ID."`
+	CallID     string `json:"callId" jsonschema:"ESB call ID."`
+	ResponseID string `json:"responseId" jsonschema:"Stable answer identifier; equal to callId."`
+	Sequence   int64  `json:"sequence" jsonschema:"Terminal sequence number for this call."`
+	Incomplete bool   `json:"incomplete" jsonschema:"True because no final assistant answer was saved."`
 }
 
 type errorFrame struct {
-	Kind      string `json:"kind" jsonschema:"Message kind; always error."`
-	RequestID string `json:"requestId,omitempty" jsonschema:"Related request ID when available."`
-	Error     string `json:"error" jsonschema:"Stable error code."`
+	Kind       string `json:"kind" jsonschema:"Message kind; always error."`
+	RequestID  string `json:"requestId,omitempty" jsonschema:"Related request ID when available."`
+	CallID     string `json:"callId,omitempty" jsonschema:"ESB call ID when a call exists."`
+	ResponseID string `json:"responseId,omitempty" jsonschema:"Stable answer identifier when a call exists."`
+	Sequence   int64  `json:"sequence,omitempty" jsonschema:"Monotonic sequence number when a call exists."`
+	Error      string `json:"error" jsonschema:"Stable machine-readable error code."`
+	Incomplete bool   `json:"incomplete,omitempty" jsonschema:"True when no complete answer was saved."`
+	Terminal   bool   `json:"terminal,omitempty" jsonschema:"True when no later answer event will follow on this connection."`
 }

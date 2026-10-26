@@ -8,6 +8,7 @@
 | Имя | Тип | Default | Единица / диапазон | Назначение |
 | --- | --- | --- | --- | --- |
 | `AGENTS_DIR` | string | ../agents | —; not validated | Directory containing agent.json, skills, and Hermes configuration. |
+| `CALL_EXECUTION_TIMEOUT` | duration | 10m0s | duration; 1s…24h0m0s | Absolute maximum execution time per call; polling and status updates do not extend it. |
 | `CLICKHOUSE_MAX_RESPONSE_BYTES` | integer (int64) | 4194304 | bytes; 1024…67108864 | Maximum ClickHouse response body size accepted by ESB. |
 | `CLICKHOUSE_REQUEST_TIMEOUT` | duration | 45s | duration; 1ms…1h0m0s | HTTP client timeout for ClickHouse requests. |
 | `COMPANY_ITEMS_DEFAULT_PAGE_SIZE` | integer | 100 | items; 1…100000 | Default page size for company fact and metric lists. |
@@ -35,6 +36,7 @@
 | `HERMES_SAVELIY_URL` | string | empty / unset | —; not validated | Legacy single Saveliy Hermes URL; use HERMES_SAVELIY_INSTANCES for a pool. |
 | `HERMES_SEREZHA_INSTANCES` | string | empty / unset | —; not validated | Named Serezha runtime pool as id=state@url entries separated by semicolons. |
 | `HERMES_SEREZHA_URL` | string | empty / unset | —; not validated | Legacy single Serezha Hermes URL; use HERMES_SEREZHA_INSTANCES for a pool. |
+| `HERMES_STOP_REQUEST_TIMEOUT` | duration | 5s | duration; 1ms…1m0s | HTTP timeout for one Hermes Run API stop request; acceptance is not terminal confirmation. |
 | `HERMES_VALERA_INSTANCES` | string | empty / unset | —; not validated | Named Valera runtime pool as id=state@url entries separated by semicolons. |
 | `HERMES_VALERA_URL` | string | empty / unset | —; not validated | Legacy single Valera Hermes URL; use HERMES_VALERA_INSTANCES for a pool. |
 | `HTTP_ADDR` | string | :8081 | —; not validated | ESB listen address inside its network namespace. |

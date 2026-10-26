@@ -685,6 +685,56 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	unavailableEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777781",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite a source absent from this context."})
 	assertInsufficientEvidence(t, unavailableEvidence)
+
+	// Cancellation is a lifecycle operation: the model still produces one full
+	// answer per request, and an active Hermes run must be stopped exactly once.
+	cancelRequestID := "77777777-7777-4777-8777-777777777782"
+	queueMockRunStatus(t, httpClient, "http://127.0.0.1:18090", companyID, "running")
+	writeFrame(t, ws, map[string]any{"kind": "question", "requestId": cancelRequestID, "companyId": companyID,
+		"conversationId": conversationID, "analysisId": analysisID, "text": "Please cancel this analysis."})
+	cancelAccepted := readFrame(t, ws)
+	if stringField(t, cancelAccepted, "kind") != "accepted" || stringField(t, cancelAccepted, "requestId") != cancelRequestID {
+		t.Fatalf("cancellable question was not accepted: %#v", cancelAccepted)
+	}
+	cancelCallID := stringField(t, cancelAccepted, "callId")
+	cancelRun := waitForMockRequest(t, httpClient, e2eMockURLs(), cancelCallID)
+	waitForCallStatus(t, httpClient, baseURL, "konstantin", cancelCallID, "running")
+	writeFrame(t, ws, map[string]any{"kind": "cancel", "requestId": cancelRequestID})
+	cancelRequested := readUntilRequest(t, ws, cancelRequestID, "cancel_requested")
+	cancelSequence := intField(t, cancelRequested, "sequence")
+	if cancelSequence <= intField(t, cancelAccepted, "sequence") {
+		t.Fatalf("cancel sequence %d did not follow accepted sequence %v", cancelSequence, cancelAccepted["sequence"])
+	}
+	writeFrame(t, ws, map[string]any{"kind": "cancel", "requestId": cancelRequestID})
+	cancelled := readUntilRequest(t, ws, cancelRequestID, "assistant_cancelled")
+	terminalSequence := intField(t, cancelled, "sequence")
+	if terminalSequence <= cancelSequence || !boolField(t, cancelled, "incomplete") {
+		t.Fatalf("cancellation terminal frame did not follow the request: %#v", cancelled)
+	}
+	if call := waitForCallStatus(t, httpClient, baseURL, "konstantin", cancelCallID, "cancelled"); stringField(t, call, "error") != "assistant_cancelled" {
+		t.Fatalf("cancelled call has unexpected stored outcome: %#v", call)
+	}
+	if stopCount := mockStopCount(t, httpClient, cancelRun.baseURL, cancelRun.runID); stopCount != 1 {
+		t.Fatalf("Hermes stop was requested %d times for one cancelled call, want 1", stopCount)
+	}
+	cancelHistory := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyID, "historyLimit": 100, "historyFrom": historyFrom, "historyTo": historyTo}, true, http.StatusOK, "")
+	var sawCancelledUser, sawCancelledAssistant bool
+	for _, raw := range arrayField(t, cancelHistory.body, "history") {
+		message, ok := raw.(map[string]any)
+		if !ok || stringField(t, message, "requestId") != cancelRequestID {
+			continue
+		}
+		switch stringField(t, message, "role") {
+		case "user":
+			sawCancelledUser = true
+		case "assistant":
+			sawCancelledAssistant = true
+		}
+	}
+	if !sawCancelledUser || sawCancelledAssistant {
+		t.Fatalf("cancelled turn history should keep the question and omit an assistant answer (user=%t assistant=%t)", sawCancelledUser, sawCancelledAssistant)
+	}
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 
 	// New source and profile revisions independently invalidate saved analysis.
@@ -1097,6 +1147,33 @@ func readMockRequests(t *testing.T, client *http.Client, baseURL string) []mockR
 	return requests
 }
 
+func mockStopCount(t *testing.T, client *http.Client, baseURL, runID string) int {
+	t.Helper()
+	response, err := client.Get(strings.TrimRight(baseURL, "/") + "/test/stops")
+	if err != nil {
+		t.Fatalf("read Hermes mock stop requests: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("read Hermes mock stop requests returned %d", response.StatusCode)
+	}
+	var result struct {
+		Stops []struct {
+			RunID string `json:"run_id"`
+		} `json:"stops"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode Hermes mock stop requests: %v", err)
+	}
+	count := 0
+	for _, stop := range result.Stops {
+		if stop.RunID == runID {
+			count++
+		}
+	}
+	return count
+}
+
 func assertCallRemainsQueued(t *testing.T, client *http.Client, baseURL, callID string, mockURLs []string, key string) {
 	t.Helper()
 	deadline := time.NewTimer(500 * time.Millisecond)
@@ -1499,6 +1576,33 @@ func waitForCall(t *testing.T, client *http.Client, baseURL, agent, callID strin
 	}
 	t.Fatalf("agent %s call %s did not complete", agent, callID)
 	return nil
+}
+
+func waitForCallStatus(t *testing.T, client *http.Client, baseURL, agent, callID, wantStatus string) map[string]any {
+	t.Helper()
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		result := performRequest(t, client, baseURL, http.MethodGet, "/call?agent="+url.QueryEscape(agent),
+			map[string]any{"call_id": callID}, true)
+		if result.status != http.StatusOK {
+			t.Fatalf("read call %s status returned %d: %s", callID, result.status, result.raw)
+		}
+		status := stringField(t, result.body, "status")
+		if status == wantStatus {
+			return result.body
+		}
+		if status == "failed" || status == "completed" || status == "cancelled" || status == "interrupted" {
+			t.Fatalf("call %s reached terminal status %q, want %q", callID, status, wantStatus)
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("call %s did not reach status %q", callID, wantStatus)
+		case <-ticker.C:
+		}
+	}
 }
 
 func waitForFailedCall(t *testing.T, client *http.Client, baseURL, agent, callID string) response {
