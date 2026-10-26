@@ -13,6 +13,7 @@ import (
 
 type completionRepository struct {
 	domain.CallRepository
+	domain.CallExecutionRepository
 	active          []domain.Call
 	profileState    domain.CompanyProfileSyncState
 	completeValera  bool
@@ -35,10 +36,20 @@ func testCallConfig(pollInterval time.Duration) Config {
 		PollInterval: pollInterval, DispatchBatchSize: 100,
 		ContextCompactionTimeout:         30 * time.Second,
 		ValeraProfileSyncMaxRetries:      1,
+		CallExecutionTimeout:             10 * time.Minute,
+		StopRequestTimeout:               5 * time.Second,
 		KonstantinHistoryDefaultPageSize: 100, KonstantinHistoryMaxPageSize: 100,
 		KonstantinDefaultWindow: 30 * 24 * time.Hour, KonstantinMaxWindow: 90 * 24 * time.Hour,
 		KonstantinEventPollInterval: 300 * time.Millisecond, MaxQuestionBytes: 1 << 20,
 	}
+}
+
+func (*completionRepository) BeginHermesLaunch(context.Context, string, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (*completionRepository) RequestExpiredCalls(context.Context, time.Time, int) ([]domain.Call, error) {
+	return nil, nil
 }
 
 func (r *completionRepository) ListActive(context.Context) ([]domain.Call, error) {
@@ -207,6 +218,98 @@ func TestQueueDispatchUsesConfiguredBatchSize(t *testing.T) {
 	if repo.claimLimit != 7 {
 		t.Fatalf("queue claim limit = %d, want configured batch 7", repo.claimLimit)
 	}
+}
+
+func TestCancelKonstantinStopsActiveRunOnce(t *testing.T) {
+	runID := "hermes-run-1"
+	call := domain.Call{ID: "11111111-1111-4111-8111-111111111111", Agent: domain.AgentKonstantin,
+		ScopeID: "22222222-2222-4222-8222-222222222222", ConversationID: "33333333-3333-4333-8333-333333333333",
+		Status: domain.CallRunning, HermesRunID: &runID}
+	repository := &cancellationRepository{
+		cancelResult: domain.CancelResult{Call: call, Disposition: domain.CancelRequested},
+		claimedCall:  call, claimStop: true,
+	}
+	runtime := &cancellationRuntime{}
+	service := NewService(repository, runtime, []domain.Agent{{Type: domain.AgentKonstantin, RuntimeURL: "http://hermes"}}, testCallConfig(0))
+
+	result, err := service.CancelKonstantin(context.Background(), call.ScopeID, call.ConversationID, "44444444-4444-4444-8444-444444444444")
+	if err != nil {
+		t.Fatalf("CancelKonstantin returned error: %v", err)
+	}
+	if result.Disposition != domain.CancelRequested || runtime.stopCalls != 1 || runtime.stoppedRunID != runID {
+		t.Fatalf("cancel result=%q stop calls=%d run=%q", result.Disposition, runtime.stopCalls, runtime.stoppedRunID)
+	}
+}
+
+func TestCancelKonstantinReportsStopFailureWithoutCancellingCall(t *testing.T) {
+	runID := "hermes-run-1"
+	call := domain.Call{ID: "11111111-1111-4111-8111-111111111111", Agent: domain.AgentKonstantin,
+		ScopeID: "22222222-2222-4222-8222-222222222222", ConversationID: "33333333-3333-4333-8333-333333333333",
+		Status: domain.CallRunning, HermesRunID: &runID}
+	repository := &cancellationRepository{
+		cancelResult: domain.CancelResult{Call: call, Disposition: domain.CancelRequested},
+		claimedCall:  call, claimStop: true,
+	}
+	runtime := &cancellationRuntime{stopErr: errors.New("sensitive Hermes response")}
+	service := NewService(repository, runtime, []domain.Agent{{Type: domain.AgentKonstantin, RuntimeURL: "http://hermes"}}, testCallConfig(0))
+
+	result, err := service.CancelKonstantin(context.Background(), call.ScopeID, call.ConversationID, "44444444-4444-4444-8444-444444444444")
+	if err != nil {
+		t.Fatalf("CancelKonstantin returned error instead of a safe stop outcome: %v", err)
+	}
+	if result.Disposition != domain.CancelFailed || result.Call.Status != domain.CallRunning || result.Call.Error == nil || *result.Call.Error != "stop_failed" {
+		t.Fatalf("stop failure changed call to a terminal cancellation or leaked details: %#v", result)
+	}
+	if runtime.stopCalls != 1 {
+		t.Fatalf("stop calls = %d, want one bounded attempt", runtime.stopCalls)
+	}
+}
+
+type cancellationRepository struct {
+	domain.CallRepository
+	domain.CallExecutionRepository
+	cancelResult domain.CancelResult
+	claimedCall  domain.Call
+	claimStop    bool
+}
+
+func (r *cancellationRepository) CancelKonstantin(context.Context, string, string, string, time.Time) (domain.CancelResult, error) {
+	return r.cancelResult, nil
+}
+
+func (r *cancellationRepository) ClaimHermesStop(context.Context, string, time.Time) (domain.Call, bool, error) {
+	return r.claimedCall, r.claimStop, nil
+}
+
+func (r *cancellationRepository) MarkHermesStopFailed(_ context.Context, _ string, reason string, at time.Time) (domain.Call, error) {
+	r.claimedCall.StopFailedAt = &at
+	r.claimedCall.StopFailureSeq = 2
+	r.claimedCall.Error = &reason
+	return r.claimedCall, nil
+}
+
+func (r *cancellationRepository) RequestStatus(context.Context, string) (domain.Call, error) {
+	return r.claimedCall, nil
+}
+
+type cancellationRuntime struct {
+	stopCalls    int
+	stoppedRunID string
+	stopErr      error
+}
+
+func (*cancellationRuntime) Start(context.Context, domain.Agent, string, []domain.Message, string) (string, error) {
+	return "", nil
+}
+
+func (*cancellationRuntime) Status(context.Context, domain.Agent, string) (domain.RunState, error) {
+	return domain.RunState{}, nil
+}
+
+func (r *cancellationRuntime) Stop(_ context.Context, _ domain.Agent, runID string) error {
+	r.stopCalls++
+	r.stoppedRunID = runID
+	return r.stopErr
 }
 
 func TestProfileRevisionRequiresPositiveInteger(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 type Client struct {
 	apiKey           string
 	http             *http.Client
+	stopHTTP         *http.Client
 	maxAttempts      int
 	retryBaseDelay   time.Duration
 	maxResponseBytes int64
@@ -26,6 +27,7 @@ type Client struct {
 
 type ClientConfig struct {
 	RequestTimeout   time.Duration
+	StopTimeout      time.Duration
 	MaxAttempts      int
 	RetryBaseDelay   time.Duration
 	MaxResponseBytes int64
@@ -36,13 +38,22 @@ func NewClient(apiKey string, config ClientConfig) (*Client, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("hermes API key is required")
 	}
-	if config.RequestTimeout <= 0 || config.MaxAttempts < 1 || config.MaxAttempts > 20 || config.RetryBaseDelay < 0 || config.MaxResponseBytes <= 0 {
+	if config.StopTimeout <= 0 {
+		config.StopTimeout = config.RequestTimeout
+	}
+	if config.RequestTimeout <= 0 || config.StopTimeout <= 0 || config.MaxAttempts < 1 || config.MaxAttempts > 20 || config.RetryBaseDelay < 0 || config.MaxResponseBytes <= 0 {
 		return nil, errors.New("hermes timeout, attempt count, retry delay, and response limit are invalid")
 	}
-	return &Client{apiKey: apiKey, http: &http.Client{
+	requestClient := &http.Client{
 		Timeout:       config.RequestTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
-	}, maxAttempts: config.MaxAttempts, retryBaseDelay: config.RetryBaseDelay,
+	}
+	stopClient := &http.Client{
+		Timeout:       config.StopTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return &Client{apiKey: apiKey, http: requestClient, stopHTTP: stopClient,
+		maxAttempts: config.MaxAttempts, retryBaseDelay: config.RetryBaseDelay,
 		maxResponseBytes: config.MaxResponseBytes}, nil
 }
 
@@ -168,6 +179,32 @@ func (c *Client) Health(ctx context.Context, agent domain.Agent) (resultErr erro
 	return nil
 }
 
+// Stop requests that Hermes interrupt one run. The HTTP response only confirms
+// the request was accepted; callers must keep polling Status for a terminal state.
+func (c *Client) Stop(ctx context.Context, agent domain.Agent, runID string) (resultErr error) {
+	endpoint, err := runtimeEndpoint(agent, "/v1/runs/"+url.PathEscape(runID)+"/stop")
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	response, err := c.stopHTTP.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, closeResponseBody(response.Body)) }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("hermes stop returned HTTP %d", response.StatusCode)
+	}
+	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, 4096)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func runtimeEndpoint(agent domain.Agent, path string) (string, error) {
 	baseURL, err := url.Parse(strings.TrimSpace(agent.RuntimeURL))
 	if err != nil || !baseURL.IsAbs() || baseURL.Host == "" ||
@@ -201,3 +238,4 @@ func closeResponseBody(body io.Closer) error {
 }
 
 var _ domain.AgentRuntime = (*Client)(nil)
+var _ domain.AgentRuntimeStop = (*Client)(nil)

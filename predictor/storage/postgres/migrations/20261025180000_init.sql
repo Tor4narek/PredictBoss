@@ -18,6 +18,16 @@ CREATE TABLE agent_calls (
     request_json JSONB NOT NULL,
     hermes_run_id TEXT,
     runtime_instance_id TEXT,
+    execution_deadline_at TIMESTAMPTZ NOT NULL,
+    launch_started_at TIMESTAMPTZ,
+    cancel_requested_at TIMESTAMPTZ,
+    stop_attempted_at TIMESTAMPTZ,
+    stop_failed_at TIMESTAMPTZ,
+    stop_reason TEXT CHECK (stop_reason IN ('user', 'timeout')),
+    event_sequence BIGINT NOT NULL DEFAULT 0 CHECK (event_sequence >= 0),
+    cancel_sequence BIGINT,
+    stop_failure_sequence BIGINT,
+    terminal_sequence BIGINT,
     CONSTRAINT agent_calls_runtime_run_id_unique
         UNIQUE (agent_type, runtime_instance_id, hermes_run_id),
     idempotency_key TEXT UNIQUE,
@@ -37,6 +47,10 @@ CREATE INDEX agent_calls_runtime_active_idx
     ON agent_calls (agent_type, runtime_instance_id, status)
     WHERE runtime_instance_id IS NOT NULL
       AND status IN ('submitting', 'started', 'running', 'processing');
+
+CREATE INDEX agent_calls_deadline_idx
+    ON agent_calls (execution_deadline_at, created_at)
+    WHERE status IN ('queued', 'submitting', 'started', 'running', 'processing');
 
 CREATE UNIQUE INDEX agent_calls_one_active_per_conversation_idx
     ON agent_calls (conversation_id)

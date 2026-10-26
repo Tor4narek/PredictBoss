@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,6 +93,55 @@ func TestStartRejectsOversizedResponse(t *testing.T) {
 	}
 	if _, err := client.Start(context.Background(), domain.Agent{Type: domain.AgentSerezha, RuntimeURL: server.URL}, "{}", nil, "call-123"); err == nil {
 		t.Fatal("Start accepted a response that exceeded the configured limit")
+	}
+}
+
+func TestStopRequestsInterruptionWithoutTreatingAcceptanceAsCompletion(t *testing.T) {
+	var stopCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/runs/run-123/stop" {
+			t.Errorf("stop request = %s %s, want POST /v1/runs/run-123/stop", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("authorization header = %q", got)
+		}
+		stopCalls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"status":"stopping"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-key", ClientConfig{
+		RequestTimeout: time.Second, StopTimeout: time.Second,
+		MaxAttempts: 1, MaxResponseBytes: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Stop(context.Background(), domain.Agent{Type: domain.AgentKonstantin, RuntimeURL: server.URL}, "run-123"); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	if stopCalls.Load() != 1 {
+		t.Fatalf("stop requests = %d, want 1", stopCalls.Load())
+	}
+}
+
+func TestStopReportsOnlyStatusForHermesErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`sensitive runtime response`))
+	}))
+	defer server.Close()
+	client, err := NewClient("test-key", ClientConfig{
+		RequestTimeout: time.Second, StopTimeout: time.Second,
+		MaxAttempts: 1, MaxResponseBytes: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.Stop(context.Background(), domain.Agent{Type: domain.AgentKonstantin, RuntimeURL: server.URL}, "run-123")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") || strings.Contains(err.Error(), "sensitive") {
+		t.Fatalf("Stop error = %v, want status only without response body", err)
 	}
 }
 

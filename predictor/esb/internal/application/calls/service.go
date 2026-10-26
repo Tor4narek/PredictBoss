@@ -35,6 +35,8 @@ type Config struct {
 	ValeraProfileSyncMaxRetries      int
 	RunningStaleAfter                time.Duration
 	ActiveMaxRetries                 int
+	CallExecutionTimeout             time.Duration
+	StopRequestTimeout               time.Duration
 	KonstantinHistoryDefaultPageSize int
 	KonstantinHistoryMaxPageSize     int
 	KonstantinDefaultWindow          time.Duration
@@ -80,7 +82,11 @@ func (s *Service) Create(ctx context.Context, agentType string, input json.RawMe
 			return domain.Call{}, false, fmt.Errorf("%w: input field %s is required", ErrInvalidCall, field)
 		}
 	}
-	call, reused, err := s.repository.Enqueue(ctx, typeKey, scopeID, input, idempotencyKey)
+	if s.settings.CallExecutionTimeout <= 0 {
+		return domain.Call{}, false, ErrInvalidCall
+	}
+	deadline := time.Now().UTC().Add(s.settings.CallExecutionTimeout)
+	call, reused, err := s.repository.Enqueue(ctx, typeKey, scopeID, input, idempotencyKey, deadline)
 	return call, reused, err
 }
 
@@ -98,7 +104,7 @@ func (s *Service) GetForAgent(ctx context.Context, id, agent string) (domain.Cal
 
 // Run owns the asynchronous queue dispatch and Hermes polling loop.
 func (s *Service) Run(ctx context.Context) {
-	if s.settings.PollInterval <= 0 {
+	if s.settings.PollInterval <= 0 || s.settings.CallExecutionTimeout <= 0 || s.settings.StopRequestTimeout <= 0 {
 		log.Printf("call dispatcher stopped (stage=invalid_poll_interval)")
 		return
 	}
@@ -152,7 +158,13 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 		s.failCall(ctx, call, "hermes_runtime_instance_missing")
 		return
 	}
-	history := s.contextForCall(ctx, call, agent)
+	deadline := call.DeadlineAt
+	if deadline.IsZero() {
+		deadline = time.Now().UTC().Add(s.settings.CallExecutionTimeout)
+	}
+	runCtx, cancelRun := context.WithDeadline(ctx, deadline)
+	defer cancelRun()
+	history := s.contextForCall(runCtx, call, agent)
 	hermesInput := string(call.Input)
 	if agent.ScopeField == "company_id" {
 		if s.settings.MCPCallContextSigner == nil {
@@ -174,6 +186,19 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 			return
 		}
 	}
+	launcher, ok := s.repository.(domain.CallExecutionRepository)
+	if !ok {
+		s.failCall(ctx, call, "call_execution_guard_unavailable")
+		return
+	}
+	launch, err := launcher.BeginHermesLaunch(ctx, call.ID, time.Now().UTC())
+	if err != nil {
+		logCallOperationFailure(call, "begin_hermes_launch", err)
+		return
+	}
+	if !launch {
+		return
+	}
 	idempotencyKey := call.ID
 	if call.RetryCount > 0 {
 		retryKind := "retry"
@@ -184,9 +209,13 @@ func (s *Service) submit(ctx context.Context, call domain.Call) {
 	} else if call.Agent == domain.AgentSerezha && call.Error != nil && *call.Error == "news_retry" {
 		idempotencyKey = fmt.Sprintf("%s:news-retry:%d", call.ID, call.UpdatedAt.UnixNano())
 	}
-	runID, err := s.runtime.Start(ctx, agent, hermesInput, history, idempotencyKey)
+	runID, err := s.runtime.Start(runCtx, agent, hermesInput, history, idempotencyKey)
 	if err != nil {
-		s.failCall(ctx, call, "hermes_submission_failed")
+		reason := "hermes_submission_failed"
+		if errors.Is(err, context.DeadlineExceeded) || !time.Now().UTC().Before(deadline) {
+			reason = "execution_deadline_exceeded"
+		}
+		s.failCall(ctx, call, reason)
 		logCallOperationFailure(call, "hermes_start", err)
 		return
 	}
@@ -246,6 +275,18 @@ func (s *Service) failCall(ctx context.Context, call domain.Call, reason string)
 }
 
 func (s *Service) pollActive(ctx context.Context) {
+	if repository, ok := s.repository.(domain.CallExecutionRepository); ok {
+		expired, err := repository.RequestExpiredCalls(ctx, time.Now().UTC(), s.settings.DispatchBatchSize)
+		if err != nil {
+			log.Printf("expired call lookup failed (error_type=%T)", err)
+		} else {
+			for _, call := range expired {
+				if _, _, stopErr := s.stopRequestedRun(ctx, call, repository); stopErr != nil {
+					logCallOperationFailure(call, "hermes_timeout_stop", stopErr)
+				}
+			}
+		}
+	}
 	active, err := s.repository.ListActive(ctx)
 	if err != nil {
 		log.Printf("active call lookup failed (error_type=%T)", err)
@@ -266,6 +307,13 @@ func (s *Service) pollActive(ctx context.Context) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
+			if call.CancelRequestedAt != nil {
+				if repository, ok := s.repository.(domain.CallExecutionRepository); ok {
+					if _, _, stopErr := s.stopRequestedRun(ctx, call, repository); stopErr != nil {
+						logCallOperationFailure(call, "hermes_stop", stopErr)
+					}
+				}
+			}
 			state, err := s.runtime.Status(ctx, agent, *call.HermesRunID)
 			if err != nil {
 				logCallOperationFailure(call, "hermes_status", err)
@@ -282,6 +330,24 @@ func (s *Service) pollActive(ctx context.Context) {
 // retention cycle. It only requeues submitting calls with no persisted Hermes
 // run ID and reconciles active runs whose last update is older than threshold.
 func (s *Service) ReconcileStale(ctx context.Context, queuedBefore, runningBefore time.Time, batchSize, maxRetries int) (int, error) {
+	if executionRepository, ok := s.repository.(domain.CallExecutionRepository); ok {
+		expired, err := executionRepository.RequestExpiredCalls(ctx, time.Now().UTC(), batchSize)
+		if err != nil {
+			return 0, err
+		}
+		var stopErr error
+		for _, call := range expired {
+			if _, _, err := s.stopRequestedRun(ctx, call, executionRepository); err != nil {
+				logCallOperationFailure(call, "hermes_timeout_stop", err)
+				if stopErr == nil {
+					stopErr = err
+				}
+			}
+		}
+		if stopErr != nil {
+			return 0, stopErr
+		}
+	}
 	repository, ok := s.repository.(domain.CleanupRepository)
 	if !ok {
 		return 0, nil
@@ -316,7 +382,8 @@ func (s *Service) ReconcileStale(ctx context.Context, queuedBefore, runningBefor
 				logCallOperationFailure(call, "hermes_stale_status", statusErr)
 				return // Unknown status is preserved; never delete or retry it.
 			}
-			if (state.Status == "failed" || state.Status == "interrupted") && call.RetryCount < maxRetries {
+			if call.CancelRequestedAt == nil && (call.DeadlineAt.IsZero() || time.Now().UTC().Before(call.DeadlineAt)) &&
+				(state.Status == "failed" || state.Status == "interrupted") && call.RetryCount < maxRetries {
 				if retryRepository, ok := s.repository.(domain.CleanupRepository); ok {
 					retried, retryErr := retryRepository.RetryStaleActive(ctx, call, maxRetries)
 					if retryErr != nil {
@@ -347,6 +414,10 @@ func (s *Service) handleRunState(ctx context.Context, call domain.Call, state do
 	case "started", "running", "stopping":
 		s.setStatus(ctx, call, domain.CallRunning, "")
 	case "completed":
+		if call.StopReason == "timeout" {
+			s.setStatus(ctx, call, domain.CallFailed, "execution_deadline_exceeded")
+			return
+		}
 		if call.Agent == domain.AgentSerezha {
 			if s.newsFinalizer == nil {
 				s.setStatus(ctx, call, domain.CallFailed, "news_persistence_unconfirmed")
@@ -410,7 +481,7 @@ func (s *Service) handleRunState(ctx context.Context, call domain.Call, state do
 			logCallOperationFailure(call, "retry_valera_profile_save", err)
 		}
 	case "failed", "cancelled", "interrupted":
-		if allowCleanupRetry && (state.Status == "failed" || state.Status == "interrupted") && call.RetryCount < s.settings.ActiveMaxRetries {
+		if allowCleanupRetry && call.CancelRequestedAt == nil && (state.Status == "failed" || state.Status == "interrupted") && call.RetryCount < s.settings.ActiveMaxRetries {
 			if retryRepository, ok := s.repository.(domain.CleanupRepository); ok {
 				retried, err := retryRepository.RetryStaleActive(ctx, call, s.settings.ActiveMaxRetries)
 				if err != nil {
@@ -427,9 +498,11 @@ func (s *Service) handleRunState(ctx context.Context, call domain.Call, state do
 		case "interrupted":
 			status = domain.CallInterrupted
 		}
-		message := state.Error
-		if message == "" {
-			message = "hermes_run_" + state.Status
+		message := "assistant_response_failed"
+		if state.Status == "cancelled" && call.StopReason == "timeout" {
+			status, message = domain.CallFailed, "execution_deadline_exceeded"
+		} else if state.Status == "cancelled" {
+			message = "assistant_cancelled"
 		}
 		s.setStatus(ctx, call, status, message)
 	case "unknown":
@@ -447,6 +520,84 @@ func (s *Service) setStatus(ctx context.Context, call domain.Call, status domain
 		s.signalCompletionCleanup()
 	}
 	return true
+}
+
+// CancelKonstantin requests cancellation for one call in the subscribed company
+// conversation. PostgreSQL decides whether the queue or worker won the race.
+func (s *Service) CancelKonstantin(ctx context.Context, companyID, conversationID, requestID string) (domain.CancelResult, error) {
+	repository, ok := s.repository.(domain.CallExecutionRepository)
+	if !ok {
+		return domain.CancelResult{}, domain.ErrConflict
+	}
+	companyID = strings.ToLower(strings.TrimSpace(companyID))
+	conversationID = strings.ToLower(strings.TrimSpace(conversationID))
+	requestID = strings.ToLower(strings.TrimSpace(requestID))
+	if !uuidInputPattern.MatchString(companyID) || !uuidInputPattern.MatchString(conversationID) || !uuidInputPattern.MatchString(requestID) {
+		return domain.CancelResult{}, ErrInvalidCall
+	}
+	result, err := repository.CancelKonstantin(ctx, companyID, conversationID, requestID, time.Now().UTC())
+	if err != nil {
+		return domain.CancelResult{}, err
+	}
+	if result.Disposition == domain.CancelRequested || result.Disposition == domain.CancelAlreadyAsked {
+		_, stopFailed, stopErr := s.stopRequestedRun(ctx, result.Call, repository)
+		if stopErr != nil {
+			logCallOperationFailure(result.Call, "hermes_stop", stopErr)
+		}
+		if stopFailed {
+			result.Disposition = domain.CancelFailed
+			if updated, statusErr := s.repository.RequestStatus(ctx, requestID); statusErr == nil {
+				result.Call = updated
+			}
+		}
+	}
+	return result, nil
+}
+
+// KonstantinRequestStatus returns the authoritative state for a request ID.
+func (s *Service) KonstantinRequestStatus(ctx context.Context, requestID string) (domain.Call, error) {
+	requestID = strings.ToLower(strings.TrimSpace(requestID))
+	if !uuidInputPattern.MatchString(requestID) {
+		return domain.Call{}, ErrInvalidCall
+	}
+	call, err := s.repository.RequestStatus(ctx, requestID)
+	if err != nil || call.Agent != domain.AgentKonstantin {
+		return domain.Call{}, err
+	}
+	return call, nil
+}
+
+// KonstantinEventPollInterval is the bounded cadence used by WebSocket watchers.
+func (s *Service) KonstantinEventPollInterval() time.Duration {
+	return s.settings.KonstantinEventPollInterval
+}
+
+func (s *Service) stopRequestedRun(ctx context.Context, call domain.Call, repository domain.CallExecutionRepository) (domain.Call, bool, error) {
+	if call.HermesRunID == nil {
+		return call, false, nil
+	}
+	claimed, ok, err := repository.ClaimHermesStop(ctx, call.ID, time.Now().UTC())
+	if err != nil || !ok {
+		return call, false, err
+	}
+	failed := func(reason string, cause error) (domain.Call, bool, error) {
+		updated, markErr := repository.MarkHermesStopFailed(ctx, claimed.ID, reason, time.Now().UTC())
+		return updated, true, errors.Join(cause, markErr)
+	}
+	agent, exists := s.agents[claimed.Agent]
+	if exists {
+		agent, exists = agent.ForRuntime(claimed.RuntimeInstanceID)
+	}
+	stopper, supported := s.runtime.(domain.AgentRuntimeStop)
+	if !exists || !supported {
+		return failed("stop_unsupported", nil)
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.settings.StopRequestTimeout)
+	defer cancel()
+	if err := stopper.Stop(stopCtx, agent, *claimed.HermesRunID); err != nil {
+		return failed("stop_failed", err)
+	}
+	return claimed, false, nil
 }
 
 func (s *Service) signalCompletionCleanup() {

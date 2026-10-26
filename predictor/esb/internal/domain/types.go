@@ -130,8 +130,36 @@ type Call struct {
 	Output            *string         `json:"output,omitempty"`
 	Error             *string         `json:"error,omitempty"`
 	RetryCount        int             `json:"-"`
+	DeadlineAt        time.Time       `json:"-"`
+	LaunchStartedAt   *time.Time      `json:"-"`
+	CancelRequestedAt *time.Time      `json:"-"`
+	StopAttemptedAt   *time.Time      `json:"-"`
+	StopFailedAt      *time.Time      `json:"-"`
+	StopReason        string          `json:"-"`
+	EventSequence     int64           `json:"-"`
+	CancelSequence    int64           `json:"-"`
+	StopFailureSeq    int64           `json:"-"`
+	TerminalSequence  int64           `json:"-"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+// CancelDisposition describes the result of an idempotent cancellation request.
+type CancelDisposition string
+
+const (
+	CancelQueued       CancelDisposition = "queued_cancelled"
+	CancelRequested    CancelDisposition = "cancel_requested"
+	CancelAlreadyAsked CancelDisposition = "already_requested"
+	CancelFailed       CancelDisposition = "cancel_failed"
+	CancelCompleted    CancelDisposition = "completed"
+	CancelTerminal     CancelDisposition = "terminal"
+)
+
+// CancelResult contains authoritative call state for the /stream adapter.
+type CancelResult struct {
+	Call        Call
+	Disposition CancelDisposition
 }
 
 // MCPCallContext is a short-lived capability binding an agent to one persisted call.
@@ -374,6 +402,9 @@ type ConsultantEvent struct {
 	SchemaVersion  int                  `json:"schemaVersion"`
 	Kind           string               `json:"kind"`
 	RequestID      string               `json:"requestId"`
+	CallID         string               `json:"callId,omitempty"`
+	ResponseID     string               `json:"responseId,omitempty"`
+	Sequence       int64                `json:"sequence,omitempty"`
 	CompanyID      string               `json:"companyId"`
 	ConversationID string               `json:"conversationId"`
 	AnalysisID     string               `json:"analysisId"`
@@ -432,7 +463,7 @@ type ConsultantContext struct {
 }
 
 type CallRepository interface {
-	Enqueue(context.Context, AgentType, string, json.RawMessage, string) (Call, bool, error)
+	Enqueue(context.Context, AgentType, string, json.RawMessage, string, time.Time) (Call, bool, error)
 	Get(context.Context, string) (Call, error)
 	GetForAgent(context.Context, string, AgentType) (Call, error)
 	LoadHistory(context.Context, string, int) ([]Message, error)
@@ -456,6 +487,21 @@ type CallRepository interface {
 	RecordKonstantinCallSources(context.Context, string, string, []string) error
 	SourceRevision(context.Context, string) (int64, error)
 	ProfileRevision(context.Context, string) (int64, error)
+}
+
+// CallExecutionRepository arbitrates execution deadlines and cancellation
+// against queue workers and other ESB replicas using PostgreSQL state.
+type CallExecutionRepository interface {
+	BeginHermesLaunch(context.Context, string, time.Time) (bool, error)
+	CancelKonstantin(context.Context, string, string, string, time.Time) (CancelResult, error)
+	ClaimHermesStop(context.Context, string, time.Time) (Call, bool, error)
+	MarkHermesStopFailed(context.Context, string, string, time.Time) (Call, error)
+	RequestExpiredCalls(context.Context, time.Time, int) ([]Call, error)
+}
+
+// AgentRuntimeStop exposes Hermes' Run API stop operation to the application layer.
+type AgentRuntimeStop interface {
+	Stop(context.Context, Agent, string) error
 }
 
 // RuntimeCallRepository claims queued calls while atomically reserving a slot

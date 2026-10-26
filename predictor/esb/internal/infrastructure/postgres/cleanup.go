@@ -45,7 +45,8 @@ func (r *Calls) RecoverStaleSubmissions(ctx context.Context, before time.Time, l
 	var count int
 	err := r.pool.QueryRow(ctx, `WITH stale AS (
  SELECT call_id FROM agent_calls
- WHERE status = 'submitting' AND hermes_run_id IS NULL AND updated_at < $1
+	 WHERE status = 'submitting' AND hermes_run_id IS NULL AND launch_started_at IS NULL
+	   AND cancel_requested_at IS NULL AND execution_deadline_at > now() AND updated_at < $1
  ORDER BY updated_at, call_id LIMIT $2 FOR UPDATE SKIP LOCKED
 ), recovered AS (
  UPDATE agent_calls c SET status = 'queued', error = 'stale_submission_recovered', updated_at = now()
@@ -58,9 +59,7 @@ func (r *Calls) ListStaleActive(ctx context.Context, before time.Time, limit int
 	if limit <= 0 {
 		return []domain.Call{}, nil
 	}
-	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text,
- c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at,
- COALESCE(c.runtime_instance_id, '')
+	rows, err := r.pool.Query(ctx, `SELECT `+executionCallColumns+`
 FROM agent_calls c JOIN agent_conversations v USING (conversation_id)
 WHERE c.status IN ('started','running') AND c.hermes_run_id IS NOT NULL AND c.updated_at < $1
 ORDER BY c.updated_at, c.call_id LIMIT $2`, before, limit)
@@ -70,10 +69,8 @@ ORDER BY c.updated_at, c.call_id LIMIT $2`, before, limit)
 	defer rows.Close()
 	calls := make([]domain.Call, 0)
 	for rows.Next() {
-		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input,
-			&call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt,
-			&call.RuntimeInstanceID); err != nil {
+		call, err := scanExecutionCall(rows)
+		if err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -86,9 +83,11 @@ func (r *Calls) RetryStaleActive(ctx context.Context, call domain.Call, maxRetri
 		return false, nil
 	}
 	result, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = 'queued', retry_count = retry_count + 1,
- hermes_run_id = NULL, runtime_instance_id = NULL, output = NULL, error = 'cleanup_retry', updated_at = now()
+    hermes_run_id = NULL, runtime_instance_id = NULL, launch_started_at = NULL, output = NULL,
+    error = 'cleanup_retry', updated_at = now()
 WHERE call_id = $1 AND status IN ('started','running') AND updated_at = $2
- AND hermes_run_id = $3 AND retry_count < $4`, call.ID, call.UpdatedAt, *call.HermesRunID, maxRetries)
+ AND hermes_run_id = $3 AND retry_count < $4
+ AND cancel_requested_at IS NULL AND execution_deadline_at > now()`, call.ID, call.UpdatedAt, *call.HermesRunID, maxRetries)
 	if err != nil {
 		return false, err
 	}

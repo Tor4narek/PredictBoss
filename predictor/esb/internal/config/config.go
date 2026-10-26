@@ -70,6 +70,7 @@ type Queue struct {
 	DispatchBatchSize        int
 	ContextCompactionTimeout time.Duration
 	ValeraProfileSyncRetries int
+	CallExecutionTimeout     time.Duration
 }
 
 type Cleanup struct {
@@ -90,6 +91,7 @@ type Cleanup struct {
 type Hermes struct {
 	RequestTimeout time.Duration
 	HealthTimeout  time.Duration
+	StopTimeout    time.Duration
 	MaxAttempts    int
 	RetryBaseDelay time.Duration
 	MaxResponse    int64
@@ -185,6 +187,7 @@ func buildDefinitions() []Definition {
 		stringDef("HERMES_KESHA_INSTANCES", "", "Named Kesha runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
 		stringDef("HERMES_KONSTANTIN_INSTANCES", "", "Named Konstantin runtime pool as id=state@url entries separated by semicolons.", "runtime", false),
 		durationDef("HERMES_POLL_INTERVAL", 2*time.Second, time.Millisecond, 10*time.Minute, "interval", "Queue dispatch and Hermes status polling interval.", "runtime"),
+		durationDef("CALL_EXECUTION_TIMEOUT", 10*time.Minute, time.Second, 24*time.Hour, "duration", "Absolute maximum execution time per call; polling and status updates do not extend it.", "runtime"),
 		intDef("QUEUE_DISPATCH_BATCH_SIZE", 100, 1, 10000, "calls", "Maximum queued calls claimed in one dispatch cycle; each claim can start one worker.", "runtime"),
 		durationDef("CONTEXT_COMPACTION_TIMEOUT", 30*time.Second, time.Millisecond, time.Hour, "duration", "Maximum time spent requesting a compressed agent-context summary from Hermes.", "runtime"),
 		intDef("VALERA_PROFILE_SYNC_MAX_RETRIES", 1, 0, 1, "retries", "Maximum automatic retries after Valera output is completed but its profile revision is not confirmed; PostgreSQL retry_count allows 0..1.", "runtime"),
@@ -214,6 +217,7 @@ func buildDefinitions() []Definition {
 		retentionDef("CLEANUP_COMPANY_ANALYSES_RETENTION", "never", "Retention for generated company analysis text."),
 		durationDef("HERMES_REQUEST_TIMEOUT", 45*time.Second, time.Millisecond, 10*time.Minute, "duration", "HTTP client timeout for Hermes run, status, and health requests.", "runtime"),
 		durationDef("HERMES_HEALTH_TIMEOUT", 2*time.Second, time.Millisecond, time.Minute, "duration", "Per-agent readiness probe timeout.", "runtime"),
+		durationDef("HERMES_STOP_REQUEST_TIMEOUT", 5*time.Second, time.Millisecond, time.Minute, "duration", "HTTP timeout for one Hermes Run API stop request; acceptance is not terminal confirmation.", "runtime"),
 		intDef("HERMES_RETRY_MAX_ATTEMPTS", 5, 1, 20, "attempts", "Total attempts to submit a run to Hermes, including the first attempt.", "runtime"),
 		durationDef("HERMES_RETRY_BASE_DELAY", time.Second, 0, 5*time.Minute, "duration", "Base delay between Hermes submission retries; retry delay grows linearly by attempt.", "runtime"),
 		int64Def("HERMES_MAX_RESPONSE_BYTES", 1<<20, 1024, 16<<20, "bytes", "Maximum response body size accepted from Hermes.", "runtime"),
@@ -499,6 +503,9 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if cfg.Queue.ValeraProfileSyncRetries, err = getInt("VALERA_PROFILE_SYNC_MAX_RETRIES"); err != nil {
 		return Config{}, err
 	}
+	if cfg.Queue.CallExecutionTimeout, err = getDuration("CALL_EXECUTION_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
 	if cfg.Cleanup.Enabled, err = getBool("CLEANUP_ENABLED"); err != nil {
 		return Config{}, err
 	}
@@ -569,6 +576,9 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Hermes.HealthTimeout, err = getDuration("HERMES_HEALTH_TIMEOUT"); err != nil {
+		return Config{}, err
+	}
+	if cfg.Hermes.StopTimeout, err = getDuration("HERMES_STOP_REQUEST_TIMEOUT"); err != nil {
 		return Config{}, err
 	}
 	if cfg.Hermes.MaxAttempts, err = getInt("HERMES_RETRY_MAX_ATTEMPTS"); err != nil {

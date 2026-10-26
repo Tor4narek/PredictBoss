@@ -88,7 +88,8 @@ func runESB() error {
 	})
 	hermesClient, err := hermes.NewClient(cfg.Connections.HermesAPIKey, hermes.ClientConfig{
 		RequestTimeout: cfg.Hermes.RequestTimeout, MaxAttempts: cfg.Hermes.MaxAttempts,
-		RetryBaseDelay: cfg.Hermes.RetryBaseDelay, MaxResponseBytes: cfg.Hermes.MaxResponse,
+		StopTimeout: cfg.Hermes.StopTimeout, RetryBaseDelay: cfg.Hermes.RetryBaseDelay,
+		MaxResponseBytes: cfg.Hermes.MaxResponse,
 	})
 	if err != nil {
 		return fmt.Errorf("configure Hermes client: %w", err)
@@ -109,6 +110,8 @@ func runESB() error {
 		PollInterval:         cfg.Queue.HermesPollInterval, DispatchBatchSize: cfg.Queue.DispatchBatchSize,
 		ContextCompactionTimeout:         cfg.Queue.ContextCompactionTimeout,
 		ValeraProfileSyncMaxRetries:      cfg.Queue.ValeraProfileSyncRetries,
+		CallExecutionTimeout:             cfg.Queue.CallExecutionTimeout,
+		StopRequestTimeout:               cfg.Hermes.StopTimeout,
 		RunningStaleAfter:                runningStaleAfter,
 		ActiveMaxRetries:                 activeMaxRetries,
 		KonstantinHistoryDefaultPageSize: cfg.Pagination.KonstantinHistoryDefaultPageSize,

@@ -17,6 +17,8 @@ type consultantEventRow struct {
 	ConversationID string
 	AnalysisID     string
 	MessageID      string
+	CallID         string
+	Sequence       int64
 	Kind           string
 	Text           string
 	Evidence       []byte
@@ -64,8 +66,9 @@ RETURNING conversation_id::text`, string(agent), scopeID).Scan(&id)
 
 func (r *Calls) FreshAnalysis(ctx context.Context, companyID string) (domain.ConsultantEvent, bool, error) {
 	row, err := scanConsultantEvent(r.pool.QueryRow(ctx, `SELECT m.request_id::text, m.company_id::text,
-m.conversation_id::text, m.analysis_id::text, m.message_id::text, m.kind, m.text, m.evidence, m.created_at
-FROM konstantin_messages m
+m.conversation_id::text, m.analysis_id::text, m.message_id::text, m.call_id::text, COALESCE(c.terminal_sequence, 0),
+m.kind, m.text, m.evidence, m.created_at
+FROM konstantin_messages m JOIN agent_calls c USING (call_id)
 WHERE m.company_id = $1::uuid AND m.kind = 'analysis_result'
   AND COALESCE((SELECT s.profile_synced FROM company_profile_state s WHERE s.company_id = m.company_id), TRUE)
   AND m.profile_revision = COALESCE((SELECT s.profile_revision FROM company_profile_state s WHERE s.company_id = m.company_id), 0)
@@ -78,22 +81,16 @@ ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1`, companyID))
 }
 
 func (r *Calls) Event(ctx context.Context, requestID string) (domain.ConsultantEvent, error) {
-	return scanConsultantEvent(r.pool.QueryRow(ctx, `SELECT request_id::text, company_id::text,
-conversation_id::text, analysis_id::text, message_id::text, kind, text, evidence, created_at
-FROM konstantin_messages WHERE request_id = $1::uuid`, requestID))
+	return scanConsultantEvent(r.pool.QueryRow(ctx, `SELECT m.request_id::text, m.company_id::text,
+m.conversation_id::text, m.analysis_id::text, m.message_id::text, m.call_id::text, COALESCE(c.terminal_sequence, 0),
+m.kind, m.text, m.evidence, m.created_at
+FROM konstantin_messages m JOIN agent_calls c USING (call_id) WHERE m.request_id = $1::uuid`, requestID))
 }
 
 func (r *Calls) RequestStatus(ctx context.Context, requestID string) (domain.Call, error) {
-	var call domain.Call
-	err := r.pool.QueryRow(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text,
-c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.created_at, c.updated_at
+	return scanExecutionCall(r.pool.QueryRow(ctx, `SELECT `+executionCallColumns+`
 FROM agent_calls c JOIN agent_conversations v USING (conversation_id)
-WHERE c.agent_type = 'konstantin' AND c.request_json->>'request_id' = $1 LIMIT 1`, requestID).
-		Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.CreatedAt, &call.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Call{}, domain.ErrNotFound
-	}
-	return call, err
+WHERE c.agent_type = 'konstantin' AND c.request_json->>'request_id' = $1 LIMIT 1`, requestID))
 }
 
 func (r *Calls) EventsAfter(ctx context.Context, companyID, conversationID, afterMessageID string, limit int) ([]domain.ConsultantEvent, error) {
@@ -104,10 +101,12 @@ func (r *Calls) EventsAfter(ctx context.Context, companyID, conversationID, afte
 	var args []any
 	if afterMessageID == "" {
 		query = `SELECT request_id::text, company_id::text, conversation_id::text, analysis_id::text,
-message_id::text, kind, text, evidence, created_at FROM (
-  SELECT request_id, company_id, conversation_id, analysis_id, message_id, kind, text, evidence, created_at
-  FROM konstantin_messages WHERE company_id = $1::uuid AND conversation_id = $2::uuid
-  ORDER BY created_at DESC, message_id DESC LIMIT $3
+message_id::text, call_id::text, terminal_sequence, kind, text, evidence, created_at FROM (
+  SELECT m.request_id, m.company_id, m.conversation_id, m.analysis_id, m.message_id, m.call_id,
+         COALESCE(c.terminal_sequence, 0) AS terminal_sequence, m.kind, m.text, m.evidence, m.created_at
+  FROM konstantin_messages m JOIN agent_calls c USING (call_id)
+  WHERE m.company_id = $1::uuid AND m.conversation_id = $2::uuid
+  ORDER BY m.created_at DESC, m.message_id DESC LIMIT $3
 ) recent ORDER BY created_at, message_id`
 		args = []any{companyID, conversationID, limit}
 	} else {
@@ -123,11 +122,12 @@ WHERE message_id = $1::uuid
 		if err != nil {
 			return nil, err
 		}
-		query = `SELECT request_id::text, company_id::text, conversation_id::text, analysis_id::text,
-message_id::text, kind, text, evidence, created_at FROM konstantin_messages
-WHERE company_id = $1::uuid AND conversation_id = $2::uuid
-AND (created_at, message_id) > ($3::timestamptz, $4::uuid)
-ORDER BY created_at, message_id LIMIT $5`
+		query = `SELECT m.request_id::text, m.company_id::text, m.conversation_id::text, m.analysis_id::text,
+m.message_id::text, m.call_id::text, COALESCE(c.terminal_sequence, 0), m.kind, m.text, m.evidence, m.created_at
+FROM konstantin_messages m JOIN agent_calls c USING (call_id)
+WHERE m.company_id = $1::uuid AND m.conversation_id = $2::uuid
+AND (m.created_at, m.message_id) > ($3::timestamptz, $4::uuid)
+ORDER BY m.created_at, m.message_id LIMIT $5`
 		args = []any{companyID, conversationID, cursorCreatedAt, afterMessageID, limit}
 	}
 	rows, err := r.pool.Query(ctx, query, args...)
@@ -139,7 +139,8 @@ ORDER BY created_at, message_id LIMIT $5`
 	for rows.Next() {
 		var row consultantEventRow
 		var createdAt time.Time
-		if err := rows.Scan(&row.RequestID, &row.CompanyID, &row.ConversationID, &row.AnalysisID, &row.MessageID, &row.Kind, &row.Text, &row.Evidence, &createdAt); err != nil {
+		if err := rows.Scan(&row.RequestID, &row.CompanyID, &row.ConversationID, &row.AnalysisID, &row.MessageID,
+			&row.CallID, &row.Sequence, &row.Kind, &row.Text, &row.Evidence, &createdAt); err != nil {
 			return nil, err
 		}
 		event, err := row.toEvent(createdAt)
@@ -323,7 +324,8 @@ type rowScanner interface{ Scan(...any) error }
 func scanConsultantEvent(scanner rowScanner) (domain.ConsultantEvent, error) {
 	var row consultantEventRow
 	var createdAt time.Time
-	if err := scanner.Scan(&row.RequestID, &row.CompanyID, &row.ConversationID, &row.AnalysisID, &row.MessageID, &row.Kind, &row.Text, &row.Evidence, &createdAt); err != nil {
+	if err := scanner.Scan(&row.RequestID, &row.CompanyID, &row.ConversationID, &row.AnalysisID, &row.MessageID,
+		&row.CallID, &row.Sequence, &row.Kind, &row.Text, &row.Evidence, &createdAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ConsultantEvent{}, domain.ErrNotFound
 		}
@@ -342,6 +344,7 @@ func (row consultantEventRow) toEvent(createdAtTime time.Time) (domain.Consultan
 	}
 	return domain.ConsultantEvent{SchemaVersion: 1, Kind: row.Kind, RequestID: row.RequestID, CompanyID: row.CompanyID,
 		ConversationID: row.ConversationID, AnalysisID: row.AnalysisID, MessageID: row.MessageID,
+		CallID: row.CallID, ResponseID: row.CallID, Sequence: row.Sequence,
 		Text: row.Text, Evidence: evidence, CreatedAt: createdAtTime}, nil
 }
 

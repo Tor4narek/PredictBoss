@@ -22,8 +22,8 @@ type Calls struct{ pool *pgxpool.Pool }
 
 func NewCalls(pool *pgxpool.Pool) *Calls { return &Calls{pool: pool} }
 
-func (r *Calls) Enqueue(ctx context.Context, agent domain.AgentType, scopeID string, input json.RawMessage, idempotencyKey string) (returned domain.Call, reused bool, resultErr error) {
-	if len(idempotencyKey) > 255 || !visibleASCII(idempotencyKey) {
+func (r *Calls) Enqueue(ctx context.Context, agent domain.AgentType, scopeID string, input json.RawMessage, idempotencyKey string, deadline time.Time) (returned domain.Call, reused bool, resultErr error) {
+	if len(idempotencyKey) > 255 || !visibleASCII(idempotencyKey) || deadline.IsZero() || !deadline.After(time.Now()) {
 		return domain.Call{}, false, domain.ErrConflict
 	}
 	if idempotencyKey != "" {
@@ -71,9 +71,10 @@ RETURNING conversation_id::text`, string(agent), scopeID).Scan(&conversationID)
 	}
 	var call domain.Call
 	call.Agent, call.ScopeID, call.ConversationID, call.Input, call.Status = agent, scopeID, conversationID, input, domain.CallQueued
-	err = tx.QueryRow(ctx, `INSERT INTO agent_calls (conversation_id, agent_type, request_json, idempotency_key, status)
-VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), 'queued')
-RETURNING call_id::text, created_at, updated_at`, conversationID, string(agent), input, idempotencyKey).
+	call.Agent, call.ScopeID, call.ConversationID, call.Input, call.Status, call.DeadlineAt = agent, scopeID, conversationID, input, domain.CallQueued, deadline.UTC()
+	err = tx.QueryRow(ctx, `INSERT INTO agent_calls (conversation_id, agent_type, request_json, idempotency_key, status, execution_deadline_at)
+VALUES ($1, $2, $3::jsonb, NULLIF($4, ''), 'queued', $5)
+RETURNING call_id::text, created_at, updated_at`, conversationID, string(agent), input, idempotencyKey, deadline.UTC()).
 		Scan(&call.ID, &call.CreatedAt, &call.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -150,7 +151,8 @@ func sameNewsRequest(stored, submitted []byte) bool {
 func (r *Calls) requeueFailedNews(ctx context.Context, callID string) (domain.Call, bool, error) {
 	var call domain.Call
 	err := r.pool.QueryRow(ctx, `UPDATE agent_calls c
-SET status = 'queued', hermes_run_id = NULL, runtime_instance_id = NULL, output = NULL, error = 'news_retry', updated_at = now()
+SET status = 'queued', hermes_run_id = NULL, runtime_instance_id = NULL, launch_started_at = NULL,
+    output = NULL, error = 'news_retry', updated_at = now()
 FROM agent_conversations v
 WHERE c.call_id = $1 AND c.agent_type = 'serezha' AND c.status IN ('failed','interrupted','cancelled')
   AND v.conversation_id = c.conversation_id
@@ -446,18 +448,19 @@ func (r *Calls) ClaimQueued(ctx context.Context, limit int) ([]domain.Call, erro
 	rows, err := r.pool.Query(ctx, `WITH candidates AS (
  SELECT c.call_id FROM agent_calls c
  WHERE c.status = 'queued'
+   AND c.execution_deadline_at > now()
    AND c.call_id = (SELECT q.call_id FROM agent_calls q WHERE q.conversation_id = c.conversation_id
-     AND q.status = 'queued' ORDER BY q.created_at LIMIT 1)
+     AND q.status = 'queued' AND q.execution_deadline_at > now() ORDER BY q.created_at LIMIT 1)
    AND NOT EXISTS (SELECT 1 FROM agent_calls active WHERE active.conversation_id = c.conversation_id
      AND active.status IN ('submitting','started','running','processing'))
  ORDER BY c.created_at LIMIT $1 FOR UPDATE OF c SKIP LOCKED
 ), claimed AS (
  UPDATE agent_calls c SET status = 'submitting', updated_at = now()
  FROM candidates x WHERE c.call_id = x.call_id
- RETURNING c.call_id, c.agent_type, c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, c.conversation_id
+ RETURNING c.call_id, c.agent_type, c.request_json, c.status, c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, c.conversation_id, c.execution_deadline_at
 )
 SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status, c.hermes_run_id,
- c.output, c.error, c.retry_count, c.created_at, c.updated_at
+ c.output, c.error, c.retry_count, c.created_at, c.updated_at, c.execution_deadline_at
 FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.created_at`, limit)
 	if err != nil {
 		return nil, err
@@ -466,7 +469,7 @@ FROM claimed c JOIN agent_conversations v USING (conversation_id) ORDER BY c.cre
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt, &call.DeadlineAt); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -501,11 +504,13 @@ func (r *Calls) ClaimQueuedForRuntimes(ctx context.Context, limit int, instances
 	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, COALESCE(c.runtime_instance_id, '')
 FROM agent_calls c
 WHERE c.status = 'queued'
+  AND c.execution_deadline_at > now()
   AND c.call_id = (
       SELECT q.call_id
       FROM agent_calls q
       WHERE q.conversation_id = c.conversation_id
         AND q.status = 'queued'
+        AND q.execution_deadline_at > now()
       ORDER BY q.created_at, q.call_id
       LIMIT 1
   )
@@ -638,12 +643,14 @@ WHERE c.call_id = $1
   AND c.agent_type = $2
   AND c.conversation_id = v.conversation_id
   AND c.status = 'queued'
+  AND c.execution_deadline_at > now()
   AND (c.runtime_instance_id IS NULL OR c.runtime_instance_id = $3)
   AND c.call_id = (
       SELECT q.call_id
       FROM agent_calls q
       WHERE q.conversation_id = c.conversation_id
         AND q.status = 'queued'
+        AND q.execution_deadline_at > now()
       ORDER BY q.created_at, q.call_id
       LIMIT 1
   )
@@ -655,11 +662,11 @@ WHERE c.call_id = $1
   )
 RETURNING c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json,
           c.status, c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at,
-          c.runtime_instance_id`
+          c.runtime_instance_id, c.execution_deadline_at`
 	err = tx.QueryRow(ctx, query, candidate.id, string(candidate.agent), instance.ID).Scan(
 		&claimed.ID, &claimed.Agent, &claimed.ScopeID, &claimed.ConversationID, &claimed.Input, &claimed.Status,
 		&claimed.HermesRunID, &claimed.Output, &claimed.Error, &claimed.RetryCount, &claimed.CreatedAt,
-		&claimed.UpdatedAt, &claimed.RuntimeInstanceID,
+		&claimed.UpdatedAt, &claimed.RuntimeInstanceID, &claimed.DeadlineAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
@@ -703,16 +710,33 @@ ORDER BY created_at, call_id`)
 
 func (r *Calls) SetRun(ctx context.Context, callID, runID string) error {
 	result, err := r.pool.Exec(ctx, `UPDATE agent_calls SET hermes_run_id = $2, status = 'started', updated_at = now()
-WHERE call_id = $1 AND status = 'submitting'`, callID, runID)
+WHERE call_id = $1 AND status = 'submitting' AND launch_started_at IS NOT NULL`, callID, runID)
 	if err == nil && result.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
 	return err
 }
 
+// BeginHermesLaunch atomically checks cancellation and the absolute deadline
+// immediately before the worker makes an external Hermes request.
+func (r *Calls) BeginHermesLaunch(ctx context.Context, callID string, now time.Time) (bool, error) {
+	result, err := r.pool.Exec(ctx, `UPDATE agent_calls
+SET launch_started_at = $2, updated_at = $2
+WHERE call_id = $1::uuid AND status = 'submitting'
+  AND launch_started_at IS NULL AND cancel_requested_at IS NULL
+  AND execution_deadline_at > $2`, callID, now.UTC())
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
+}
+
 func (r *Calls) ListActive(ctx context.Context) ([]domain.Call, error) {
 	rows, err := r.pool.Query(ctx, `SELECT c.call_id::text, c.agent_type, v.scope_id, v.conversation_id::text, c.request_json, c.status,
-c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, COALESCE(c.runtime_instance_id, '') FROM agent_calls c
+c.hermes_run_id, c.output, c.error, c.retry_count, c.created_at, c.updated_at, c.execution_deadline_at,
+c.launch_started_at, c.cancel_requested_at, c.stop_attempted_at, c.stop_failed_at, COALESCE(c.stop_reason, ''),
+c.event_sequence, COALESCE(c.cancel_sequence, 0), COALESCE(c.stop_failure_sequence, 0), COALESCE(c.terminal_sequence, 0),
+COALESCE(c.runtime_instance_id, '') FROM agent_calls c
 JOIN agent_conversations v USING (conversation_id) WHERE c.status IN ('submitting','started','running','processing')
 ORDER BY c.created_at`)
 	if err != nil {
@@ -722,7 +746,9 @@ ORDER BY c.created_at`)
 	var calls []domain.Call
 	for rows.Next() {
 		var call domain.Call
-		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt, &call.RuntimeInstanceID); err != nil {
+		if err := rows.Scan(&call.ID, &call.Agent, &call.ScopeID, &call.ConversationID, &call.Input, &call.Status, &call.HermesRunID, &call.Output, &call.Error, &call.RetryCount, &call.CreatedAt, &call.UpdatedAt,
+			&call.DeadlineAt, &call.LaunchStartedAt, &call.CancelRequestedAt, &call.StopAttemptedAt, &call.StopFailedAt,
+			&call.StopReason, &call.EventSequence, &call.CancelSequence, &call.StopFailureSeq, &call.TerminalSequence, &call.RuntimeInstanceID); err != nil {
 			return nil, err
 		}
 		calls = append(calls, call)
@@ -735,8 +761,11 @@ func (r *Calls) SetStatus(ctx context.Context, callID string, status domain.Call
 	if message != "" {
 		errorValue = message
 	}
-	_, err := r.pool.Exec(ctx, `UPDATE agent_calls SET status = $2, error = $3, updated_at = now()
-WHERE call_id = $1 AND status IN ('submitting','started','running')`, callID, string(status), errorValue)
+	_, err := r.pool.Exec(ctx, `UPDATE agent_calls
+SET status = $2, error = $3, updated_at = now(),
+    event_sequence = CASE WHEN $2 IN ('completed','failed','cancelled','interrupted') THEN event_sequence + 1 ELSE event_sequence END,
+    terminal_sequence = CASE WHEN $2 IN ('completed','failed','cancelled','interrupted') THEN event_sequence + 1 ELSE terminal_sequence END
+WHERE call_id = $1 AND status IN ('submitting','started','running','processing')`, callID, string(status), errorValue)
 	return err
 }
 
@@ -830,7 +859,9 @@ VALUES ($1, $2, 'assistant', $3)`, conversationID, callID, output); err != nil {
 		return profileState, false, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE agent_calls
-SET status = 'completed', output = $2, error = NULL, updated_at = now()
+SET status = 'completed', output = $2, error = NULL, updated_at = now(),
+    event_sequence = CASE WHEN agent_type = 'konstantin' AND request_json->>'request_kind' = 'question' THEN event_sequence + 1 ELSE event_sequence END,
+    terminal_sequence = CASE WHEN agent_type = 'konstantin' AND request_json->>'request_kind' = 'question' THEN event_sequence + 1 ELSE terminal_sequence END
 WHERE call_id = $1`, callID, output); err != nil {
 		return profileState, false, err
 	}
@@ -879,9 +910,10 @@ func sanitizedNewsInput(raw []byte, expectedHash string) ([]byte, error) {
 
 func (r *Calls) RetryProfileSave(ctx context.Context, callID, companyID string, expectedRevision int64, maxRetries int) (bool, error) {
 	result, err := r.pool.Exec(ctx, `UPDATE agent_calls c
-SET status = 'queued', retry_count = retry_count + 1, hermes_run_id = NULL, runtime_instance_id = NULL, output = NULL,
-    error = 'profile_sync_retry', updated_at = now()
+SET status = 'queued', retry_count = retry_count + 1, hermes_run_id = NULL, runtime_instance_id = NULL,
+    launch_started_at = NULL, output = NULL, error = 'profile_sync_retry', updated_at = now()
 WHERE c.call_id = $1 AND c.agent_type = 'valera' AND c.status IN ('started','running') AND c.retry_count < $4
+  AND c.cancel_requested_at IS NULL AND c.execution_deadline_at > now()
   AND EXISTS (SELECT 1 FROM agent_conversations v WHERE v.conversation_id = c.conversation_id AND v.scope_id = $2)
   AND NOT EXISTS (SELECT 1 FROM company_profile_state s WHERE s.company_id = $2::uuid
     AND (s.profile_revision > $3 OR (s.profile_revision = $3 AND s.profile_synced)))`,
@@ -1008,7 +1040,9 @@ ON CONFLICT (request_id) DO NOTHING`, input.RequestID, callID, input.CompanyID, 
 
 func (r *Calls) Fail(ctx context.Context, callID, message string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE agent_calls
-SET status = 'failed', error = $2, updated_at = now()
+SET status = 'failed', error = $2, updated_at = now(),
+    event_sequence = CASE WHEN agent_type = 'konstantin' AND request_json->>'request_kind' = 'question' THEN event_sequence + 1 ELSE event_sequence END,
+    terminal_sequence = CASE WHEN agent_type = 'konstantin' AND request_json->>'request_kind' = 'question' THEN event_sequence + 1 ELSE terminal_sequence END
 WHERE call_id = $1
   AND status IN ('queued', 'submitting')`, callID, message)
 	return err
@@ -1018,7 +1052,10 @@ func (r *Calls) Recover(ctx context.Context) error {
 	if _, err := r.pool.Exec(ctx, `UPDATE agent_calls
 SET status = 'queued', updated_at = now()
 WHERE status = 'submitting'
-  AND hermes_run_id IS NULL`); err != nil {
+  AND hermes_run_id IS NULL
+  AND launch_started_at IS NULL
+  AND cancel_requested_at IS NULL
+  AND execution_deadline_at > now()`); err != nil {
 		return err
 	}
 	_, err := r.pool.Exec(ctx, `UPDATE agent_calls
