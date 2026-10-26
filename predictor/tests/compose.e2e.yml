@@ -111,6 +111,7 @@ services:
       HERMES_SAVELIY_INSTANCES: "saveliy-primary=available@http://mock-runtime:8090;saveliy-secondary=available@http://mock-runtime-secondary:8091"
       AGENT_SAVELIY_MAX_CONCURRENT_RUNS: "2"
       AGENT_KESHA_MAX_CONCURRENT_RUNS: "2"
+      AGENT_KONSTANTIN_MAX_CONCURRENT_RUNS: "2"
       HERMES_POLL_INTERVAL: 50ms
       CLEANUP_ENABLED: ${E2E_CLEANUP_ENABLED:-false}
       CLEANUP_STATUS_CHECK_INTERVAL: ${E2E_CLEANUP_STATUS_INTERVAL:-1h}

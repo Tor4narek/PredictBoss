@@ -40,6 +40,7 @@ const (
 	partialSourceID        = "acacacac-acac-4cac-8cac-acacacacacac"
 	foreignSourceID        = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	unavailableSourceID    = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef"
+	emptyEvidenceCompanyID = "88888888-8888-4888-8888-888888888888"
 )
 
 var agentMCPKeys = map[string]string{
@@ -592,6 +593,8 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("GET /call did not return the full saved analysis: %#v", analysisStatus.body)
 	}
 	assertEvidence(t, analysisStatus.body["evidence"], newsSourceID, bankSourceID)
+	assertEvidenceSourceMetadata(t, analysisStatus.body["evidence"], newsSourceID, newsID, "https://example.test/news/market-change", "external_news")
+	assertEvidenceSourceMetadata(t, analysisStatus.body["evidence"], bankSourceID, bankNewsID, "https://example.test/alpha/market-analysis.pdf", "alpha_analysis")
 	assertMockConsultantCall(t, httpClient, "http://127.0.0.1:18090", analysisID, companyID, 14, 13)
 
 	streamURL := baseURL + stringField(t, analysisStatus.body, "streamUrl")
@@ -662,29 +665,32 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 	}
 	_ = duplicateWS.Close(websocket.StatusNormalClosure, "")
 	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
-		"text": "Unconfirmed empty-evidence response", "evidence": []any{},
+		"text": "Answer without model-generated citations.", "evidence": []any{},
 	})
 	emptyEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777778",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Give a recommendation without sources."})
-	assertInsufficientEvidence(t, emptyEvidence)
+	assertModelTextAndServerEvidence(t, emptyEvidence, "Answer without model-generated citations.", newsSourceID, bankSourceID)
 	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
-		"text": "Unconfirmed invented-source response", "evidence": []any{map[string]any{"sourceId": "12345678-1234-4123-8123-123456789abc", "originKind": "fact"}},
+		"text": "Answer with an invented model source ID.", "evidence": []any{map[string]any{"sourceId": "12345678-1234-4123-8123-123456789abc", "originKind": "fact"}},
 	})
 	inventedEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777779",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite a made-up source."})
-	assertInsufficientEvidence(t, inventedEvidence)
+	assertModelTextAndServerEvidence(t, inventedEvidence, "Answer with an invented model source ID.", newsSourceID, bankSourceID)
+	assertEvidenceExcludes(t, inventedEvidence["evidence"], "12345678-1234-4123-8123-123456789abc")
 	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
-		"text": "Unconfirmed foreign-source response", "evidence": []any{map[string]any{"sourceId": foreignSourceID, "originKind": "fact"}},
+		"text": "Answer with another company's source ID.", "evidence": []any{map[string]any{"sourceId": foreignSourceID, "originKind": "fact"}},
 	})
 	foreignEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777780",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite another company's source."})
-	assertInsufficientEvidence(t, foreignEvidence)
+	assertModelTextAndServerEvidence(t, foreignEvidence, "Answer with another company's source ID.", newsSourceID, bankSourceID)
+	assertEvidenceExcludes(t, foreignEvidence["evidence"], foreignSourceID)
 	queueMockNextOutput(t, httpClient, "http://127.0.0.1:18090", companyID, "question", map[string]any{
-		"text": "Unconfirmed unavailable-source response", "evidence": []any{map[string]any{"sourceId": unavailableSourceID, "originKind": "fact"}},
+		"text": "Answer with an unavailable source ID.", "evidence": []any{map[string]any{"sourceId": unavailableSourceID, "originKind": "fact"}},
 	})
 	unavailableEvidence := sendQuestion(t, ws, map[string]any{"kind": "question", "requestId": "77777777-7777-4777-8777-777777777781",
 		"companyId": companyID, "conversationId": conversationID, "analysisId": analysisID, "text": "Cite a source absent from this context."})
-	assertInsufficientEvidence(t, unavailableEvidence)
+	assertModelTextAndServerEvidence(t, unavailableEvidence, "Answer with an unavailable source ID.", newsSourceID, bankSourceID)
+	assertEvidenceExcludes(t, unavailableEvidence["evidence"], unavailableSourceID)
 
 	// Cancellation is a lifecycle operation: the model still produces one full
 	// answer per request, and an active Hermes run must be stopped exactly once.
@@ -736,6 +742,87 @@ func TestESBEndToEndHTTPWebSocketAndMCP(t *testing.T) {
 		t.Fatalf("cancelled turn history should keep the question and omit an assistant answer (user=%t assistant=%t)", sawCancelledUser, sawCancelledAssistant)
 	}
 	_ = ws.Close(websocket.StatusNormalClosure, "")
+
+	// One company has a source and the other has none. Read them concurrently
+	// through separate MCP sessions while both calls share the same MCP endpoint.
+	emptySourceProfileCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "valera", emptyEvidenceCompanyID,
+		valeraPayloadForCompany(emptyEvidenceCompanyID, 1))
+	callTool(t, mcpCtx, mcpSession, "save_company_profile_and_metrics", map[string]any{
+		"company_id": emptyEvidenceCompanyID, "profile_revision": 1,
+		"markdown": "# Empty evidence company\n", "metrics": metricSettingsForCatalog(),
+	})
+	finishHeldMCPCall(t, httpClient, baseURL, mcpSession, emptySourceProfileCall)
+	parallelCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "konstantin", companyIDTwo,
+		map[string]any{"companyId": companyIDTwo})
+	parallelOtherCompanyCall := startHeldMCPCall(t, httpClient, baseURL, mcpSession, "konstantin", emptyEvidenceCompanyID,
+		map[string]any{"companyId": emptyEvidenceCompanyID})
+	parallelSessionA := connectMCP(t, mcpCtx, baseURL+"/mcp", konstantinMCPKey)
+	parallelSessionB := connectMCP(t, mcpCtx, baseURL+"/mcp", konstantinMCPKey)
+	type contextReadResult struct {
+		company string
+		result  *mcp.CallToolResult
+		err     error
+	}
+	contextReads := make(chan contextReadResult, 2)
+	for _, test := range []struct {
+		session *mcp.ClientSession
+		company string
+		call    heldMCPCall
+	}{
+		{parallelSessionA, companyIDTwo, parallelCompanyCall},
+		{parallelSessionB, emptyEvidenceCompanyID, parallelOtherCompanyCall},
+	} {
+		test := test
+		go func() {
+			result, err := test.session.CallTool(mcpCtx, &mcp.CallToolParams{Name: "get_consultant_context", Arguments: map[string]any{
+				"call_context": test.call.token, "company_id": test.company, "limit": 100,
+			}})
+			contextReads <- contextReadResult{company: test.company, result: result, err: err}
+		}()
+	}
+	for range 2 {
+		read := <-contextReads
+		if read.err != nil || read.result == nil || read.result.IsError {
+			status := performRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+				map[string]any{"call_id": map[string]string{companyIDTwo: parallelCompanyCall.callID, emptyEvidenceCompanyID: parallelOtherCompanyCall.callID}[read.company]}, true)
+			callStatus := "unavailable"
+			if status.status == http.StatusOK {
+				callStatus = stringField(t, status.body, "status")
+			}
+			t.Fatalf("parallel company-scoped MCP context read failed (company=%s call_status=%s): err=%v tool_error=%q",
+				read.company, callStatus, read.err, mcpToolErrorText(read.result))
+		}
+	}
+	for _, test := range []heldMCPCall{parallelCompanyCall, parallelOtherCompanyCall} {
+		contextResult := callToolRawWithContext(t, mcpCtx, mcpSession.sessions["konstantin"], "get_consultant_context",
+			map[string]any{"company_id": test.companyID, "limit": 100}, test.token)
+		if contextResult.IsError {
+			t.Fatalf("repeated company-scoped MCP read was not idempotent: %s", contextResult.Content)
+		}
+	}
+	if err := parallelSessionA.Close(); err != nil {
+		t.Errorf("close first parallel Konstantin MCP session: %v", err)
+	}
+	if err := parallelSessionB.Close(); err != nil {
+		t.Errorf("close second parallel Konstantin MCP session: %v", err)
+	}
+	finishHeldMCPCallWithOutput(t, httpClient, baseURL, mcpSession, parallelCompanyCall,
+		map[string]any{"text": "Company one answer without model citations.", "evidence": []any{map[string]any{
+			"sourceId": "12345678-1234-4123-8123-123456789abc", "originKind": "fact",
+		}}})
+	finishHeldMCPCallWithOutput(t, httpClient, baseURL, mcpSession, parallelOtherCompanyCall,
+		map[string]any{"text": "Unsupported model recommendation with a fabricated link.", "evidence": []any{map[string]any{
+			"sourceId": newsSourceID, "originKind": "fact",
+		}}})
+	parallelCompanyResult := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": companyIDTwo}, true, http.StatusOK, "")
+	parallelOtherCompanyResult := assertRequest(t, httpClient, baseURL, http.MethodGet, "/call?agent=konstantin",
+		map[string]any{"companyId": emptyEvidenceCompanyID}, true, http.StatusOK, "")
+	assertModelTextAndServerEvidence(t, parallelCompanyResult.body, "Company one answer without model citations.", testSourceID(1))
+	assertEvidenceSourceMetadata(t, parallelCompanyResult.body["evidence"], testSourceID(1), testNewsID(1), "https://example.test/news/N1", "alpha_analysis")
+	assertEvidenceExcludes(t, parallelCompanyResult.body["evidence"], newsSourceID, bankSourceID)
+	assertInsufficientEvidence(t, parallelOtherCompanyResult.body)
+	assertEvidenceExcludes(t, parallelOtherCompanyResult.body["evidence"], testSourceID(1), newsSourceID, bankSourceID)
 
 	// New source and profile revisions independently invalidate saved analysis.
 	partialText := "Partial source text remains until its facts are confirmed."
@@ -994,12 +1081,25 @@ func startHeldMCPCall(t *testing.T, client *http.Client, baseURL string, session
 	t.Helper()
 	if agent == "valera" {
 		queueMockRunStatus(t, client, "http://127.0.0.1:18090", companyID, "running")
+	} else if agent == "konstantin" {
+		for _, mockURL := range e2eMockURLs() {
+			queueMockRunStatusFor(t, client, mockURL, companyID, "analysis", "running")
+		}
 	} else {
 		input["mock_status"] = "running"
 	}
 	call := assertRequest(t, client, baseURL, http.MethodPost, "/call?agent="+url.QueryEscape(agent), input, true, http.StatusAccepted, "")
 	callID := stringField(t, call.body, "call_id")
 	run := waitForMockRequest(t, client, e2eMockURLs(), callID)
+	if agent == "konstantin" {
+		if status := mockRunStatus(t, client, run); status != "running" {
+			companyInRuntime := mockRunInputString(t, client, run, "company_id")
+			t.Fatalf("Konstantin E2E run started in status %q for company %q, want running", status, companyInRuntime)
+		}
+		for _, mockURL := range e2eMockURLs() {
+			queueMockRunStatusFor(t, client, mockURL, companyID, "analysis", "completed")
+		}
+	}
 	token := mockRunInputString(t, client, run, "call_context")
 	if token == "" {
 		t.Fatalf("Hermes mock input did not contain a signed MCP context for %s call", agent)
@@ -1011,6 +1111,20 @@ func startHeldMCPCall(t *testing.T, client *http.Client, baseURL string, session
 func finishHeldMCPCall(t *testing.T, client *http.Client, baseURL string, sessions *mcpSessions, held heldMCPCall) {
 	t.Helper()
 	completeMockRun(t, client, held.run.baseURL, held.run.runID)
+	waitForCall(t, client, baseURL, held.agent, held.callID)
+	if sessions.contexts[held.agent][held.companyID] == held.token {
+		delete(sessions.contexts[held.agent], held.companyID)
+	}
+}
+
+func finishHeldMCPCallWithOutput(t *testing.T, client *http.Client, baseURL string, sessions *mcpSessions,
+	held heldMCPCall, output map[string]any) {
+	t.Helper()
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("encode synthetic Hermes output: %v", err)
+	}
+	completeMockRunWithOutput(t, client, held.run.baseURL, held.run.runID, string(encoded))
 	waitForCall(t, client, baseURL, held.agent, held.callID)
 	if sessions.contexts[held.agent][held.companyID] == held.token {
 		delete(sessions.contexts[held.agent], held.companyID)
@@ -1031,7 +1145,12 @@ func e2eMockURLs() []string {
 
 func queueMockRunStatus(t *testing.T, client *http.Client, mockURL, companyID, status string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"company_id": companyID, "status": status})
+	queueMockRunStatusFor(t, client, mockURL, companyID, "", status)
+}
+
+func queueMockRunStatusFor(t *testing.T, client *http.Client, mockURL, companyID, requestKind, status string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"company_id": companyID, "request_kind": requestKind, "status": status})
 	if err != nil {
 		t.Fatalf("encode mock run status: %v", err)
 	}
@@ -1073,6 +1192,31 @@ func mockRunInputString(t *testing.T, client *http.Client, run mockRunRequest, k
 		}
 	}
 	t.Fatalf("Hermes mock did not retain the requested run input")
+	return ""
+}
+
+func mockRunStatus(t *testing.T, client *http.Client, run mockRunRequest) string {
+	t.Helper()
+	response, err := client.Get(run.baseURL + "/test/runs")
+	if err != nil {
+		t.Fatalf("read Hermes mock run status: %v", err)
+	}
+	defer response.Body.Close()
+	var result struct {
+		Runs []struct {
+			RunID  string `json:"run_id"`
+			Status string `json:"status"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode Hermes mock run status: %v", err)
+	}
+	for _, item := range result.Runs {
+		if item.RunID == run.runID {
+			return item.Status
+		}
+	}
+	t.Fatalf("Hermes mock run status was not found")
 	return ""
 }
 
@@ -1202,7 +1346,12 @@ func assertCallRemainsQueued(t *testing.T, client *http.Client, baseURL, callID 
 
 func completeMockRun(t *testing.T, client *http.Client, baseURL, runID string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"run_id": runID, "status": "completed", "output": `{"ok":true}`})
+	completeMockRunWithOutput(t, client, baseURL, runID, `{"ok":true}`)
+}
+
+func completeMockRunWithOutput(t *testing.T, client *http.Client, baseURL, runID, output string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"run_id": runID, "status": "completed", "output": output})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1466,18 +1615,89 @@ func assertEvidence(t *testing.T, value any, sourceIDs ...string) {
 	if err := json.Unmarshal(encoded, &evidence); err != nil {
 		t.Fatalf("decode evidence %s: %v", encoded, err)
 	}
-	got := map[string]string{}
+	got := map[string]map[string]any{}
+	seenNews := make(map[string]string, len(evidence))
 	for _, entry := range evidence {
-		got[fmt.Sprint(entry["sourceId"])] = fmt.Sprint(entry["originKind"])
+		sourceID := fmt.Sprint(entry["sourceId"])
+		newsID := fmt.Sprint(entry["newsId"])
+		if sourceID == "" || newsID == "" || sourceID == "<nil>" || newsID == "<nil>" {
+			t.Fatalf("ESB evidence is missing a source or news ID: %#v", entry)
+		}
+		if previousNewsID, exists := seenNews[newsID]; exists {
+			t.Fatalf("ESB returned duplicate publication %q under source IDs %q and %q", newsID, previousNewsID, sourceID)
+		}
+		if _, exists := got[sourceID]; exists {
+			t.Fatalf("ESB returned duplicate source ID %q", sourceID)
+		}
+		seenNews[newsID] = sourceID
+		got[sourceID] = entry
 	}
 	for _, id := range sourceIDs {
 		if _, ok := got[id]; !ok {
 			t.Errorf("evidence is missing sourceId %q: %s", id, encoded)
 		}
 	}
-	if got[newsSourceID] != "fact" || got[bankSourceID] != "bank_view" {
-		t.Errorf("source origin kinds were not preserved: %#v", got)
+	wantOrigins := map[string]string{
+		newsSourceID: "fact", bankSourceID: "bank_view", testSourceID(1): "bank_view",
 	}
+	for _, id := range sourceIDs {
+		if want, ok := wantOrigins[id]; ok && got[id] != nil && fmt.Sprint(got[id]["originKind"]) != want {
+			t.Errorf("source %q origin kind = %q, want %q", id, got[id]["originKind"], want)
+		}
+	}
+}
+
+func assertModelTextAndServerEvidence(t *testing.T, answer map[string]any, wantText string, sourceIDs ...string) {
+	t.Helper()
+	if got := stringField(t, answer, "text"); got != wantText {
+		t.Fatalf("ESB replaced model text %q with %q", wantText, got)
+	}
+	assertEvidence(t, answer["evidence"], sourceIDs...)
+}
+
+func assertEvidenceExcludes(t *testing.T, value any, sourceIDs ...string) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal evidence: %v", err)
+	}
+	var evidence []map[string]any
+	if err := json.Unmarshal(encoded, &evidence); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	for _, entry := range evidence {
+		for _, sourceID := range sourceIDs {
+			if fmt.Sprint(entry["sourceId"]) == sourceID {
+				t.Fatalf("unverified source %q was included in ESB evidence", sourceID)
+			}
+		}
+	}
+}
+
+func assertEvidenceSourceMetadata(t *testing.T, value any, sourceID, newsID, sourceURL, materialKind string) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal evidence: %v", err)
+	}
+	var evidence []map[string]any
+	if err := json.Unmarshal(encoded, &evidence); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	for _, entry := range evidence {
+		if fmt.Sprint(entry["sourceId"]) != sourceID {
+			continue
+		}
+		if fmt.Sprint(entry["newsId"]) != newsID || fmt.Sprint(entry["sourceUrl"]) != sourceURL ||
+			fmt.Sprint(entry["materialKind"]) != materialKind || fmt.Sprint(entry["title"]) == "" {
+			t.Fatalf("ESB returned incomplete or incorrect metadata for source %q: %#v", sourceID, entry)
+		}
+		if fmt.Sprint(entry["publishedAt"]) == "" || fmt.Sprint(entry["publishedAt"]) == "<nil>" {
+			t.Fatalf("ESB omitted publication time for source %q: %#v", sourceID, entry)
+		}
+		return
+	}
+	t.Fatalf("ESB evidence did not contain source %q", sourceID)
 }
 
 func waitForHealth(t *testing.T, client *http.Client, baseURL string) {
@@ -2025,6 +2245,18 @@ func assertMCPCompanyContextIsolation(t *testing.T, ctx context.Context, session
 			t.Fatalf("parallel MCP read returned company %q for call scoped to %q", got, read.companyID)
 		}
 	}
+}
+
+func mcpToolErrorText(result *mcp.CallToolResult) string {
+	if result == nil {
+		return "<nil>"
+	}
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			return text.Text
+		}
+	}
+	return "<no text content>"
 }
 
 func cloneArguments(args map[string]any) map[string]any {

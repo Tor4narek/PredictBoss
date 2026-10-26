@@ -154,7 +154,7 @@ func (authorizer fixedMCPCallAuthorizer) AuthorizeMCPCompany(context.Context, do
 	return authorizer.value, nil
 }
 
-func (fixedMCPCallAuthorizer) RecordMCPCallSources(context.Context, domain.MCPCallContext, []string) error {
+func (fixedMCPCallAuthorizer) RecordMCPCallSources(context.Context, domain.MCPCallContext, []domain.ConsultantSource) error {
 	return nil
 }
 
@@ -182,7 +182,7 @@ func (authorizer testMCPAuthorizer) AuthorizeMCPCompany(_ context.Context, agent
 	return domain.MCPCallContext{Agent: agent, CallID: token, CompanyID: requestedCompanyID}, nil
 }
 
-func (testMCPAuthorizer) RecordMCPCallSources(context.Context, domain.MCPCallContext, []string) error {
+func (testMCPAuthorizer) RecordMCPCallSources(context.Context, domain.MCPCallContext, []domain.ConsultantSource) error {
 	return nil
 }
 

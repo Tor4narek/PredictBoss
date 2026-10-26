@@ -37,7 +37,7 @@ type scopedCallRepository struct {
 	err                 error
 	recordedCallID      string
 	recordedCompanyID   string
-	recordedSourceIDs   []string
+	recordedSources     []domain.ConsultantSource
 	recordSourceCallErr error
 }
 
@@ -51,10 +51,10 @@ func (repository scopedCallRepository) GetForAgent(_ context.Context, callID str
 	return repository.call, nil
 }
 
-func (repository *scopedCallRepository) RecordKonstantinCallSources(_ context.Context, callID, companyID string, sourceIDs []string) error {
+func (repository *scopedCallRepository) RecordKonstantinCallSources(_ context.Context, callID, companyID string, sources []domain.ConsultantSource) error {
 	repository.recordedCallID = callID
 	repository.recordedCompanyID = companyID
-	repository.recordedSourceIDs = append([]string(nil), sourceIDs...)
+	repository.recordedSources = append([]domain.ConsultantSource(nil), sources...)
 	return repository.recordSourceCallErr
 }
 
@@ -148,19 +148,22 @@ func TestRecordMCPCallSourcesRequiresActiveKonstantinCall(t *testing.T) {
 	activeCall := domain.Call{ID: "call-82", Agent: domain.AgentKonstantin, ScopeID: mcpContextCompanyID, Status: domain.CallRunning}
 	repository := &scopedCallRepository{call: activeCall}
 	service := NewService(repository, nil, nil, Config{})
-	sourceIDs := []string{"22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"}
+	sources := []domain.ConsultantSource{
+		{SourceID: "22222222-2222-4222-8222-222222222222", NewsID: "news-1", MaterialKind: "external_news"},
+		{SourceID: "33333333-3333-4333-8333-333333333333", NewsID: "news-2", MaterialKind: "alpha_analysis"},
+	}
 	callContext := domain.MCPCallContext{Agent: activeCall.Agent, CallID: activeCall.ID, CompanyID: activeCall.ScopeID, ExpiresAt: time.Now().Add(time.Minute)}
 
-	if err := service.RecordMCPCallSources(context.Background(), callContext, sourceIDs); err != nil {
+	if err := service.RecordMCPCallSources(context.Background(), callContext, sources); err != nil {
 		t.Fatalf("RecordMCPCallSources returned error: %v", err)
 	}
 	if repository.recordedCallID != activeCall.ID || repository.recordedCompanyID != activeCall.ScopeID ||
-		len(repository.recordedSourceIDs) != len(sourceIDs) {
+		len(repository.recordedSources) != len(sources) {
 		t.Fatalf("recorded sources were not bound to the active call: %#v", repository)
 	}
-	for index, sourceID := range sourceIDs {
-		if repository.recordedSourceIDs[index] != sourceID {
-			t.Fatalf("recorded source %d = %q, want %q", index, repository.recordedSourceIDs[index], sourceID)
+	for index, source := range sources {
+		if repository.recordedSources[index] != source {
+			t.Fatalf("recorded source %d = %#v, want %#v", index, repository.recordedSources[index], source)
 		}
 	}
 
@@ -176,11 +179,11 @@ func TestRecordMCPCallSourcesRequiresActiveKonstantinCall(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &scopedCallRepository{call: test.call}
 			service := NewService(repository, nil, nil, Config{})
-			if err := service.RecordMCPCallSources(context.Background(), test.ctx, sourceIDs); !errors.Is(err, ErrInvalidMCPCallContext) {
+			if err := service.RecordMCPCallSources(context.Background(), test.ctx, sources); !errors.Is(err, ErrInvalidMCPCallContext) {
 				t.Fatalf("RecordMCPCallSources error = %v, want ErrInvalidMCPCallContext", err)
 			}
 			if repository.recordedCallID != "" {
-				t.Fatalf("invalid call context persisted source IDs: %#v", repository.recordedSourceIDs)
+				t.Fatalf("invalid call context persisted sources: %#v", repository.recordedSources)
 			}
 		})
 	}

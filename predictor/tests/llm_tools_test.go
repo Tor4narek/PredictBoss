@@ -100,10 +100,7 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 				}
 				ws := dialWebSocket(t, baseURL+streamURL)
 				analysis := readConsultantEvent(t, ws, "analysis_result", 5*time.Minute)
-				if !hasLLMEvidence(analysis["evidence"], sourceID) {
-					t.Errorf("real Konstantin analysis omitted the current source ID")
-					assertSafeInsufficientEvidence(t, analysis)
-				}
+				assertLLMSourceEnriched(t, analysis, sourceID, newsID, "https://example.test/synthetic-widget-news")
 				initialEvents := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent+" analysis", initialEvents[len(before):])
 				assertProfileToolCall(t, initialEvents[len(before):], agent, correlationID, "")
@@ -114,7 +111,7 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 				writeFrame(t, ws, map[string]any{
 					"kind": "question", "requestId": requestID, "companyId": companyID,
 					"conversationId": conversationID, "analysisId": analysisID,
-					"text": "Using the saved company profile and the reported 125 RUB per widget price, explain whether this source supports the configured price metric. Cite the exact source_id from ESB in the required evidence array and return the required JSON object.",
+					"text": "Using the saved company profile and reported 125 RUB per widget price, explain whether the current news supports the configured price metric. Answer concisely.",
 				})
 				readConsultantEvent(t, ws, "accepted", 30*time.Second)
 				answer := readConsultantEvent(t, ws, "assistant_answer", 5*time.Minute)
@@ -122,10 +119,7 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 				if stringField(t, answer, "requestId") != requestID {
 					t.Errorf("Konstantin WebSocket answer is missing its request ID")
 				}
-				if !hasLLMEvidence(answer["evidence"], sourceID) {
-					t.Errorf("real Konstantin answer omitted the current source ID")
-					assertSafeInsufficientEvidence(t, answer)
-				}
+				assertLLMSourceEnriched(t, answer, sourceID, newsID, "https://example.test/synthetic-widget-news")
 				afterQuestion := observedCalls(t, client, observerURL, correlationID)
 				logObservedToolCalls(t, agent+" question", afterQuestion[len(beforeQuestion):])
 				assertProfileToolCall(t, afterQuestion[len(beforeQuestion):], agent, correlationID, "")
@@ -140,31 +134,12 @@ func TestRealLLMProfileMCPCalls(t *testing.T) {
 	}
 }
 
-func hasLLMEvidence(raw any, expectedSourceID string) bool {
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return false
-	}
-	var evidence []struct {
-		SourceID   string `json:"sourceId"`
-		OriginKind string `json:"originKind"`
-	}
-	if err := json.Unmarshal(encoded, &evidence); err != nil {
-		return false
-	}
-	for _, item := range evidence {
-		if item.SourceID == expectedSourceID && item.OriginKind == "fact" {
-			return true
-		}
-	}
-	return false
-}
-
-func assertSafeInsufficientEvidence(t *testing.T, answer map[string]any) {
+func assertLLMSourceEnriched(t *testing.T, answer map[string]any, sourceID, newsID, sourceURL string) {
 	t.Helper()
-	if stringField(t, answer, "text") != llmSafeInsufficientEvidence || len(arrayField(t, answer, "evidence")) != 0 {
-		t.Errorf("ESB did not replace unsupported real output with the safe insufficient-evidence response")
+	if text := stringField(t, answer, "text"); text == "" || text == llmSafeInsufficientEvidence {
+		t.Fatalf("real model text was missing or replaced; this scenario expects a source-enriched answer")
 	}
+	assertEvidenceSourceMetadata(t, answer["evidence"], sourceID, newsID, sourceURL, "external_news")
 }
 
 func hasObservedToolCall(events []observedToolCall, name string) bool {

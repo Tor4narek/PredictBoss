@@ -32,6 +32,47 @@ func TestLoadHistoryRejectsNegativeLimit(t *testing.T) {
 	}
 }
 
+func TestKonstantinAssistantTextDoesNotRequireCitationFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "JSON text without evidence",
+			output: `{"text":"A concise answer."}`,
+			want:   "A concise answer.",
+		},
+		{
+			name:   "answer alias",
+			output: `{"answer":"A concise answer."}`,
+			want:   "A concise answer.",
+		},
+		{
+			name:   "plain text",
+			output: "A concise answer without a JSON wrapper.",
+			want:   "A concise answer without a JSON wrapper.",
+		},
+		{
+			name:   "fenced JSON",
+			output: "```json\n{\"text\":\"A concise answer.\"}\n```",
+			want:   "A concise answer.",
+		},
+		{
+			name:   "malformed JSON object",
+			output: `{"text":`,
+			want:   "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := konstantinAssistantText(test.output); got != test.want {
+				t.Fatalf("konstantinAssistantText() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSanitizedNewsInputRemovesTextAndPreservesRetryHash(t *testing.T) {
 	text := "cleaned article"
 	digest := sha256.Sum256([]byte(text))

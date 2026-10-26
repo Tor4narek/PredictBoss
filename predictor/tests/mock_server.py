@@ -111,13 +111,19 @@ class Handler(BaseHTTPRequestHandler):
                 fixture = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 company_id = fixture["company_id"]
                 status = fixture["status"]
+                request_kind = fixture.get("request_kind", "")
                 if not isinstance(company_id, str) or status not in ("running", "completed"):
+                    raise ValueError("invalid fixture")
+                if request_kind not in ("", "analysis", "question"):
                     raise ValueError("invalid fixture")
             except (ValueError, TypeError, KeyError):
                 self.send_json(400, {"error": "invalid_fixture"})
                 return
             with LOCK:
-                NEXT_STATUSES[company_id] = status
+                key = company_id
+                if request_kind:
+                    key = company_id + ":" + request_kind
+                NEXT_STATUSES[key] = status
             self.send_json(201, {"status": "queued"})
             return
         if path == "/test/next-output":
@@ -175,7 +181,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             RUN_SEQUENCE += 1
             run_id = "e2e-run-%d" % RUN_SEQUENCE
-            run_status = NEXT_STATUSES.pop(agent_input.get("company_id", ""), agent_input.get("mock_status", "completed"))
+            company_id = agent_input.get("company_id", "")
+            request_kind = agent_input.get("request_kind", "")
+            run_status = NEXT_STATUSES.pop(company_id + ":" + request_kind, None)
+            if run_status is None:
+                run_status = NEXT_STATUSES.pop(company_id, agent_input.get("mock_status", "completed"))
             if key:
                 IDEMPOTENCY[key] = run_id
 
@@ -184,32 +194,15 @@ class Handler(BaseHTTPRequestHandler):
             if "compact historical conversation context" in request.get("instructions", ""):
                 output = "## Facts and identifiers\n- Preserve the conversation's known facts and identifiers.\n\n## Decisions\n- None\n\n## Open tasks\n- None\n\n## Constraints\n- Retain stated restrictions."
             elif kind in ("analysis", "question"):
-                context = self.call_consultant_context(agent_input)
+                self.call_consultant_context(agent_input)
                 with LOCK:
                     output = NEXT_OUTPUTS.pop((agent_input.get("company_id", ""), kind), None)
                 if output is None:
-                    evidence = []
-                    for fact in context.get("facts", []):
-                        source_id = fact.get("source_id", "")
-                        material_kind = fact.get("material_kind", "external_news")
-                        if source_id:
-                            evidence.append({
-                                "sourceId": source_id,
-                                "originKind": "bank_view" if material_kind == "alpha_analysis" else "fact",
-                            })
-                    for observation in context.get("observations", []):
-                        source_id = observation.get("source_id", "")
-                        material_kind = observation.get("material_kind", "external_news")
-                        if source_id:
-                            evidence.append({
-                                "sourceId": source_id,
-                                "originKind": "bank_view" if material_kind == "alpha_analysis" else "fact",
-                            })
                     if kind == "analysis":
                         text = "E2E analysis: market changes affect the company."
                     else:
                         text = "E2E answer: the source matters to the company's market."
-                    output = json.dumps({"text": text, "evidence": evidence}, separators=(",", ":"))
+                    output = json.dumps({"text": text}, separators=(",", ":"))
             elif os.environ.get("MOCK_SEREZHA_PERSIST") == "1" and "news_text" in agent_input and "source_id" in agent_input:
                 self.save_serezha_news(agent_input)
                 output = json.dumps({"status": "completed", "mock": True})

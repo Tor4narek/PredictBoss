@@ -138,6 +138,9 @@ INSERT INTO agent_calls (call_id, conversation_id, agent_type, request_json, her
  NULL, 'cleanup-konstantin-idempotency', 'completed', 0, now() + INTERVAL '1 day', NULL, now() - INTERVAL '2 days', now() - INTERVAL '2 days'),
 ('${unknown_active_call}', '${unknown_conversation}', 'kesha', '{"company_id":"${cleanup_company_id}"}'::jsonb,
  'missing-hermes-run', NULL, 'running', 0, now() + INTERVAL '1 day', now() - INTERVAL '2 days', now() - INTERVAL '2 days', now() - INTERVAL '2 days');
+INSERT INTO konstantin_call_sources (call_id, company_id, source_id, news_id, source_url, material_kind, title, published_at)
+VALUES ('${konstantin_call}', '${cleanup_company_id}', '${cleanup_source_id}', '${processed_news_id}',
+        'https://example.test/cleanup', 'external_news', 'cleanup source', now()::text);
 INSERT INTO agent_messages (conversation_id, call_id, role, content, created_at) VALUES
 ('${failed_news_conversation}', '${failed_news_call}', 'user', '{"news_id":"${unprocessed_news_id}","news_text":"unprocessed fixture text"}', now() - INTERVAL '2 days'),
 ('${saveliy_conversation}', '${saveliy_call}', 'user', 'expired message fixture', now() - INTERVAL '2 days'),
@@ -208,5 +211,6 @@ fi
 [[ "$(postgres_value "SELECT count(*) FROM konstantin_messages WHERE call_id = '${konstantin_call}'")" == "1" ]] || { echo "Konstantin consultant history was not preserved" >&2; exit 1; }
 [[ "$(postgres_value "SELECT count(*) FROM agent_context_summaries WHERE conversation_id = '${konstantin_conversation}'")" == "0" ]] || { echo "expired context summary was not cleaned independently" >&2; exit 1; }
 [[ "$(postgres_value "SELECT count(*) FROM agent_calls WHERE call_id = '${konstantin_call}' AND request_json = '{}'::jsonb AND output IS NULL")" == "1" ]] || { echo "call tombstone did not preserve history references" >&2; exit 1; }
+[[ "$(postgres_value "SELECT count(*) FROM konstantin_call_sources WHERE call_id = '${konstantin_call}'")" == "0" ]] || { echo "expired Konstantin source snapshots were not removed with call-record retention" >&2; exit 1; }
 [[ "$(postgres_value "SELECT count(*) FROM agent_calls WHERE call_id = '${failed_news_call}' AND request_json->>'news_id' = '${unprocessed_news_id}' AND request_json->>'news_text' = 'unprocessed fixture text'")" == "1" ]] || { echo "terminal Serezha retry payload was removed before processing succeeded" >&2; exit 1; }
 echo "ESB cleanup E2E passed (news, analytics, retries, chat history, call tombstones)."
