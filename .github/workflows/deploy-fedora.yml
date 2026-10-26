@@ -17,6 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Configure SSH
         shell: bash
         env:
@@ -44,13 +49,13 @@ jobs:
           test -n "$FEDORA_USER"
           test -n "$PRODUCTION_ENV_FILE"
           test -n "$LLM_API_KEY"
-          ssh -i "$HOME/.ssh/id_ed25519" \
+          git archive --format=tar HEAD | gzip -1 | ssh -i "$HOME/.ssh/id_ed25519" \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
             "$FEDORA_USER@$FEDORA_HOST" \
-            'set -eu; checkout="$HOME/predictboss"; if [ ! -d "$checkout/.git" ]; then staging="$HOME/predictboss-bootstrap-$$"; git clone --depth 1 --branch main --single-branch https://github.com/Tor4narek/PredictBoss.git "$staging"; if [ -f "$checkout/.env" ]; then mv "$checkout/.env" "$staging/.env"; fi; if [ -d "$checkout" ]; then rmdir "$checkout"; fi; mv "$staging" "$checkout"; fi'
+            'set -eu; checkout="$HOME/predictboss"; staging="$HOME/predictboss-stage-$$"; backup="$HOME/predictboss-previous"; mkdir "$staging"; tar -xzf - -C "$staging"; if [ -f "$checkout/.env" ]; then mv "$checkout/.env" "$staging/.env"; fi; if [ -e "$backup" ]; then rm -rf -- "$backup"; fi; if [ -e "$checkout" ]; then mv "$checkout" "$backup"; fi; mv "$staging" "$checkout"; echo "Source archive installed"'
           {
             printf '%s' "$PRODUCTION_ENV_FILE" | awk -F= '$1 != "LLM_API_KEY"'
             printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY"
@@ -67,4 +72,4 @@ jobs:
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
             "$FEDORA_USER@$FEDORA_HOST" \
-            'bash "$HOME/predictboss/deploy/fedora/deploy.sh"'
+            'DEPLOY_FROM_ARCHIVE=true bash "$HOME/predictboss/deploy/fedora/deploy.sh"'

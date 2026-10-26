@@ -4,10 +4,13 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-# This directory is a dedicated deployment checkout; local changes are not preserved.
-git fetch --prune origin
-git checkout main
-git reset --hard origin/main
+# GitHub Actions provides the source archive during automated deployments.
+# Manual deployments from a Git checkout continue to update from origin/main.
+if [[ "${DEPLOY_FROM_ARCHIVE:-false}" != "true" ]]; then
+  git fetch --prune origin
+  git checkout main
+  git reset --hard origin/main
+fi
 
 if [[ ! -f .env ]]; then
   echo "Missing $ROOT_DIR/.env; create it from .env.example and set production values." >&2
